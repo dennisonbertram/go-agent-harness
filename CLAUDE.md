@@ -116,6 +116,19 @@ the SQLite conversation store persists the latest plan content per conversation.
   symptom, cause, and fix in the relevant durable log or plan note.
 - Keep `docs/logs/long-term-thinking-log.md` in sync with any durable intent or success-criteria changes.
 - Keep `docs/runbooks/` aligned with the current CLI and server behavior.
+- **Rebuild the apps after changing them — merging is not shipping.** The
+  installed binaries are build artifacts and a running process holds its code in
+  memory, so a merged fix stays invisible until it is rebuilt and the app is
+  restarted. This has twice looked like "the fix didn't work" when the fix was
+  fine and the binary was stale.
+  - Go binaries (`cmd/harnessd`, `cmd/harnesscli`, or anything under
+    `internal/` they reach): run `scripts/install.sh`, which reinstalls
+    `go-code`, `harnesscli`, and `harnessd` into `~/.local/bin`.
+  - macOS app (`macapp/`): run `swift build` in `macapp/`.
+  - Say so when reporting done, and tell the user to restart any running TUI or
+    app — reinstalling does not touch a live process.
+  - Docs-only changes need no rebuild; state that rather than skipping silently.
+    If a rebuild fails, report the failure instead of calling the change done.
 - For a new worktree, run `scripts/init.sh <task-slug>` first. `scripts/bootstrap-worktree.sh` is only a compatibility wrapper. `scripts/init.sh` creates the worktree, downloads dependencies, builds local binaries, writes a sourceable env file, and can start `harnessd` in tmux when requested.
 ### Agent Client Protocol (ACP)
 

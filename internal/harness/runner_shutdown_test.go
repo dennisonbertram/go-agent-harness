@@ -229,29 +229,29 @@ func TestRunnerShutdownContinueRunRevertsSourceState(t *testing.T) {
 	}
 }
 
-// TestRunnerWithoutShutdownLeaksDispatcher is the control case: without
-// Shutdown, the poolDispatcher goroutine stays alive, proving the stack-scan
-// detector actually catches the parked goroutine. Shutdown is called at the
-// end to clean up the test process so no goroutine leaks into other tests.
-//
-// Approach: poll the full goroutine stack dump (runtime.Stack(all=true)) for
-// the "poolDispatcher" frame rather than relying on a fragile goroutine count,
-// which is perturbed by the testing framework and the Go runtime itself. This
-// is deterministic: the frame is present iff the goroutine is alive.
-func TestRunnerWithoutShutdownLeaksDispatcher(t *testing.T) {
-	r := NewRunner(&shutdownStubProvider{}, nil, RunnerConfig{
+// TestRunnerDispatcherShutdownIsInstanceScoped keeps an unrelated bounded
+// Runner alive while shutting down the target. This control makes a
+// process-global poolDispatcher stack assertion deterministically expose its
+// inability to identify which Runner owns the matching goroutine.
+func TestRunnerDispatcherShutdownIsInstanceScoped(t *testing.T) {
+	target := NewRunner(&shutdownStubProvider{}, nil, RunnerConfig{
 		WorkerPoolSize: 4,
 		DefaultModel:   "gpt-4.1-mini",
 	})
+	targetAtExit := make(chan struct{})
+	allowTargetExit := make(chan struct{})
+	target.poolDispatcherExitHook = func() {
+		close(targetAtExit)
+		<-allowTargetExit
+	}
+	control := NewRunner(&shutdownStubProvider{}, nil, RunnerConfig{
+		WorkerPoolSize: 4,
+		DefaultModel:   "gpt-4.1-mini",
+	})
+	t.Cleanup(func() { require.NoError(t, control.Shutdown(context.Background())) })
 
-	// Run to terminal so the execute goroutine exits; only poolDispatcher stays.
-	run, err := r.StartRun(RunRequest{Prompt: "hello"})
-	require.NoError(t, err)
-	_, err = collectRunEvents(t, r, run.ID)
-	require.NoError(t, err)
-
-	// PART 1: assert that poolDispatcher is PRESENT before Shutdown.
-	// Poll up to 1 s for the goroutine to park in the select.
+	// Wait until at least one dispatcher is observable. The control remains live
+	// through the target assertion below.
 	deadline := time.Now().Add(1 * time.Second)
 	var present bool
 	for time.Now().Before(deadline) {
@@ -262,23 +262,32 @@ func TestRunnerWithoutShutdownLeaksDispatcher(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.True(t, present,
-		"control assertion failed: poolDispatcher goroutine not found in stack dump before Shutdown; the leak detector would not catch a leak")
+		"control assertion failed: poolDispatcher goroutine not found before target Shutdown")
 
-	// PART 2: call Shutdown and assert that poolDispatcher is ABSENT afterwards.
-	require.NoError(t, r.Shutdown(context.Background()))
+	targetShutdown := make(chan error, 1)
+	go func() { targetShutdown <- target.Shutdown(context.Background()) }()
 
-	deadline = time.Now().Add(2 * time.Second)
-	var absent bool
-	for time.Now().Before(deadline) {
-		runtime.GC()
-		if !runnerGoroutineStackContains("poolDispatcher") {
-			absent = true
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	select {
+	case <-targetAtExit:
+	case <-time.After(time.Second):
+		t.Fatal("target dispatcher did not reach its instance exit hook")
 	}
-	require.True(t, absent,
-		"poolDispatcher goroutine still present in stack dump after Shutdown; Shutdown did not clean it up")
+	select {
+	case err := <-targetShutdown:
+		t.Fatalf("target Shutdown returned before its dispatcher exited: %v", err)
+	default:
+	}
+
+	close(allowTargetExit)
+	select {
+	case err := <-targetShutdown:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("target Shutdown did not return after its dispatcher exited")
+	}
+
+	require.True(t, runnerGoroutineStackContains("poolDispatcher"),
+		"live control Runner should demonstrate why process-global absence is not target identity")
 }
 
 // TestRunnerShutdownIdempotent verifies that calling Shutdown twice does not

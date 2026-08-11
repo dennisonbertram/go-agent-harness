@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,16 +22,94 @@ import (
 	"go-agent-harness/internal/fakeprovider"
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/deferred"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/profiles"
 	"go-agent-harness/internal/provider"
 	"go-agent-harness/internal/provider/catalog"
 	openai "go-agent-harness/internal/provider/openai"
+	"go-agent-harness/internal/server"
 	"go-agent-harness/internal/skills"
+	"go-agent-harness/internal/store"
 	"go-agent-harness/internal/systemprompt"
 )
 
+func TestInheritedListenerRejectsHijackerAndMismatchedAddress(t *testing.T) {
+	reserved, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := reserved.(*net.TCPListener).File()
+	if err != nil {
+		_ = reserved.Close()
+		t.Fatal(err)
+	}
+	defer file.Close()
+	endpoint := reserved.Addr().String()
+	if err := reserved.Close(); err != nil {
+		t.Fatal(err)
+	}
+	adopted, err := listenerFromInheritedFD(strconv.Itoa(int(file.Fd())), endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer adopted.Close()
+	if hijacker, err := net.Listen("tcp", endpoint); err == nil {
+		_ = hijacker.Close()
+		t.Fatal("foreign listener hijacked adopted endpoint")
+	}
+	if _, err := listenerFromInheritedFD(strconv.Itoa(int(file.Fd())), "127.0.0.1:1"); err == nil {
+		t.Fatal("mismatched HARNESS_ADDR was accepted")
+	}
+}
+
+func TestInheritedListenerFailsClosedForInvalidDescriptor(t *testing.T) {
+	if _, err := listenerFromInheritedFD("2", "127.0.0.1:1"); err == nil {
+		t.Fatal("stdio descriptor was accepted")
+	}
+}
+
 type noopProvider struct{}
+
+func TestOccupiedPortDoesNotConsumeRecoveredCallback(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := htools.NewSQLiteCallbackStore(filepath.Join(workspace, ".harness", "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	i := htools.CallbackInfo{ID: "occupied", ConversationID: "conv", TenantID: "tenant", AgentID: "agent", Prompt: "hello", Delay: "5s", State: htools.CallbackStatePending, FiresAt: time.Now().Add(-time.Second), CreatedAt: time.Now()}
+	if err := store.Create(context.Background(), i); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	env := map[string]string{"OPENAI_API_KEY": "test-key", "HARNESS_ADDR": ln.Addr().String(), "HARNESS_MEMORY_MODE": "off", "HARNESS_WORKSPACE": workspace, "HARNESS_ENABLE_CALLBACKS": "true"}
+	err = runWithSignals(make(chan os.Signal, 1), func(k string) string { return env[k] }, func(openai.Config) (harness.Provider, error) { return &noopProvider{}, nil }, "")
+	if err == nil {
+		t.Fatal("expected occupied listener error")
+	}
+	store, err = htools.NewSQLiteCallbackStore(filepath.Join(workspace, ".harness", "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	got, err := store.Get(context.Background(), i.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != htools.CallbackStatePending {
+		t.Fatalf("occupied listener consumed pending callback: %s", got.State)
+	}
+}
 
 func (n *noopProvider) Complete(_ context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {
 	return harness.CompletionResult{Content: "ok"}, nil
@@ -75,17 +154,73 @@ func (p *scriptedHarnessdProvider) Complete(_ context.Context, _ harness.Complet
 	return result, nil
 }
 
-type recordingConversationCleaner struct {
-	started chan struct{}
-	done    chan struct{}
+// heldConversationCleaner makes cleaner cancellation observable without a
+// startup sleep. It deliberately acknowledges cancellation only after the
+// test releases it, so daemon shutdown must own and await cleaner completion.
+type heldConversationCleaner struct {
+	started          chan struct{}
+	cancellationSeen chan struct{}
+	release          chan struct{}
+	done             chan struct{}
 }
 
-func (c *recordingConversationCleaner) Start(ctx context.Context, _ time.Duration) {
+func (c *heldConversationCleaner) Start(ctx context.Context, _ time.Duration) <-chan struct{} {
 	close(c.started)
 	go func() {
 		<-ctx.Done()
+		close(c.cancellationSeen)
+		<-c.release
 		close(c.done)
 	}()
+	return c.done
+}
+
+func TestConversationCleanerLifecycleShutdownAwaitsAcknowledgement(t *testing.T) {
+	t.Parallel()
+
+	cleaner := &heldConversationCleaner{
+		started:          make(chan struct{}),
+		cancellationSeen: make(chan struct{}),
+		release:          make(chan struct{}),
+		done:             make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	lifecycle := &conversationCleanerLifecycle{
+		cancel: cancel,
+		done:   cleaner.Start(ctx, time.Hour),
+	}
+
+	select {
+	case <-cleaner.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("conversation cleaner did not start")
+	}
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		lifecycle.Shutdown()
+		close(shutdownDone)
+	}()
+	select {
+	case <-cleaner.cancellationSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("lifecycle shutdown did not cancel cleaner")
+	}
+	select {
+	case <-shutdownDone:
+		t.Fatal("lifecycle shutdown returned before cleaner acknowledgement")
+	default:
+	}
+
+	close(cleaner.release)
+	select {
+	case <-shutdownDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("lifecycle shutdown did not return after cleaner acknowledgement")
+	}
+
+	// Shared normal/deferred ownership must remain safe after the first caller.
+	lifecycle.Shutdown()
 }
 
 type stubPromptEngine struct{}
@@ -373,6 +508,7 @@ func TestResolveDefaultProvider_FakePath(t *testing.T) {
 		turnsJSON := `[
 			{
 				"content": "hello from fake",
+				"deltas": [{"content": "hello from fake"}],
 				"usage": {"prompt": 10, "completion": 5},
 				"cost_usd": 0.001,
 				"cost_status": "available"
@@ -413,14 +549,19 @@ func TestResolveDefaultProvider_FakePath(t *testing.T) {
 		}
 
 		// Confirm the scripted turn is served correctly.
+		var deltas []harness.CompletionDelta
 		result, err := fp.Complete(context.Background(), harness.CompletionRequest{
 			Messages: []harness.Message{{Role: "user", Content: "ping"}},
+			Stream:   func(delta harness.CompletionDelta) { deltas = append(deltas, delta) },
 		})
 		if err != nil {
 			t.Fatalf("Complete: %v", err)
 		}
 		if result.Content != "hello from fake" {
 			t.Fatalf("Content: got %q, want %q", result.Content, "hello from fake")
+		}
+		if len(deltas) != 1 || deltas[0].Content != "hello from fake" {
+			t.Fatalf("streamed deltas = %#v, want one scripted content delta", deltas)
 		}
 		if result.Usage == nil {
 			t.Fatal("Usage must not be nil")
@@ -1119,34 +1260,13 @@ func TestNewObservationalMemoryManagerBranches(t *testing.T) {
 func TestRunWithSignalsObservationalMemoryFallsBackToOpenAIAPIKey(t *testing.T) {
 	t.Parallel()
 
-	addr := freeLocalAddr(t)
 	workspace := t.TempDir()
 	env := map[string]string{
 		"OPENAI_API_KEY":    "test-openai-key",
-		"HARNESS_ADDR":      addr,
+		"HARNESS_ADDR":      "127.0.0.1:0",
 		"HARNESS_WORKSPACE": workspace,
 	}
-	getenv := func(key string) string { return env[key] }
-	sig := make(chan os.Signal, 1)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runWithSignals(sig, getenv, func(cfg openai.Config) (harness.Provider, error) {
-			return &noopProvider{}, nil
-		}, "")
-	}()
-
-	awaitHealthy(t, addr, 3*time.Second)
-	sig <- os.Interrupt
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("runWithSignals returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for graceful shutdown")
-	}
+	runMatrixTestWithHealthTimeout(t, env, 3*time.Second, nil)
 }
 
 func TestRunWithSignalsMemoryProviderModeFromProjectConfig(t *testing.T) {
@@ -1192,35 +1312,14 @@ llm_model = "moonshotai/kimi-k2.5"
 		t.Fatalf("write catalog: %v", err)
 	}
 
-	addr := freeLocalAddr(t)
 	env := map[string]string{
 		"OPENROUTER_API_KEY":         "test-openrouter-key",
-		"HARNESS_ADDR":               addr,
+		"HARNESS_ADDR":               "127.0.0.1:0",
 		"HARNESS_WORKSPACE":          workspace,
 		"HARNESS_MODEL_CATALOG_PATH": catalogPath,
 		"HARNESS_MODEL":              "openai/gpt-4.1-mini",
 	}
-	getenv := func(key string) string { return env[key] }
-	sig := make(chan os.Signal, 1)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runWithSignals(sig, getenv, func(cfg openai.Config) (harness.Provider, error) {
-			return &noopProvider{}, nil
-		}, "")
-	}()
-
-	awaitHealthy(t, addr, 3*time.Second)
-	sig <- os.Interrupt
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("runWithSignals returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for graceful shutdown")
-	}
+	runMatrixTestWithHealthTimeout(t, env, 3*time.Second, nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -1409,7 +1508,7 @@ func sampleJob() cron.Job {
 		Name:       "test-job",
 		Schedule:   "*/5 * * * *",
 		ExecType:   "shell",
-		ExecConfig: `{"cmd":"echo hi"}`,
+		ExecConfig: `{"command":"echo hi"}`,
 		Status:     "active",
 		TimeoutSec: 60,
 		Tags:       "test",
@@ -1436,7 +1535,7 @@ func sampleExecution() cron.Execution {
 }
 
 func newTestAdapter(ts *httptest.Server) *cronClientAdapter {
-	return &cronClientAdapter{client: cron.NewClient(ts.URL)}
+	return &cronClientAdapter{client: cron.NewClient(ts.URL, cron.WithAPIKey("test-cronsd-ingress-secret"))}
 }
 
 func TestCronClientAdapterCreateJob(t *testing.T) {
@@ -1586,6 +1685,9 @@ func TestCronClientAdapterUpdateJob(t *testing.T) {
 		if reqBody["schedule"] != "0 * * * *" {
 			t.Errorf("request schedule: got %v, want %q", reqBody["schedule"], "0 * * * *")
 		}
+		if reqBody["expected_updated_at"] != "2026-07-31T00:00:00Z" {
+			t.Errorf("request expected_updated_at: got %v, want %q", reqBody["expected_updated_at"], "2026-07-31T00:00:00Z")
+		}
 		_ = json.NewEncoder(w).Encode(updatedJob)
 	}))
 	defer ts.Close()
@@ -1593,9 +1695,11 @@ func TestCronClientAdapterUpdateJob(t *testing.T) {
 	adapter := newTestAdapter(ts)
 	newSched := "0 * * * *"
 	newStatus := "paused"
+	expectedUpdatedAt := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
 	got, err := adapter.UpdateJob(context.Background(), "job-abc", htools.CronUpdateJobRequest{
-		Schedule: &newSched,
-		Status:   &newStatus,
+		Schedule:          &newSched,
+		Status:            &newStatus,
+		ExpectedUpdatedAt: &expectedUpdatedAt,
 	})
 	if err != nil {
 		t.Fatalf("UpdateJob: %v", err)
@@ -1685,7 +1789,7 @@ func TestCronClientAdapterHealth(t *testing.T) {
 	t.Parallel()
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/healthz" {
+		if r.Method != http.MethodGet || r.URL.Path != "/readyz" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			http.Error(w, "bad", 400)
 			return
@@ -1744,6 +1848,81 @@ func TestCronClientAdapterServerError(t *testing.T) {
 	if err := adapter.Health(ctx); err == nil {
 		t.Fatalf("Health: expected error")
 	}
+}
+
+func TestCronClientAdapter_PreservesRemoteValidationError(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]string{"code": "validation_error", "message": "timeout_seconds must be positive"},
+		})
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	if _, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{Name: "bad"}); !errors.Is(err, htools.ErrCronJobValidation) {
+		t.Fatalf("CreateJob error = %v, want ErrCronJobValidation", err)
+	}
+	if _, err := adapter.UpdateJob(context.Background(), "job-abc", htools.CronUpdateJobRequest{}); !errors.Is(err, htools.ErrCronJobValidation) {
+		t.Fatalf("UpdateJob error = %v, want ErrCronJobValidation", err)
+	}
+}
+
+func TestCronValidationPublicHTTP_EmbeddedAndRemoteReturnEquivalent400(t *testing.T) {
+	t.Parallel()
+
+	assertValidation := func(t *testing.T, handler http.Handler, method, path, body string) {
+		t.Helper()
+		ts := httptest.NewServer(handler)
+		defer ts.Close()
+		req, err := http.NewRequest(method, ts.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		payload, _ := io.ReadAll(res.Body)
+		if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(payload), `"code":"validation_error"`) {
+			t.Fatalf("%s %s = %d %s, want 400 validation_error", method, path, res.StatusCode, payload)
+		}
+	}
+
+	t.Run("embedded", func(t *testing.T) {
+		adapter := newTestEmbeddedAdapter(t)
+		handler := server.NewWithOptions(server.ServerOptions{CronClient: adapter, AuthDisabled: true})
+		assertValidation(t, handler, http.MethodPost, "/v1/cron/jobs", `{"name":"bad","schedule":"not a cron","execution_type":"shell","execution_config":"{\"command\":\"echo ok\"}"}`)
+
+		job, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{Name: "valid", Schedule: "* * * * *", ExecType: "shell", ExecConfig: `{"command":"echo ok"}`})
+		if err != nil {
+			t.Fatalf("seed embedded job: %v", err)
+		}
+		assertValidation(t, handler, http.MethodPatch, "/v1/cron/jobs/"+job.ID, `{"status":"other"}`)
+	})
+
+	t.Run("remote", func(t *testing.T) {
+		remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/jobs/job-remote":
+				_ = json.NewEncoder(w).Encode(sampleJob())
+			case r.Method == http.MethodPost || r.Method == http.MethodPatch:
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "validation_error", "message": "invalid cron input"}})
+			default:
+				t.Fatalf("unexpected remote request: %s %s", r.Method, r.URL.Path)
+			}
+		}))
+		defer remote.Close()
+		handler := server.NewWithOptions(server.ServerOptions{CronClient: newTestAdapter(remote), AuthDisabled: true})
+		assertValidation(t, handler, http.MethodPost, "/v1/cron/jobs", `{"name":"bad","schedule":"* * * * *","execution_type":"invalid"}`)
+		assertValidation(t, handler, http.MethodPatch, "/v1/cron/jobs/job-remote", `{"timeout_seconds":0}`)
+	})
 }
 
 func TestCronClientAdapterServerUnreachable(t *testing.T) {
@@ -1841,7 +2020,7 @@ func TestCronClientAdapterConcurrent(t *testing.T) {
 				Executions []cron.Execution `json:"executions"`
 			}{Executions: []cron.Execution{exec}}
 			_ = json.NewEncoder(w).Encode(resp)
-		case r.Method == http.MethodGet && r.URL.Path == "/healthz":
+		case r.Method == http.MethodGet && r.URL.Path == "/readyz":
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/jobs/"):
 			_ = json.NewEncoder(w).Encode(job)
@@ -1995,11 +2174,12 @@ func TestCronURLEnvVarWiring(t *testing.T) {
 		t.Parallel()
 		workspaceDir := t.TempDir()
 		env := map[string]string{
-			"OPENAI_API_KEY":      "test-key",
-			"HARNESS_ADDR":        "127.0.0.1:0",
-			"HARNESS_MEMORY_MODE": "off",
-			"HARNESS_CRON_URL":    "http://localhost:9090",
-			"HARNESS_WORKSPACE":   workspaceDir,
+			"OPENAI_API_KEY":       "test-key",
+			"HARNESS_ADDR":         "127.0.0.1:0",
+			"HARNESS_MEMORY_MODE":  "off",
+			"HARNESS_CRON_URL":     "http://localhost:9090",
+			"HARNESS_CRON_API_KEY": "test-cronsd-ingress-secret",
+			"HARNESS_WORKSPACE":    workspaceDir,
 		}
 		getenv := func(key string) string { return env[key] }
 
@@ -2105,6 +2285,265 @@ func TestCallbackRunStarterWithRunner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
 	}
+}
+
+func TestCallbackRunStarterReconcilesReservedCallbackRun(t *testing.T) {
+	t.Parallel()
+
+	runner := harness.NewRunner(&noopProvider{}, harness.NewRegistry(), harness.RunnerConfig{
+		Store:               store.NewMemoryStore(),
+		DefaultModel:        "gpt-4.1-mini",
+		DefaultSystemPrompt: "test",
+		MaxSteps:            2,
+	})
+	defer runner.Shutdown(context.Background())
+	starter := &callbackRunStarter{runner: runner}
+	info := htools.CallbackInfo{RunID: "run_callback_reserved", Prompt: "continue", ConversationID: "conv", TenantID: "tenant", AgentID: "agent", Model: "fixture-model", ProviderName: "missing-primary", AllowFallback: true, FallbackProviders: []string{"secondary"}}
+	first, err := starter.StartCallback(context.Background(), info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := starter.StartCallback(context.Background(), info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != info.RunID || second != info.RunID {
+		t.Fatalf("run IDs = %q / %q, want %q", first, second, info.RunID)
+	}
+	final := waitForTerminalStatus(t, runner, first)
+	if final.Model != info.Model || final.Status != harness.RunStatusCompleted {
+		t.Fatalf("callback run = model:%q provider:%q status:%s error:%q", final.Model, final.ProviderName, final.Status, final.Error)
+	}
+}
+
+func TestRecoveredCallbackManagerAdmitsReservedRunIntoSameConversation(t *testing.T) {
+	t.Parallel()
+
+	callbackStore, err := htools.NewSQLiteCallbackStore(filepath.Join(t.TempDir(), "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callbackStore.Close()
+	if err := callbackStore.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runStore := store.NewMemoryStore()
+	runner := harness.NewRunner(&noopProvider{}, harness.NewRegistry(), harness.RunnerConfig{
+		Store:               runStore,
+		DefaultModel:        "gpt-4.1-mini",
+		DefaultSystemPrompt: "test",
+		MaxSteps:            2,
+	})
+	defer runner.Shutdown(context.Background())
+	starter := &callbackRunStarter{runner: runner}
+	mgr := htools.NewCallbackManager(starter, htools.WithCallbackStore(callbackStore))
+	defer mgr.Shutdown()
+	now := time.Now().UTC()
+	info := htools.CallbackInfo{
+		ID: "recovered", ConversationID: "conversation", TenantID: "tenant", AgentID: "agent",
+		Prompt: "continue", Delay: "5s", State: htools.CallbackStatePending,
+		FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_recovered",
+		Model: "fixture-model", ProviderName: "missing-primary", AllowFallback: true,
+		FallbackProviders: []string{"missing-secondary"},
+	}
+	if err := callbackStore.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		callback, getErr := callbackStore.Get(context.Background(), info.ID)
+		if getErr == nil && callback.State == htools.CallbackStateStarted {
+			run, ok := runner.GetRun(info.RunID)
+			if !ok {
+				t.Fatalf("started callback has no runner identity %q", info.RunID)
+			}
+			if run.ConversationID != info.ConversationID || run.TenantID != info.TenantID || run.AgentID != info.AgentID || run.Prompt != info.Prompt || run.Model != info.Model {
+				t.Fatalf("run scope = %#v", run)
+			}
+			final := waitForTerminalStatus(t, runner, run.ID)
+			if final.Status != harness.RunStatusCompleted {
+				t.Fatalf("recovered fallback-enabled callback status = %s, error=%q", final.Status, final.Error)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	callback, getErr := callbackStore.Get(context.Background(), info.ID)
+	t.Fatalf("callback did not start: %#v err=%v", callback, getErr)
+}
+
+// Regression #1147: the default callbacks-enabled daemon previously opened
+// callbacks.db but no run store. The callback manager correctly reserved an ID
+// then the Runner rejected it at due time, so every callback retried and failed
+// as "callback admission unavailable". This composes the actual default
+// persistence bootstrap, durable callback recovery, and callback starter.
+func TestDefaultCallbackBootstrapAdmitsRecoveredReservedRun(t *testing.T) {
+	workspace := t.TempDir()
+	persistence, err := buildPersistenceBootstrap(persistenceBootstrapOptions{
+		workspace:        workspace,
+		callbacksEnabled: true,
+		getenv:           func(string) string { return "" },
+	})
+	if err != nil {
+		t.Fatalf("buildPersistenceBootstrap: %v", err)
+	}
+	defer persistence.runStore.Close()
+
+	callbackStore, err := htools.NewSQLiteCallbackStore(filepath.Join(workspace, ".harness", "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callbackStore.Close()
+	if err := callbackStore.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runner := harness.NewRunner(&noopProvider{}, harness.NewRegistry(), harness.RunnerConfig{
+		Store:               persistence.runStore,
+		DefaultModel:        "gpt-4.1-mini",
+		DefaultSystemPrompt: "test",
+		MaxSteps:            2,
+	})
+	defer runner.Shutdown(context.Background())
+	mgr := htools.NewCallbackManager(&callbackRunStarter{runner: runner}, htools.WithCallbackStore(callbackStore))
+	defer mgr.Shutdown()
+
+	now := time.Now().UTC()
+	info := htools.CallbackInfo{
+		ID: "default-bootstrap", ConversationID: "conversation", TenantID: "tenant", AgentID: "agent",
+		Prompt: "continue", Delay: "5s", State: htools.CallbackStatePending,
+		FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_default_bootstrap",
+	}
+	if err := callbackStore.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		callback, getErr := callbackStore.Get(context.Background(), info.ID)
+		if getErr == nil && callback.State == htools.CallbackStateStarted {
+			run, ok := runner.GetRun(info.RunID)
+			if !ok {
+				t.Fatalf("started callback has no runner identity %q", info.RunID)
+			}
+			if run.ConversationID != info.ConversationID || run.TenantID != info.TenantID || run.AgentID != info.AgentID {
+				t.Fatalf("run scope = %#v", run)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	callback, getErr := callbackStore.Get(context.Background(), info.ID)
+	t.Fatalf("default bootstrap callback did not start: %#v err=%v", callback, getErr)
+}
+
+// Regression #1147 acceptance path: an unauthenticated default local daemon
+// receives an HTTP prompt, the agent calls the real delayed-callback tool, the
+// due callback admits its reserved ID, and the same conversation eventually
+// contains the follow-up assistant response. This protects the user promise,
+// not merely the lower-level callback recovery seam.
+func TestDefaultCallbackBootstrapHTTPToolPathContinuesConversation(t *testing.T) {
+	workspace := t.TempDir()
+	persistence, err := buildPersistenceBootstrap(persistenceBootstrapOptions{
+		workspace:        workspace,
+		callbacksEnabled: true,
+		getenv:           func(string) string { return "" },
+	})
+	if err != nil {
+		t.Fatalf("buildPersistenceBootstrap: %v", err)
+	}
+	defer persistence.runStore.Close()
+
+	callbackStore, err := htools.NewSQLiteCallbackStore(filepath.Join(workspace, ".harness", "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callbackStore.Close()
+	if err := callbackStore.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	bridge := harness.NewCallbackEventBridge()
+	starter := &callbackRunStarter{}
+	manager := htools.NewCallbackManager(starter, htools.WithCallbackStore(callbackStore), htools.WithEventSink(bridge))
+	defer manager.Shutdown()
+	tool := deferred.SetDelayedCallbackTool(manager)
+	registry := harness.NewRegistry()
+	if err := registry.Register(harness.ToolDefinition{
+		Name: tool.Definition.Name, Description: tool.Definition.Description,
+		Parameters: tool.Definition.Parameters, Mutating: tool.Definition.Mutating,
+	}, harness.ToolHandler(tool.Handler)); err != nil {
+		t.Fatalf("register delayed callback tool: %v", err)
+	}
+	provider := fakeprovider.New([]fakeprovider.Turn{
+		{ToolCalls: []harness.ToolCall{{
+			ID: "callback-tool", Name: "set_delayed_callback",
+			Arguments: `{"delay":"5s","prompt":"return DEFAULT_CALLBACK_MARKER"}`,
+		}}},
+		{Content: "callback scheduled"},
+		{Content: "DEFAULT_CALLBACK_MARKER"},
+	})
+	runner := harness.NewRunner(provider, registry, harness.RunnerConfig{
+		Store: persistence.runStore, DefaultModel: "fake-model", DefaultSystemPrompt: "test", MaxSteps: 3,
+	})
+	defer runner.Shutdown(context.Background())
+	starter.runner = runner
+	bridge.BindRunner(runner)
+
+	handler := server.NewWithOptions(server.ServerOptions{
+		Runner: runner, Store: persistence.runStore, AuthDisabled: persistence.implicitRunStore,
+		CallbackLister: manager, CallbackCanceler: manager,
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	request, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/runs", strings.NewReader(`{"prompt":"schedule the marker callback"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("unauthenticated default HTTP run: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("unauthenticated default HTTP run = %d: %s", response.StatusCode, body)
+	}
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.RunID == "" {
+		t.Fatal("initial run ID is empty")
+	}
+
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		messages, found := runner.ConversationMessages(created.RunID)
+		if found {
+			for _, message := range messages {
+				if message.Role == "assistant" && message.Content == "DEFAULT_CALLBACK_MARKER" {
+					callbacks := manager.List(created.RunID)
+					if len(callbacks) != 1 || callbacks[0].State != htools.CallbackStateStarted || callbacks[0].RunID == "" {
+						t.Fatalf("callback terminal state = %#v", callbacks)
+					}
+					return
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	messages, _ := runner.ConversationMessages(created.RunID)
+	callbacks := manager.List(created.RunID)
+	t.Fatalf("callback did not continue the same conversation; messages=%#v callbacks=%#v", messages, callbacks)
 }
 
 // ---------------------------------------------------------------------------
@@ -2394,7 +2833,7 @@ func TestEmbeddedCronAdapterListJobs(t *testing.T) {
 
 	// Create a job first.
 	_, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name: "list-test", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "list-test", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -2420,7 +2859,7 @@ func TestEmbeddedCronAdapterGetJob(t *testing.T) {
 	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
 
 	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name: "get-test", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "get-test", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -2435,8 +2874,8 @@ func TestEmbeddedCronAdapterGetJob(t *testing.T) {
 		t.Fatalf("Name: got %q", got.Name)
 	}
 
-	// Get by name.
-	got, err = adapter.GetJob(context.Background(), "get-test")
+	// Explicit operator lookup by name.
+	got, err = adapter.GetJobByName(context.Background(), "get-test")
 	if err != nil {
 		t.Fatalf("GetJob by name: %v", err)
 	}
@@ -2465,7 +2904,7 @@ func TestEmbeddedCronAdapterUpdateJob(t *testing.T) {
 	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
 
 	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name: "update-test", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "update-test", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -2556,7 +2995,7 @@ func TestEmbeddedCronAdapterUpdateJob_PausedJobScheduleOnlyPatch_NotReArmed(t *t
 	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
 
 	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name: "pause-then-schedule-only", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "pause-then-schedule-only", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -2607,7 +3046,7 @@ func TestEmbeddedCronAdapterUpdateJob_ResumeAndScheduleReArms(t *testing.T) {
 	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
 
 	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name: "resume-and-schedule", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "resume-and-schedule", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -2651,7 +3090,7 @@ func TestEmbeddedCronAdapterDeleteJob(t *testing.T) {
 	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
 
 	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name: "delete-test", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "delete-test", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -2679,7 +3118,7 @@ func TestEmbeddedCronAdapterListExecutions(t *testing.T) {
 	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
 
 	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name: "exec-test", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "exec-test", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -2857,6 +3296,7 @@ func TestLookupModelAPIWiredInRunWithSignals(t *testing.T) {
 
 	var capturedConfig openai.Config
 	var configMu sync.Mutex
+	providerStarted := make(chan struct{})
 
 	workspaceDir := t.TempDir()
 	env := map[string]string{
@@ -2866,6 +3306,7 @@ func TestLookupModelAPIWiredInRunWithSignals(t *testing.T) {
 		"HARNESS_WORKSPACE":          workspaceDir,
 		"HARNESS_MODEL_CATALOG_PATH": catalogFile.Name(),
 	}
+	disableCallbacksForUnrelatedHarnessFixture(env)
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
 
@@ -2875,11 +3316,12 @@ func TestLookupModelAPIWiredInRunWithSignals(t *testing.T) {
 			configMu.Lock()
 			capturedConfig = cfg
 			configMu.Unlock()
+			close(providerStarted)
 			return &noopProvider{}, nil
 		}, "")
 	}()
 
-	time.Sleep(150 * time.Millisecond)
+	awaitHarnessFixtureSignal(t, providerStarted, "provider factory")
 	sig <- os.Interrupt
 
 	select {
@@ -2953,6 +3395,7 @@ func TestLookupModelAPIWithAlias(t *testing.T) {
 
 	var capturedConfig openai.Config
 	var configMu sync.Mutex
+	providerStarted := make(chan struct{})
 
 	workspaceDir2 := t.TempDir()
 	env := map[string]string{
@@ -2962,6 +3405,7 @@ func TestLookupModelAPIWithAlias(t *testing.T) {
 		"HARNESS_WORKSPACE":          workspaceDir2,
 		"HARNESS_MODEL_CATALOG_PATH": catalogFile.Name(),
 	}
+	disableCallbacksForUnrelatedHarnessFixture(env)
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
 
@@ -2971,11 +3415,12 @@ func TestLookupModelAPIWithAlias(t *testing.T) {
 			configMu.Lock()
 			capturedConfig = cfg
 			configMu.Unlock()
+			close(providerStarted)
 			return &noopProvider{}, nil
 		}, "")
 	}()
 
-	time.Sleep(150 * time.Millisecond)
+	awaitHarnessFixtureSignal(t, providerStarted, "provider factory")
 	sig <- os.Interrupt
 
 	select {
@@ -3187,18 +3632,69 @@ func awaitHealthy(t *testing.T, addr string, timeout time.Duration) {
 // requests), then sends an interrupt signal and waits for clean shutdown.
 func runMatrixTest(t *testing.T, env map[string]string, checkFn func(addr string)) {
 	t.Helper()
+	runMatrixTestWithHealthTimeout(t, env, 10*time.Second, checkFn)
+}
+
+// runInvalidCatalogMatrixTest preserves the invalid-catalog behavior assertion
+// while routing startup through the matrix's actual-listener and early-return
+// seam. A malformed catalog is non-fatal only when the real daemon reaches
+// health and then shuts down cleanly.
+func runInvalidCatalogMatrixTest(t *testing.T, env map[string]string) {
+	t.Helper()
+	runMatrixTestWithHealthTimeout(t, env, 10*time.Second, nil)
+}
+
+// runMatrixTestWithHealthTimeout starts the regular listener-aware matrix path
+// with a test-owned health diagnostic deadline. It preserves the helper's
+// actual-listener ownership contract while allowing legacy fixtures to retain
+// a narrower timeout without changing the suite-wide default.
+func runMatrixTestWithHealthTimeout(t *testing.T, env map[string]string, healthTimeout time.Duration, checkFn func(addr string)) {
+	t.Helper()
+	runMatrixTestWithListenerAndHealthTimeout(t, env, net.Listen, healthTimeout, checkFn)
+}
+
+// runMatrixTestWithListener starts the actual harnessd startup path and waits
+// for the exact listener it acquired. This removes the test's former
+// reserve-close-rebind race while retaining parallel matrix coverage.
+func runMatrixTestWithListener(t *testing.T, env map[string]string, listen func(network, address string) (net.Listener, error), checkFn func(addr string)) {
+	t.Helper()
+	runMatrixTestWithListenerAndHealthTimeout(t, env, listen, 10*time.Second, checkFn)
+}
+
+// runMatrixTestWithListenerAndHealthTimeout is the listener-aware startup
+// helper with an explicit test-only health diagnostic deadline.
+func runMatrixTestWithListenerAndHealthTimeout(t *testing.T, env map[string]string, listen func(network, address string) (net.Listener, error), healthTimeout time.Duration, checkFn func(addr string)) {
+	t.Helper()
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
 	done := make(chan error, 1)
+	listenerAddr := make(chan string, 1)
+	wrappedListen := func(network, address string) (net.Listener, error) {
+		listener, err := listen(network, address)
+		if err == nil {
+			listenerAddr <- listener.Addr().String()
+		}
+		return listener, err
+	}
 
 	go func() {
-		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+		done <- runWithSignalsWithDeps(sig, getenv, func(openai.Config) (harness.Provider, error) {
 			return &noopProvider{}, nil
-		}, "")
+		}, "", runDeps{listen: wrappedListen})
 	}()
 
-	addr := env["HARNESS_ADDR"]
-	awaitHealthy(t, addr, 10*time.Second)
+	var addr string
+	select {
+	case addr = <-listenerAddr:
+	case err := <-done:
+		if err == nil {
+			t.Fatal("server exited before acquiring its listener")
+		}
+		t.Fatalf("runWithSignals returned before acquiring its listener: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for server listener acquisition")
+	}
+	awaitHealthyOrRunFailure(t, addr, done, healthTimeout)
 
 	if checkFn != nil {
 		checkFn(addr)
@@ -3214,6 +3710,106 @@ func runMatrixTest(t *testing.T, env map[string]string, checkFn func(addr string
 	case <-time.After(5 * time.Second):
 		t.Fatalf("timed out waiting for graceful shutdown")
 	}
+}
+
+func awaitHealthyOrRunFailure(t *testing.T, addr string, done <-chan error, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	url := "http://" + addr + "/healthz"
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatalf("server at %s exited before becoming healthy", addr)
+			}
+			t.Fatalf("server at %s returned before becoming healthy: %v", addr, err)
+		default:
+		}
+
+		resp, err := http.Get(url) //nolint:noctx
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("server at %s never became healthy within %s", addr, timeout)
+}
+
+// awaitLifecycleSignalOrRunFailure treats test-owned lifecycle channels and
+// the daemon result as the authority. The deadline is only a diagnostic for a
+// true hang after neither causal path has resolved; it is not startup
+// readiness policy.
+func awaitLifecycleSignalOrRunFailure(t *testing.T, event string, signal <-chan struct{}, runDone <-chan error) {
+	t.Helper()
+	select {
+	case <-signal:
+		return
+	case err := <-runDone:
+		if err == nil {
+			t.Fatalf("runWithSignals returned before conversation cleaner %s", event)
+		}
+		t.Fatalf("runWithSignals returned before conversation cleaner %s: %v", event, err)
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for conversation cleaner %s or daemon result", event)
+	}
+}
+
+// TestRunMatrixTestUsesActualListenerAddress proves the matrix helper does not
+// reuse a pre-reserved address. The daemon receives :0, so only the listener
+// acquired by the startup path can identify the endpoint that must be probed.
+func TestRunMatrixTestUsesActualListenerAddress(t *testing.T) {
+	t.Parallel()
+
+	globalDir := t.TempDir()
+	skillDir := filepath.Join(globalDir, "skills", "listener-identity-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: listener-identity-skill\ndescription: listener identity regression\nversion: 1\n---\nHello"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	var acquiredAddr string
+	var acquiredMu sync.Mutex
+	listen := func(network, address string) (net.Listener, error) {
+		listener, err := net.Listen(network, address)
+		if err == nil {
+			acquiredMu.Lock()
+			acquiredAddr = listener.Addr().String()
+			acquiredMu.Unlock()
+		}
+		return listener, err
+	}
+
+	env := baseEnv("127.0.0.1:0")
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+	env["HARNESS_GLOBAL_DIR"] = globalDir
+	env["HARNESS_SKILLS_ENABLED"] = "true"
+
+	runMatrixTestWithListener(t, env, listen, func(addr string) {
+		acquiredMu.Lock()
+		gotAcquiredAddr := acquiredAddr
+		acquiredMu.Unlock()
+		if addr != gotAcquiredAddr {
+			t.Fatalf("matrix helper checked %q, want acquired listener %q", addr, gotAcquiredAddr)
+		}
+
+		resp, err := http.Get("http://" + addr + "/v1/skills") //nolint:noctx
+		if err != nil {
+			t.Fatalf("GET /v1/skills: %v", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatalf("read /v1/skills: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "listener-identity-skill") {
+			t.Fatalf("custom skill endpoint was not served by acquired listener: status=%d body=%s", resp.StatusCode, body)
+		}
+	})
 }
 
 func awaitRunTerminalState(t *testing.T, baseURL, runID string, timeout time.Duration) map[string]any {
@@ -3308,6 +3904,174 @@ func startHarnessdTestServer(
 		case <-time.After(5 * time.Second):
 			t.Fatalf("timed out waiting for graceful shutdown")
 		}
+	}
+}
+
+// TestFakeProviderOverrideWinsOverCatalogRouting proves that HARNESS_PROVIDER=fake
+// is an execution override, not merely a key-free startup default. The catalog
+// must remain available for metadata, but neither a catalog-known model nor an
+// absent fixture model may construct the configured real-provider client,
+// including when a request explicitly enables fallback and names OpenAI.
+func TestFakeProviderOverrideWinsOverCatalogRouting(t *testing.T) {
+	t.Setenv("HARNESS_AUTH_DISABLED", "true")
+
+	catalogPath := filepath.Join(t.TempDir(), "models.json")
+	catalogJSON := `{
+  "catalog_version": "1.0.0",
+  "providers": {
+    "openai": {
+      "display_name": "OpenAI",
+      "base_url": "https://api.openai.com",
+      "api_key_env": "OPENAI_API_KEY",
+      "protocol": "openai_compat",
+      "models": {
+        "gpt-4.1-mini": {
+          "display_name": "GPT-4.1 mini",
+          "context_window": 128000,
+          "tool_calling": true,
+          "streaming": true
+        }
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(catalogPath, []byte(catalogJSON), 0o644); err != nil {
+		t.Fatalf("write model catalog: %v", err)
+	}
+
+	turnsPath := filepath.Join(t.TempDir(), "fake-turns.json")
+	if err := os.WriteFile(turnsPath, []byte(`[{"content":"fake override response"}]`), 0o644); err != nil {
+		t.Fatalf("write fake turns: %v", err)
+	}
+
+	for _, model := range []string{"gpt-4.1-mini", "fake-model"} {
+		t.Run(model, func(t *testing.T) {
+			var realProviderCalls int
+			var realProviderCallsMu sync.Mutex
+			env := map[string]string{
+				"HARNESS_ADDR":               freeLocalAddr(t),
+				"HARNESS_AUTH_DISABLED":      "true",
+				"HARNESS_CONVERSATION_DB":    filepath.Join(t.TempDir(), "conversations.db"),
+				"HARNESS_FAKE_TURNS":         turnsPath,
+				"HARNESS_MEMORY_MODE":        "off",
+				"HARNESS_MODEL":              model,
+				"HARNESS_MODEL_CATALOG_PATH": catalogPath,
+				"HARNESS_PROVIDER":           "fake",
+				"HARNESS_RUN_DB":             filepath.Join(t.TempDir(), "runs.db"),
+				"HARNESS_WORKSPACE":          t.TempDir(),
+				"OPENAI_API_KEY":             "configured-but-must-not-be-used",
+			}
+
+			baseURL, shutdown := startHarnessdTestServer(t, env, func(openai.Config) (harness.Provider, error) {
+				realProviderCallsMu.Lock()
+				realProviderCalls++
+				realProviderCallsMu.Unlock()
+				return &scriptedHarnessdProvider{turns: []harness.CompletionResult{{Content: "real provider response"}}}, nil
+			}, "")
+			defer shutdown()
+
+			modelsResp, err := http.Get(baseURL + "/v1/models")
+			if err != nil {
+				t.Fatalf("GET /v1/models: %v", err)
+			}
+			modelsBody, err := io.ReadAll(modelsResp.Body)
+			modelsResp.Body.Close()
+			if err != nil {
+				t.Fatalf("read /v1/models: %v", err)
+			}
+			if modelsResp.StatusCode != http.StatusOK || !strings.Contains(string(modelsBody), "gpt-4.1-mini") {
+				t.Fatalf("catalog metadata unavailable: status=%d body=%s", modelsResp.StatusCode, modelsBody)
+			}
+
+			requestBody := fmt.Sprintf(`{"prompt":"must stay local","model":%q,"allow_fallback":true,"fallback_providers":["openai"]}`, model)
+			createResp, err := http.Post(baseURL+"/v1/runs", "application/json", strings.NewReader(requestBody))
+			if err != nil {
+				t.Fatalf("POST /v1/runs: %v", err)
+			}
+			defer createResp.Body.Close()
+			if createResp.StatusCode != http.StatusAccepted {
+				body, _ := io.ReadAll(createResp.Body)
+				t.Fatalf("POST /v1/runs status=%d body=%s", createResp.StatusCode, body)
+			}
+			var created struct {
+				RunID string `json:"run_id"`
+			}
+			if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+				t.Fatalf("decode created run: %v", err)
+			}
+
+			state := awaitRunTerminalState(t, baseURL, created.RunID, 5*time.Second)
+			if got := state["status"]; got != string(harness.RunStatusCompleted) {
+				t.Fatalf("run status=%v, want completed; error=%v", got, state["error"])
+			}
+			if got := state["output"]; got != "fake override response" {
+				t.Fatalf("run output=%v, want fake response", got)
+			}
+			if got := state["provider_name"]; got != "fake" {
+				t.Fatalf("provider_name=%v, want fake", got)
+			}
+			realProviderCallsMu.Lock()
+			gotRealProviderCalls := realProviderCalls
+			realProviderCallsMu.Unlock()
+			if gotRealProviderCalls != 0 {
+				t.Fatalf("real provider factory called %d times under HARNESS_PROVIDER=fake", gotRealProviderCalls)
+			}
+		})
+	}
+}
+
+// TestFakeProviderOverrideDoesNotFallbackAfterRetryableFakeFailure proves the
+// actual fakeprovider.Provider used by HARNESS_PROVIDER=fake remains an egress
+// boundary after a retryable error. A request may name OpenAI as a fallback,
+// but neither its registry factory nor its provider may be reached.
+func TestFakeProviderOverrideDoesNotFallbackAfterRetryableFakeFailure(t *testing.T) {
+	realCatalog := &catalog.Catalog{
+		CatalogVersion: "1.0.0",
+		Providers: map[string]catalog.ProviderEntry{
+			"openai": {
+				Models: map[string]catalog.Model{"gpt-4.1-mini": {ContextWindow: 128000}},
+			},
+		},
+	}
+	registry := catalog.NewProviderRegistryWithEnv(realCatalog, func(string) string { return "configured-key" })
+	var realFactoryCalls int
+	registry.SetClientFactory(func(_, _, _ string) (catalog.ProviderClient, error) {
+		realFactoryCalls++
+		return &scriptedHarnessdProvider{turns: []harness.CompletionResult{{Content: "must not run"}}}, nil
+	})
+
+	fake := fakeprovider.New([]fakeprovider.Turn{{Error: fakeprovider.RateLimitError("retryable fake failure")}})
+	runner := harness.NewRunner(fake, harness.NewRegistry(), harness.RunnerConfig{
+		DefaultModel:              "gpt-4.1-mini",
+		ForcedDefaultProviderName: "fake",
+		MaxSteps:                  1,
+		ProviderRegistry:          registry,
+	})
+	run, err := runner.StartRun(harness.RunRequest{
+		Prompt:            "must stay local after failure",
+		AllowFallback:     true,
+		FallbackProviders: []string{"openai"},
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, ok := runner.GetRun(run.ID)
+		if ok && (state.Status == harness.RunStatusCompleted || state.Status == harness.RunStatusFailed || state.Status == harness.RunStatusCancelled) {
+			if state.Status != harness.RunStatusFailed {
+				t.Fatalf("status=%s, want failed after fake retryable error", state.Status)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for fake failure")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if realFactoryCalls != 0 {
+		t.Fatalf("real provider factory called %d times after fake retryable failure", realFactoryCalls)
 	}
 }
 
@@ -3720,12 +4484,27 @@ func baseEnv(addr string) map[string]string {
 	}
 }
 
+// disableCallbacksForUnrelatedHarnessFixture keeps a lifecycle fixture focused
+// on the behavior it owns. Callback-enabled startup and shutdown are covered
+// separately by TestMatrix_CallbacksEnabled and TestShutdownCallbacksBeforeHTTPServer.
+func disableCallbacksForUnrelatedHarnessFixture(env map[string]string) {
+	env["HARNESS_ENABLE_CALLBACKS"] = "false"
+}
+
+func awaitHarnessFixtureSignal(t *testing.T, signal <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
 // TestMatrix_SkillsEnabled verifies that when HARNESS_SKILLS_ENABLED=true (the
 // default) the /v1/skills endpoint returns HTTP 200.
 func TestMatrix_SkillsEnabled(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_SKILLS_ENABLED"] = "true"
 	env["HARNESS_WORKSPACE"] = t.TempDir()
 
@@ -3745,8 +4524,7 @@ func TestMatrix_SkillsEnabled(t *testing.T) {
 // /v1/skills endpoint returns HTTP 501 (not configured).
 func TestMatrix_SkillsDisabled(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_SKILLS_ENABLED"] = "false"
 	env["HARNESS_WORKSPACE"] = t.TempDir()
 
@@ -3767,8 +4545,7 @@ func TestMatrix_SkillsDisabled(t *testing.T) {
 // are also enabled).
 func TestMatrix_WatcherEnabled(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_WATCH_ENABLED"] = "true"
 	env["HARNESS_SKILLS_ENABLED"] = "true"
 	env["HARNESS_WATCH_INTERVAL_SECONDS"] = "1"
@@ -3781,8 +4558,7 @@ func TestMatrix_WatcherEnabled(t *testing.T) {
 // cleanly (watcher goroutine is not spawned).
 func TestMatrix_WatcherDisabled(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_WATCH_ENABLED"] = "false"
 	env["HARNESS_SKILLS_ENABLED"] = "true"
 	env["HARNESS_WORKSPACE"] = t.TempDir()
@@ -3794,8 +4570,7 @@ func TestMatrix_WatcherDisabled(t *testing.T) {
 // embedded cron scheduler is used and the server starts cleanly.
 func TestMatrix_EmbeddedCron(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	// No HARNESS_CRON_URL → embedded cron path.
 	env["HARNESS_WORKSPACE"] = t.TempDir()
 
@@ -3818,9 +4593,9 @@ func TestMatrix_EmbeddedCron(t *testing.T) {
 // be contactable during the test — that's OK since no requests are made to it.
 func TestMatrix_RemoteCron(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_CRON_URL"] = "http://127.0.0.1:59999" // unreachable but valid URL
+	env["HARNESS_CRON_API_KEY"] = "test-cronsd-ingress-secret"
 	env["HARNESS_WORKSPACE"] = t.TempDir()
 
 	runMatrixTest(t, env, nil)
@@ -3830,8 +4605,7 @@ func TestMatrix_RemoteCron(t *testing.T) {
 // (the default) starts cleanly. The callback manager is wired but idle.
 func TestMatrix_CallbacksEnabled(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_ENABLE_CALLBACKS"] = "true"
 	env["HARNESS_WORKSPACE"] = t.TempDir()
 
@@ -3842,8 +4616,7 @@ func TestMatrix_CallbacksEnabled(t *testing.T) {
 // starts cleanly (callbackMgr remains nil, no callback shutdown needed).
 func TestMatrix_CallbacksDisabled(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_ENABLE_CALLBACKS"] = "false"
 	env["HARNESS_WORKSPACE"] = t.TempDir()
 
@@ -3854,10 +4627,9 @@ func TestMatrix_CallbacksDisabled(t *testing.T) {
 // created when HARNESS_CONVERSATION_DB is set, and that the server starts cleanly.
 func TestMatrix_ConversationStoreEnabled(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
 	tmpDir := t.TempDir()
 	dbPath := tmpDir + "/conv.db"
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_CONVERSATION_DB"] = dbPath
 	env["HARNESS_WORKSPACE"] = tmpDir
 
@@ -3873,8 +4645,7 @@ func TestMatrix_ConversationStoreEnabled(t *testing.T) {
 // is absent the server starts cleanly (convStore remains nil).
 func TestMatrix_ConversationStoreDisabled(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_WORKSPACE"] = t.TempDir()
 	// No HARNESS_CONVERSATION_DB.
 
@@ -3885,7 +4656,6 @@ func TestMatrix_ConversationStoreDisabled(t *testing.T) {
 // and the /v1/models endpoint returns catalog contents.
 func TestMatrix_ModelCatalogPresent(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
 
 	catalogJSON := `{
 		"catalog_version": "1.0.0",
@@ -3915,7 +4685,7 @@ func TestMatrix_ModelCatalogPresent(t *testing.T) {
 	}
 	catalogFile.Close()
 
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_MODEL_CATALOG_PATH"] = catalogFile.Name()
 	env["HARNESS_WORKSPACE"] = t.TempDir()
 
@@ -3939,8 +4709,7 @@ func TestMatrix_ModelCatalogPresent(t *testing.T) {
 // absent the server starts cleanly (no catalog wired, providerRegistry is nil).
 func TestMatrix_ModelCatalogAbsent(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_WORKSPACE"] = t.TempDir()
 	// No HARNESS_MODEL_CATALOG_PATH.
 
@@ -3952,7 +4721,6 @@ func TestMatrix_ModelCatalogAbsent(t *testing.T) {
 // failure is logged as a warning, not a fatal error).
 func TestMatrix_ModelCatalogInvalid(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
 
 	badFile, err := os.CreateTemp(t.TempDir(), "bad-catalog*.json")
 	if err != nil {
@@ -3963,7 +4731,7 @@ func TestMatrix_ModelCatalogInvalid(t *testing.T) {
 	}
 	badFile.Close()
 
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_MODEL_CATALOG_PATH"] = badFile.Name()
 	env["HARNESS_WORKSPACE"] = t.TempDir()
 
@@ -3976,7 +4744,6 @@ func TestMatrix_ModelCatalogInvalid(t *testing.T) {
 // We inject a TOML config file with conclusion_watcher.enabled = true and no evaluator.
 func TestMatrix_ConclusionWatcherEnabledNoEvaluator(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
 	tmpDir := t.TempDir()
 
 	// Write a project .harness/config.toml with conclusion_watcher enabled.
@@ -3994,7 +4761,7 @@ evaluator_enabled = false
 		t.Fatalf("write config.toml: %v", err)
 	}
 
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_WORKSPACE"] = tmpDir
 
 	runMatrixTest(t, env, nil)
@@ -4005,7 +4772,6 @@ evaluator_enabled = false
 // OPENAI_API_KEY from the injected getenv.
 func TestMatrix_ConclusionWatcherEnabledWithEvaluator(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
 	tmpDir := t.TempDir()
 
 	harnessCfgDir := tmpDir + "/.harness"
@@ -4023,7 +4789,7 @@ evaluator_model = "gpt-4o-mini"
 		t.Fatalf("write config.toml: %v", err)
 	}
 
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_WORKSPACE"] = tmpDir
 
 	runMatrixTest(t, env, nil)
@@ -4034,10 +4800,9 @@ evaluator_model = "gpt-4o-mini"
 // cleanly without error).
 func TestMatrix_RelativeSubagentWorktreeRoot(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
 	tmpDir := t.TempDir()
 
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_WORKSPACE"] = tmpDir
 	// Relative path: should be resolved relative to filepath.Dir(workspace).
 	env["HARNESS_SUBAGENT_WORKTREE_ROOT"] = "worktrees"
@@ -4049,11 +4814,10 @@ func TestMatrix_RelativeSubagentWorktreeRoot(t *testing.T) {
 // HARNESS_SUBAGENT_WORKTREE_ROOT is accepted without transformation.
 func TestMatrix_AbsoluteSubagentWorktreeRoot(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
 	tmpDir := t.TempDir()
 	worktreeRoot := t.TempDir() // absolute path
 
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_WORKSPACE"] = tmpDir
 	env["HARNESS_SUBAGENT_WORKTREE_ROOT"] = worktreeRoot
 
@@ -4064,7 +4828,6 @@ func TestMatrix_AbsoluteSubagentWorktreeRoot(t *testing.T) {
 // is respected: skills are loaded from the custom dir and the server starts cleanly.
 func TestMatrix_SkillsEnabledWithCustomGlobalDir(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
 	globalDir := t.TempDir()
 	workspace := t.TempDir()
 
@@ -4078,7 +4841,7 @@ func TestMatrix_SkillsEnabledWithCustomGlobalDir(t *testing.T) {
 		t.Fatalf("write SKILL.md: %v", err)
 	}
 
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_WORKSPACE"] = workspace
 	env["HARNESS_GLOBAL_DIR"] = globalDir
 	env["HARNESS_SKILLS_ENABLED"] = "true"
@@ -4100,17 +4863,128 @@ func TestMatrix_SkillsEnabledWithCustomGlobalDir(t *testing.T) {
 	})
 }
 
+// TestMatrix_SkillsEnabledWithIsolatedSkillsDir proves HARNESS_SKILLS_DIR is
+// the single global skill root: the loader and /v1/skills must observe the
+// override rather than silently falling back to HARNESS_GLOBAL_DIR/skills.
+func TestMatrix_SkillsEnabledWithIsolatedSkillsDir(t *testing.T) {
+	t.Parallel()
+	globalDir := t.TempDir()
+	overrideDir := t.TempDir()
+	workspace := t.TempDir()
+	writeMatrixSkill := func(root, name string) {
+		t.Helper()
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+		content := fmt.Sprintf("---\nname: %s\ndescription: %s regression skill\nversion: 1\n---\nHello", name, name)
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	writeMatrixSkill(filepath.Join(globalDir, "skills"), "legacy-global-skill")
+	writeMatrixSkill(overrideDir, "isolated-global-skill")
+
+	env := baseEnv("127.0.0.1:0")
+	env["HARNESS_WORKSPACE"] = workspace
+	env["HARNESS_GLOBAL_DIR"] = globalDir
+	env["HARNESS_SKILLS_DIR"] = "  " + overrideDir + "  "
+	env["HARNESS_SKILLS_ENABLED"] = "true"
+
+	runMatrixTest(t, env, func(addr string) {
+		resp, err := http.Get("http://" + addr + "/v1/skills") //nolint:noctx
+		if err != nil {
+			t.Fatalf("GET /v1/skills: %v", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatalf("read /v1/skills: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /v1/skills status=%d body=%s", resp.StatusCode, body)
+		}
+		if !strings.Contains(string(body), "isolated-global-skill") {
+			t.Fatalf("override skill missing from catalog: %s", body)
+		}
+		if strings.Contains(string(body), "legacy-global-skill") {
+			t.Fatalf("legacy global skill escaped override boundary: %s", body)
+		}
+	})
+}
+
+// TestMatrix_SkillsDirOverrideWatcherReload proves the watcher polls the same
+// override directory used by the loader and tool registry.
+func TestMatrix_SkillsDirOverrideWatcherReload(t *testing.T) {
+	t.Parallel()
+	overrideDir := t.TempDir()
+	env := baseEnv("127.0.0.1:0")
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+	env["HARNESS_GLOBAL_DIR"] = t.TempDir()
+	env["HARNESS_SKILLS_DIR"] = overrideDir
+	env["HARNESS_SKILLS_ENABLED"] = "true"
+	env["HARNESS_WATCH_ENABLED"] = "true"
+	env["HARNESS_WATCH_INTERVAL_SECONDS"] = "1"
+
+	runMatrixTest(t, env, func(addr string) {
+		dir := filepath.Join(overrideDir, "watched-isolated-skill")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir watched skill: %v", err)
+		}
+		content := "---\nname: watched-isolated-skill\ndescription: watcher isolation regression\nversion: 1\n---\nHello"
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write watched skill: %v", err)
+		}
+
+		deadline := time.Now().Add(4 * time.Second)
+		for time.Now().Before(deadline) {
+			resp, err := http.Get("http://" + addr + "/v1/skills") //nolint:noctx
+			if err == nil {
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK && strings.Contains(string(body), "watched-isolated-skill") {
+					return
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatal("watcher did not reload skill created in HARNESS_SKILLS_DIR")
+	})
+}
+
+// TestMatrix_RelativeSkillsDirOverrideRejectedBeforeListener prevents a
+// working-directory-dependent global write root from reaching daemon startup.
+func TestMatrix_RelativeSkillsDirOverrideRejectedBeforeListener(t *testing.T) {
+	t.Parallel()
+	env := baseEnv("127.0.0.1:0")
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+	env["HARNESS_SKILLS_DIR"] = "relative-skills"
+	listenerCalled := false
+	err := runWithSignalsWithDeps(make(chan os.Signal, 1), func(key string) string { return env[key] }, func(openai.Config) (harness.Provider, error) {
+		return &noopProvider{}, nil
+	}, "", runDeps{listen: func(string, string) (net.Listener, error) {
+		listenerCalled = true
+		return nil, errors.New("listener must not be called for invalid skills directory")
+	}})
+	if err == nil || !strings.Contains(err.Error(), "HARNESS_SKILLS_DIR must be an absolute path") {
+		t.Fatalf("relative HARNESS_SKILLS_DIR error = %v, want absolute-path validation", err)
+	}
+	if listenerCalled {
+		t.Fatal("relative HARNESS_SKILLS_DIR reached listener startup")
+	}
+}
+
 // TestMatrix_ProviderAPIKeyCapture verifies that the OpenAI API key is passed
 // through the injected getenv → provider factory. We capture the Config passed
 // to newProvider and assert its APIKey field matches what was injected.
 func TestMatrix_ProviderAPIKeyCapture(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
 
 	var capturedKey string
 	var captureMu sync.Mutex
+	providerStarted := make(chan struct{})
 
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["OPENAI_API_KEY"] = "matrix-test-key-xyz"
 	env["HARNESS_WORKSPACE"] = t.TempDir()
 
@@ -4123,11 +4997,16 @@ func TestMatrix_ProviderAPIKeyCapture(t *testing.T) {
 			captureMu.Lock()
 			capturedKey = cfg.APIKey
 			captureMu.Unlock()
+			close(providerStarted)
 			return &noopProvider{}, nil
 		}, "")
 	}()
 
-	awaitHealthy(t, addr, 3*time.Second)
+	select {
+	case <-providerStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for provider factory")
+	}
 	sig <- os.Interrupt
 
 	select {
@@ -4166,37 +5045,14 @@ func TestRunWithSignalsInvalidModelCatalogContinues(t *testing.T) {
 	}
 	badCatalog.Close()
 
-	addr := freeLocalAddr(t)
 	env := map[string]string{
 		"OPENAI_API_KEY":             "test-key",
-		"HARNESS_ADDR":               addr,
+		"HARNESS_ADDR":               "127.0.0.1:0",
 		"HARNESS_MEMORY_MODE":        "off",
 		"HARNESS_WORKSPACE":          workspaceDir,
 		"HARNESS_MODEL_CATALOG_PATH": badCatalog.Name(),
 	}
-	getenv := func(key string) string { return env[key] }
-	sig := make(chan os.Signal, 1)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
-			return &noopProvider{}, nil
-		}, "")
-	}()
-
-	awaitHealthy(t, addr, 3*time.Second)
-	time.Sleep(100 * time.Millisecond)
-	sig <- os.Interrupt
-
-	select {
-	case err := <-done:
-		// Invalid model catalog must NOT abort the server; nil error expected.
-		if err != nil {
-			t.Fatalf("expected server to continue despite invalid model catalog; got: %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatalf("timed out waiting for graceful shutdown")
-	}
+	runInvalidCatalogMatrixTest(t, env)
 }
 
 // TestMatrix_MaxStepsFromEnv verifies that HARNESS_MAX_STEPS is applied to the
@@ -4205,8 +5061,7 @@ func TestRunWithSignalsInvalidModelCatalogContinues(t *testing.T) {
 // the server starts cleanly with a non-default max steps value.
 func TestMatrix_MaxStepsFromEnv(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_MAX_STEPS"] = "25"
 	env["HARNESS_WORKSPACE"] = t.TempDir()
 
@@ -4217,12 +5072,11 @@ func TestMatrix_MaxStepsFromEnv(t *testing.T) {
 // provider factory via the openai.Config.Model field.
 func TestMatrix_ModelFromEnv(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
 
 	var capturedModel string
 	var captureMu sync.Mutex
 
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_MODEL"] = "gpt-4.1-matrix"
 	env["HARNESS_WORKSPACE"] = t.TempDir()
 
@@ -4239,7 +5093,6 @@ func TestMatrix_ModelFromEnv(t *testing.T) {
 		}, "")
 	}()
 
-	awaitHealthy(t, addr, 3*time.Second)
 	sig <- os.Interrupt
 
 	select {
@@ -4264,11 +5117,10 @@ func TestMatrix_ModelFromEnv(t *testing.T) {
 // is honoured: setting a low value (1 day) starts the retention cleaner cleanly.
 func TestMatrix_ConversationRetentionPolicy(t *testing.T) {
 	t.Parallel()
-	addr := freeLocalAddr(t)
 	tmpDir := t.TempDir()
 	dbPath := tmpDir + "/conv-retention.db"
 
-	env := baseEnv(addr)
+	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_WORKSPACE"] = tmpDir
 	env["HARNESS_CONVERSATION_DB"] = dbPath
 	env["HARNESS_CONVERSATION_RETENTION_DAYS"] = "1"
@@ -4354,17 +5206,34 @@ func TestShutdownCronOrderingDeterministic(t *testing.T) {
 			"HARNESS_WORKSPACE":   workspaceDir,
 			"HARNESS_CRON_URL":    "", // embedded cron
 		}
+		disableCallbacksForUnrelatedHarnessFixture(env)
 		getenv := func(key string) string { return env[key] }
 		sig := make(chan os.Signal, 1)
+		listenerAddr := make(chan string, 1)
+		wrappedListen := func(network, address string) (net.Listener, error) {
+			listener, err := net.Listen(network, address)
+			if err == nil {
+				listenerAddr <- listener.Addr().String()
+			}
+			return listener, err
+		}
 
 		done := make(chan error, 1)
 		go func() {
-			done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+			done <- runWithSignalsWithDeps(sig, getenv, func(openai.Config) (harness.Provider, error) {
 				return &noopProvider{}, nil
-			}, "")
+			}, "", runDeps{listen: wrappedListen})
 		}()
 
-		time.Sleep(80 * time.Millisecond)
+		var addr string
+		select {
+		case addr = <-listenerAddr:
+		case err := <-done:
+			t.Fatalf("iteration %d: server returned before listener readiness: %v", i, err)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: timed out waiting for listener readiness", i)
+		}
+		awaitHealthyOrRunFailure(t, addr, done, 5*time.Second)
 		sig <- os.Interrupt
 
 		select {
@@ -4386,6 +5255,12 @@ func TestShutdownConversationCleanerCancellation(t *testing.T) {
 
 	workspaceDir := t.TempDir()
 	convDBPath := workspaceDir + "/conv.db"
+	cleaner := &heldConversationCleaner{
+		started:          make(chan struct{}),
+		cancellationSeen: make(chan struct{}),
+		release:          make(chan struct{}),
+		done:             make(chan struct{}),
+	}
 
 	env := map[string]string{
 		"OPENAI_API_KEY":                      "test-key",
@@ -4395,35 +5270,58 @@ func TestShutdownConversationCleanerCancellation(t *testing.T) {
 		"HARNESS_CONVERSATION_DB":             convDBPath,
 		"HARNESS_CONVERSATION_RETENTION_DAYS": "30",
 	}
+	disableCallbacksForUnrelatedHarnessFixture(env)
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+		done <- runWithSignalsWithDeps(sig, getenv, func(openai.Config) (harness.Provider, error) {
 			return &noopProvider{}, nil
-		}, "")
+		}, "", runDeps{
+			newConversationCleaner: func(harness.ConversationStore, int) conversationCleanerStarter {
+				return cleaner
+			},
+		})
 	}()
 
-	time.Sleep(120 * time.Millisecond)
+	awaitLifecycleSignalOrRunFailure(t, "startup", cleaner.started, done)
 	sig <- os.Interrupt
 
+	awaitLifecycleSignalOrRunFailure(t, "cancellation", cleaner.cancellationSeen, done)
+
+	// The cleaner has observed cancellation but has not yet acknowledged exit.
+	// Returning here would allow deferred store closure to race the cleaner.
+	select {
+	case err := <-done:
+		t.Fatalf("shutdown returned before conversation cleaner exit acknowledgement: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(cleaner.release)
+	select {
+	case <-cleaner.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("conversation cleaner did not acknowledge release")
+	}
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("expected clean shutdown with conversation cleaner; got: %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out: conversation cleaner cancellation may have hung")
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not return after conversation cleaner exit acknowledgement")
 	}
 }
 
 func TestStartupFailureCancelsConversationCleaner(t *testing.T) {
 	t.Parallel()
 
-	cleaner := &recordingConversationCleaner{
-		started: make(chan struct{}),
-		done:    make(chan struct{}),
+	cleaner := &heldConversationCleaner{
+		started:          make(chan struct{}),
+		cancellationSeen: make(chan struct{}),
+		release:          make(chan struct{}),
+		done:             make(chan struct{}),
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -4441,35 +5339,43 @@ func TestStartupFailureCancelsConversationCleaner(t *testing.T) {
 		"HARNESS_CONVERSATION_DB":             filepath.Join(workspaceDir, "conv.db"),
 		"HARNESS_CONVERSATION_RETENTION_DAYS": "30",
 	}
+	disableCallbacksForUnrelatedHarnessFixture(env)
 	getenv := func(key string) string { return env[key] }
 
-	err = runWithSignalsWithDeps(
-		make(chan os.Signal, 1),
-		getenv,
-		func(openai.Config) (harness.Provider, error) {
-			return &noopProvider{}, nil
-		},
-		"",
-		runDeps{
-			newConversationCleaner: func(harness.ConversationStore, int) conversationCleanerStarter {
-				return cleaner
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignalsWithDeps(
+			make(chan os.Signal, 1),
+			getenv,
+			func(openai.Config) (harness.Provider, error) {
+				return &noopProvider{}, nil
 			},
-		},
-	)
-	if err == nil {
-		t.Fatal("expected startup failure when port is already bound")
-	}
+			"",
+			runDeps{
+				newConversationCleaner: func(harness.ConversationStore, int) conversationCleanerStarter {
+					return cleaner
+				},
+			},
+		)
+	}()
+
+	awaitLifecycleSignalOrRunFailure(t, "startup", cleaner.started, done)
+	awaitLifecycleSignalOrRunFailure(t, "cancellation", cleaner.cancellationSeen, done)
 
 	select {
-	case <-cleaner.started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("conversation cleaner was not started before startup failure")
+	case err := <-done:
+		t.Fatalf("startup failure returned before conversation cleaner exit acknowledgement: %v", err)
+	case <-time.After(200 * time.Millisecond):
 	}
 
+	close(cleaner.release)
 	select {
-	case <-cleaner.done:
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected startup failure when port is already bound")
+		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("expected startup failure to cancel the conversation cleaner")
+		t.Fatal("startup failure did not return after conversation cleaner exit acknowledgement")
 	}
 }
 
@@ -4691,6 +5597,14 @@ func TestRunMCPStdioCatalogComesFromSharedRegistry(t *testing.T) {
 		if !got[want] {
 			t.Errorf("stdio catalog is missing %q (catalog has %d tools)", want, len(runtime.catalog))
 		}
+	}
+}
+
+func TestRunMCPStdioRejectsRelativeProfilesDirectory(t *testing.T) {
+	t.Setenv("HARNESS_PROFILES_DIR", "relative/profiles")
+	err := runMCPStdio(make(chan os.Signal, 1))
+	if err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("relative MCP profile directory error = %v, want absolute-path rejection", err)
 	}
 }
 

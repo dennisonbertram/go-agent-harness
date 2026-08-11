@@ -6,6 +6,7 @@ package tui_test
 
 import (
 	"encoding/json"
+	tea "github.com/charmbracelet/bubbletea"
 	"strings"
 	"testing"
 
@@ -289,6 +290,16 @@ func TestGhostCard_TwoSequentialToolsBothAppearOnce(t *testing.T) {
 		Raw:       []byte(`{"tool":"write_file","call_id":"cSeqB","output":"ok","duration_ms":5}`),
 	})
 	m = m6.(tui.Model)
+
+	// Tool calls now collapse into one summary line by default (issue #1308), so
+	// the anti-ghost-card assertions below run against the expanded group. The
+	// collapsed default is asserted first so a regression in either state fails.
+	if collapsed := m.View(); !strings.Contains(collapsed, "2 tool calls") {
+		t.Errorf("expected a collapsed summary before expanding; view=%q", collapsed)
+	}
+
+	m7, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = m7.(tui.Model)
 
 	view := m.View()
 

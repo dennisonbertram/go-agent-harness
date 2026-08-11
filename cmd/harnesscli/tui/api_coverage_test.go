@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestStartRunCmdIncludesWorkspacePath(t *testing.T) {
@@ -32,6 +36,88 @@ func TestStartRunCmdIncludesWorkspacePath(t *testing.T) {
 	}
 	if got.WorkspacePath != "/tmp/project-root" {
 		t.Fatalf("workspace_path = %q, want /tmp/project-root", got.WorkspacePath)
+	}
+}
+
+// TestInitCommand_MissingRunIDStartResponseCannotLeakIntoLaterRun proves a
+// malformed but successful-looking run-create response fails closed. Without
+// a run ID, /init must be abandoned before a later ordinary run can bind its
+// pending AGENTS.md write.
+func TestInitCommand_MissingRunIDStartResponseCannotLeakIntoLaterRun(t *testing.T) {
+	ws := t.TempDir()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer ts.Close()
+
+	cfg := DefaultTUIConfig()
+	cfg.BaseURL = ts.URL
+	cfg.Workspace = ws
+	m := New(cfg)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = m2.(Model)
+
+	cmds, _ := executeInitCommand(&m, Command{Name: "init", Raw: "/init"})
+	if len(cmds) < 2 {
+		t.Fatal("/init must queue a start command")
+	}
+	msg := cmds[len(cmds)-1]()
+	if _, ok := msg.(RunFailedMsg); !ok {
+		t.Fatalf("missing run_id must return RunFailedMsg, got %T: %#v", msg, msg)
+	}
+	m2, _ = m.Update(msg)
+	m = m2.(Model)
+
+	// Even a later close notification and ordinary run must not revive /init.
+	m2, _ = m.Update(SSEDoneMsg{EventType: "bridge.closed"})
+	m = m2.(Model)
+	m2, _ = m.Update(RunStartedMsg{RunID: "run-next"})
+	m = m2.(Model)
+	m2, _ = m.Update(AssistantDeltaMsg{Delta: "# Ordinary Run\n"})
+	m = m2.(Model)
+	m2, _ = m.Update(RunCompletedMsg{RunID: "run-next"})
+	m = m2.(Model)
+
+	if _, err := os.Stat(filepath.Join(ws, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("missing-ID /init start leaked into later run; AGENTS.md stat err = %v", err)
+	}
+}
+
+// TestStartRunCmdNormalizesAndValidatesRunID keeps protocol identities exact:
+// accepted IDs are whitespace-normalized, while a blank JSON value is the same
+// invalid response as an omitted run_id.
+func TestStartRunCmdNormalizesAndValidatesRunID(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		response  string
+		wantRunID string
+	}{
+		{name: "surrounding whitespace is trimmed", response: `{"run_id":"  run-trimmed  "}`, wantRunID: "run-trimmed"},
+		{name: "whitespace only is rejected", response: `{"run_id":" \t\n "}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.response))
+			}))
+			defer ts.Close()
+
+			msg := startRunCmd(ts.URL, "hello", "", "gpt-test", "openai", "", "default", "/tmp/ws", "", nil, nil)()
+			if tc.wantRunID == "" {
+				if _, ok := msg.(RunFailedMsg); !ok {
+					t.Fatalf("blank run_id must return RunFailedMsg, got %T: %#v", msg, msg)
+				}
+				return
+			}
+			started, ok := msg.(RunStartedMsg)
+			if !ok {
+				t.Fatalf("expected RunStartedMsg, got %T: %#v", msg, msg)
+			}
+			if started.RunID != tc.wantRunID {
+				t.Fatalf("RunID = %q, want %q", started.RunID, tc.wantRunID)
+			}
+		})
 	}
 }
 

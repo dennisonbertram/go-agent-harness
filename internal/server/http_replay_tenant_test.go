@@ -28,6 +28,7 @@ const validRolloutJSONL = `{"ts":"2026-03-12T10:00:00Z","seq":1,"type":"run.star
 // configured rollout dir, so that replay path/tenant scoping can be exercised.
 type replayTenantFixture struct {
 	ts         *httptest.Server
+	store      *store.MemoryStore
 	rolloutDir string
 	tokenA     string
 	tenantA    string
@@ -94,6 +95,7 @@ func newReplayTenantFixture(t *testing.T) *replayTenantFixture {
 
 	return &replayTenantFixture{
 		ts:         ts,
+		store:      ms,
 		rolloutDir: rolloutDir,
 		tokenA:     tokenA,
 		tenantA:    tenantA,
@@ -210,6 +212,40 @@ func (f *replayTenantFixture) replay(t *testing.T, token string, body map[string
 	defer resp.Body.Close()
 	rb, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(rb)
+}
+
+func (f *replayTenantFixture) replayDurable(t *testing.T, token, runID string) (int, string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, f.ts.URL+"/v1/runs/"+runID+"/replay", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST durable replay: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body)
+}
+
+func TestDurableReplayTenantAndScopeGates(t *testing.T) {
+	t.Parallel()
+	f := newReplayTenantFixture(t)
+	sourceID, _ := f.recordRealRollout(t, f.tokenA, "tenant A durable replay source")
+
+	if code, body := f.replayDurable(t, f.tokenA, sourceID); code != http.StatusAccepted {
+		t.Fatalf("owner durable replay: got %d, want 202; body %s", code, body)
+	}
+	if code, body := f.replayDurable(t, f.tokenB, sourceID); code != http.StatusNotFound {
+		t.Fatalf("cross-tenant durable replay: got %d, want opaque 404; body %s", code, body)
+	}
+
+	readOnly, readOnlyKey := generateFastAPIKey(t, f.tenantA, "replay read only", []string{store.ScopeRunsRead})
+	if err := f.store.CreateAPIKey(context.Background(), readOnlyKey); err != nil {
+		t.Fatalf("CreateAPIKey(read_only): %v", err)
+	}
+	if code, body := f.replayDurable(t, readOnly, sourceID); code != http.StatusForbidden {
+		t.Fatalf("read-only durable replay: got %d, want 403; body %s", code, body)
+	}
 }
 
 // TestReplayTenant_SameTenant_RealRolloutSucceeds (T-PFIX-4 regression): with auth

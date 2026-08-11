@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,6 +34,43 @@ func TestBuildMCPStdioRuntimeCreatesCatalogAndServer(t *testing.T) {
 	}
 	if got, want := runtime.server.ToolCount(), len(runtime.catalog); got != want {
 		t.Fatalf("ToolCount: got %d want %d", got, want)
+	}
+}
+
+// Regression for #1187: MCP stdio must use the same explicitly supplied
+// profile paths as HTTP runtime composition. The catalog must expose mutation
+// tools and their writes must remain in the isolated directory, never HOME.
+func TestBuildMCPStdioRuntimeWithProfileDirsUsesIsolatedMutationDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	projectDir := filepath.Join(workspace, ".harness", "profiles")
+	userDir := filepath.Join(t.TempDir(), "isolated-profiles")
+	runtime, err := buildMCPStdioRuntimeWithProfileDirs(workspace, projectDir, userDir)
+	if err != nil {
+		t.Fatalf("build MCP runtime with isolated profiles: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.registry.Shutdown(context.Background()) })
+
+	found := map[string]bool{}
+	for _, tool := range runtime.catalog {
+		found[tool.Definition.Name] = true
+	}
+	for _, name := range []string{"create_profile", "update_profile", "delete_profile"} {
+		if !found[name] {
+			t.Fatalf("MCP catalog missing %q", name)
+		}
+	}
+	if _, err := runtime.registry.Execute(context.Background(), "create_profile", json.RawMessage(`{"name":"mcp-isolated","description":"MCP isolated profile","model":"fake-model","max_steps":2}`)); err != nil {
+		t.Fatalf("create_profile through MCP registry: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(userDir, "mcp-isolated.toml")); err != nil {
+		t.Fatalf("isolated MCP profile missing: %v", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".harness", "profiles", "mcp-isolated.toml")); !os.IsNotExist(err) {
+		t.Fatalf("MCP mutation touched default home profile directory: %v", err)
 	}
 }
 
@@ -134,11 +173,9 @@ func TestBuildHTTPRuntimeAssemblesRunnerSubagentsAndHTTPServer(t *testing.T) {
 	if runtime.httpServer.MaxHeaderBytes != 1<<20 {
 		t.Fatalf("MaxHeaderBytes: got %d want %d", runtime.httpServer.MaxHeaderBytes, 1<<20)
 	}
-	if runtime.mcpServer == nil {
-		t.Fatal("expected mcp server to be initialized")
-	}
-
-	// Verify the /mcp endpoint is reachable via the top-level mux.
+	// /mcp is now served by the shared harnessmcp dispatcher rather than a
+	// separate mcpserver.Server, so there is no second server object to check —
+	// the route's behaviour below is the assertion that matters (issue #1317).
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"initialize","id":1}`))
 	runtime.handler.ServeHTTP(rec, req)

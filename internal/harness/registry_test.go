@@ -54,6 +54,19 @@ func TestRegistry_RegisterWithOptions(t *testing.T) {
 	}
 }
 
+func TestRegistry_RegisterWithOptions_PreservesInventoryProvenance(t *testing.T) {
+	r := NewRegistry()
+	if err := r.RegisterWithOptions(ToolDefinition{Name: "conditional"}, dummyHandler, RegisterOptions{
+		Tier: htools.TierDeferred, Owner: "harness.sourcegraph", Condition: "sourcegraph endpoint configured",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	meta := r.DefinitionsWithMetadata()
+	if len(meta) != 1 || meta[0].Owner != "harness.sourcegraph" || meta[0].Condition != "sourcegraph endpoint configured" {
+		t.Fatalf("metadata = %#v", meta)
+	}
+}
+
 func TestRegistry_RegisterWithOptions_DefaultTier(t *testing.T) {
 	r := NewRegistry()
 	def := ToolDefinition{Name: "default_tier_tool", Description: "no tier set"}

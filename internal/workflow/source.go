@@ -464,6 +464,13 @@ func (m *SourceManager) build(ctx context.Context, bundle *SourceBundle) error {
 }
 
 func (m *SourceManager) runSourceWorkflow(ctx *Context, bundle *SourceBundle) (any, error) {
+	return m.runSourceWorkflowWithBeforeInitialWrite(ctx, bundle, nil)
+}
+
+// runSourceWorkflowWithBeforeInitialWrite exposes only the lifecycle boundary
+// needed to make child-exit-before-write ordering deterministic in package
+// tests. Production calls pass nil and retain the exact run path.
+func (m *SourceManager) runSourceWorkflowWithBeforeInitialWrite(ctx *Context, bundle *SourceBundle, beforeInitialWrite func(*exec.Cmd)) (any, error) {
 	if err := m.build(ctx.ctx, bundle); err != nil {
 		return nil, err
 	}
@@ -490,36 +497,95 @@ func (m *SourceManager) runSourceWorkflow(ctx *Context, bundle *SourceBundle) (a
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	if beforeInitialWrite != nil {
+		beforeInitialWrite(cmd)
+	}
 	enc := json.NewEncoder(stdin)
-	if err := enc.Encode(protocolResponse{Type: "start", Result: mustRaw(ctx.Args)}); err != nil {
-		_ = killProcessGroup(cmd)
-		return nil, err
+	initialWriteErr := enc.Encode(protocolResponse{Type: "start", Result: mustRaw(ctx.Args)})
+	initialWriteKillRequested := false
+	var result any
+	var protocolErr error
+	if initialWriteErr != nil {
+		initialWriteKillRequested = killProcessGroup(cmd) == nil
+	} else {
+		result, protocolErr = m.serveProtocol(runCtx, ctx, stdout, enc)
+		if protocolErr != nil {
+			_ = killProcessGroup(cmd)
+		}
 	}
 
-	result, protocolErr := m.serveProtocol(runCtx, ctx, stdout, enc)
-	if protocolErr != nil {
-		_ = killProcessGroup(cmd)
-	}
 	closeErr := stdin.Close()
 	waitErr := cmd.Wait()
-	if runCtx.Err() == context.DeadlineExceeded {
+	initialWriteKillCausedWait := initialWriteKillRequested && processWaitWasKilled(waitErr)
+	deadlineExceeded := runCtx.Err() == context.DeadlineExceeded
+	if deadlineExceeded {
 		_ = killProcessGroup(cmd)
-		return nil, fmt.Errorf("workflow %q timed out after %s", bundle.Manifest.Name, timeout)
 	}
 	if protocolErr != nil {
 		_ = killProcessGroup(cmd)
-		return nil, protocolErr
 	}
-	if closeErr != nil {
-		return nil, closeErr
+	return resolveSourceWorkflowOutcome(sourceWorkflowOutcome{
+		result:                     result,
+		workflowName:               bundle.Manifest.Name,
+		timeout:                    timeout,
+		deadlineExceeded:           deadlineExceeded,
+		protocolErr:                protocolErr,
+		initialWriteErr:            initialWriteErr,
+		initialWriteKillCausedWait: initialWriteKillCausedWait,
+		closeErr:                   closeErr,
+		waitErr:                    waitErr,
+		stderr:                     stderr.String(),
+	})
+}
+
+type sourceWorkflowOutcome struct {
+	result                     any
+	workflowName               string
+	timeout                    time.Duration
+	deadlineExceeded           bool
+	protocolErr                error
+	initialWriteErr            error
+	initialWriteKillCausedWait bool
+	closeErr                   error
+	waitErr                    error
+	stderr                     string
+}
+
+// resolveSourceWorkflowOutcome keeps primary execution failures ahead of
+// transport and cleanup failures, without reporting a parent-requested kill as
+// if it were an independent child failure.
+func resolveSourceWorkflowOutcome(outcome sourceWorkflowOutcome) (any, error) {
+	if outcome.deadlineExceeded {
+		return nil, fmt.Errorf("workflow %q timed out after %s", outcome.workflowName, outcome.timeout)
 	}
-	if waitErr != nil {
-		return nil, fmt.Errorf("workflow %q exited: %w: %s", bundle.Manifest.Name, waitErr, boundedString(stderr.String(), maxWorkflowStderrBytes))
+	if outcome.protocolErr != nil {
+		return nil, outcome.protocolErr
 	}
-	if result == nil {
-		return nil, fmt.Errorf("workflow %q exited without a result", bundle.Manifest.Name)
+	if outcome.initialWriteErr != nil && outcome.initialWriteKillCausedWait {
+		return nil, outcome.initialWriteErr
 	}
-	return result, nil
+	if outcome.waitErr != nil {
+		return nil, fmt.Errorf("workflow %q exited: %w: %s", outcome.workflowName, outcome.waitErr, boundedString(outcome.stderr, maxWorkflowStderrBytes))
+	}
+	if outcome.initialWriteErr != nil {
+		return nil, outcome.initialWriteErr
+	}
+	if outcome.closeErr != nil {
+		return nil, outcome.closeErr
+	}
+	if outcome.result == nil {
+		return nil, fmt.Errorf("workflow %q exited without a result", outcome.workflowName)
+	}
+	return outcome.result, nil
+}
+
+func processWaitWasKilled(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ProcessState == nil {
+		return false
+	}
+	status, ok := exitErr.ProcessState.Sys().(syscall.WaitStatus)
+	return ok && status.Signaled() && status.Signal() == syscall.SIGKILL
 }
 
 type protocolMessage struct {

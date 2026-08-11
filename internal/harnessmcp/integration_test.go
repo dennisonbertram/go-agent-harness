@@ -106,8 +106,11 @@ func TestT11_Integration(t *testing.T) {
 	if err := json.Unmarshal(listResp.Result, &listResult); err != nil {
 		t.Fatalf("unmarshal tools/list result: %v", err)
 	}
-	if len(listResult.Tools) != 5 {
-		t.Errorf("got %d tools, want 5", len(listResult.Tools))
+	// Assert against the definitions rather than a hardcoded count, so adding a
+	// tool does not require editing an unrelated integration test — and so this
+	// still fails if tools/list and toolDefs ever disagree.
+	if len(listResult.Tools) != len(toolDefs()) {
+		t.Errorf("got %d tools over the wire, want %d from toolDefs", len(listResult.Tools), len(toolDefs()))
 	}
 
 	// Verify start_run response (id=3).

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"go-agent-harness/internal/workspace"
@@ -12,6 +13,8 @@ import (
 
 // Compile-time interface compliance check.
 var _ workspace.Workspace = (*mockWorkspace)(nil)
+
+var defaultRegistryTestSequence atomic.Uint64
 
 // mockWorkspace is a test implementation of the Workspace interface.
 type mockWorkspace struct {
@@ -279,8 +282,9 @@ func TestRegistry_Concurrent(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestDefaultRegistry_Functions(t *testing.T) {
-	// Use unique names to avoid conflicts with other tests sharing the default registry.
-	const implName = "test-default-impl-unique-12345"
+	// The default registry intentionally persists for the process lifetime, so
+	// each `-count` invocation must own a distinct name.
+	implName := fmt.Sprintf("test-default-impl-%d", defaultRegistryTestSequence.Add(1))
 
 	f, created := newMockFactory("http://harness.local", "/ws/default")
 	if err := workspace.Register(implName, f); err != nil {

@@ -21,6 +21,42 @@ import (
 	"go-agent-harness/internal/store"
 )
 
+// Issue #1158: the additive watermark must not weaken the messages route's
+// authorization order. A caller without runs:read is rejected before even an
+// unknown conversation is resolved; a scoped caller reaches the normal 404.
+func TestConversationMessagesWatermark_RequiresRunsReadBeforeLookup(t *testing.T) {
+	t.Parallel()
+
+	ms := store.NewMemoryStore()
+	const tenantID = "tenant-conv-messages-watermark"
+	noScopeToken, noScopeKey := generateFastAPIKey(t, tenantID, "no scopes", nil)
+	if err := ms.CreateAPIKey(context.Background(), noScopeKey); err != nil {
+		t.Fatalf("CreateAPIKey(no scope): %v", err)
+	}
+	readToken, readKey := generateFastAPIKey(t, tenantID, "read", []string{store.ScopeRunsRead})
+	if err := ms.CreateAPIKey(context.Background(), readKey); err != nil {
+		t.Fatalf("CreateAPIKey(read): %v", err)
+	}
+
+	runner := harness.NewRunner(fakeprovider.New(nil), harness.NewRegistry(), harness.RunnerConfig{Store: ms})
+	t.Cleanup(func() { _ = runner.Shutdown(context.Background()) })
+	handler := server.NewWithOptions(server.ServerOptions{Runner: runner, Store: ms})
+
+	request := func(token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v1/conversations/not-visible/messages", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		return response
+	}
+	if response := request(noScopeToken); response.Code != http.StatusForbidden {
+		t.Fatalf("no-scope status = %d, want %d; body=%s", response.Code, http.StatusForbidden, response.Body.String())
+	}
+	if response := request(readToken); response.Code != http.StatusNotFound {
+		t.Fatalf("read-scope status = %d, want %d; body=%s", response.Code, http.StatusNotFound, response.Body.String())
+	}
+}
+
 // BT-004: the route requires runs:read scope, same as every sibling GET
 // conversation sub-resource route.
 func TestConversationEvents_RequiresRunsReadScope(t *testing.T) {

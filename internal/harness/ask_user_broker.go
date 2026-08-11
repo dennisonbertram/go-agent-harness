@@ -72,22 +72,73 @@ func (b *InMemoryAskUserQuestionBroker) Ask(ctx context.Context, req htools.AskU
 	b.pending[req.RunID] = entry
 	b.mu.Unlock()
 
-	timer := time.NewTimer(req.Timeout)
-	defer timer.Stop()
+	waitCtx, cancel := context.WithTimeout(ctx, req.Timeout)
+	defer cancel()
+
+	if req.OnPending != nil {
+		notified := make(chan struct{})
+		go func() {
+			defer close(notified)
+			req.OnPending(waitCtx, entry.pending)
+		}()
+		select {
+		case <-notified:
+		case <-waitCtx.Done():
+			answers, answeredAt, err := b.finishAskWait(ctx, req, entry)
+			if err != nil {
+				return nil, time.Time{}, err
+			}
+			if err := waitForPendingPublication(ctx, notified); err != nil {
+				return nil, time.Time{}, err
+			}
+			return answers, answeredAt, nil
+		}
+	}
 
 	select {
 	case submission := <-entry.answerC:
 		return submission.answers, submission.answeredAt, nil
-	case <-timer.C:
-		b.clearPendingIfMatch(req.RunID, entry)
+	case <-waitCtx.Done():
+		return b.finishAskWait(ctx, req, entry)
+	}
+}
+
+func (b *InMemoryAskUserQuestionBroker) finishAskWait(
+	ctx context.Context,
+	req htools.AskUserQuestionRequest,
+	entry *pendingUserQuestion,
+) (map[string]string, time.Time, error) {
+	b.mu.Lock()
+	current, stillPending := b.pending[req.RunID]
+	if stillPending && current == entry {
+		delete(b.pending, req.RunID)
+		b.mu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return nil, time.Time{}, err
+		}
 		return nil, time.Time{}, &htools.AskUserQuestionTimeoutError{
 			RunID:      req.RunID,
 			CallID:     req.CallID,
 			DeadlineAt: entry.pending.DeadlineAt,
 		}
+	}
+	b.mu.Unlock()
+
+	submission := <-entry.answerC
+	return submission.answers, submission.answeredAt, nil
+}
+
+// waitForPendingPublication preserves the externally visible lifecycle order
+// when an answer wins the deadline race. Once Submit has accepted an answer,
+// Ask must not let the caller emit run.resumed until the pending notifier has
+// completed run.waiting_for_user publication. The parent context remains the
+// cancellation escape hatch for a notifier that cannot complete.
+func waitForPendingPublication(ctx context.Context, notified <-chan struct{}) error {
+	select {
+	case <-notified:
+		return nil
 	case <-ctx.Done():
-		b.clearPendingIfMatch(req.RunID, entry)
-		return nil, time.Time{}, ctx.Err()
+		return ctx.Err()
 	}
 }
 
@@ -115,22 +166,10 @@ func (b *InMemoryAskUserQuestionBroker) Submit(runID string, answers map[string]
 		b.mu.Unlock()
 		return fmt.Errorf("%w: %v", ErrInvalidUserQuestionInput, err)
 	}
-	delete(b.pending, runID)
 	answeredAt := b.now().UTC()
+	entry.answerC <- askUserSubmission{answers: normalized, answeredAt: answeredAt}
+	delete(b.pending, runID)
 	b.mu.Unlock()
 
-	entry.answerC <- askUserSubmission{answers: normalized, answeredAt: answeredAt}
 	return nil
-}
-
-func (b *InMemoryAskUserQuestionBroker) clearPendingIfMatch(runID string, entry *pendingUserQuestion) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	current, ok := b.pending[runID]
-	if !ok {
-		return
-	}
-	if current == entry {
-		delete(b.pending, runID)
-	}
 }

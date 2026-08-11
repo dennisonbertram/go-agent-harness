@@ -1,5 +1,2157 @@
 # Engineering Log
 
+## 2026-08-08 — Issue #1285 attached lifecycle PTY (in implementation)
+
+- Planned boundary: ptyrunner will accept only the typed identity returned by
+  `scheduledlifecycle.Lifecycle.PTY()`. It will start a 100x30 harnesscli PTY,
+  never harnessd, so a later cron/callback proof cannot silently cross daemon
+  boundaries.
+- Regression/fix: the first real two-message run initially wrote sealed frames
+  into the package working directory because its collector lacked
+  `artifactRoot`; a subsequent run correctly rejected the stale immutable name.
+  Assigning the supplied artifact root before frame collection restores
+  containment. The focused normal/race run now proves both source-SHA-bound
+  identity and same-conversation two-message frame sealing.
+- Independent-review P1 repair: a boolean active state could accept an old
+  action handle after the next action became active, allowing historic bytes to
+  receive stale credit. Session-owned monotonically increasing action tokens
+  now require pointer/token/name identity and reject concurrent/double seals.
+  Action labels must be safe relative slugs and all attached output is derived
+  through a canonical non-root artifact directory; traversal, absolute labels,
+  and root output fail before writing.
+- Full-suite repair: the real lifecycle deadline originally began before its
+  two disposable Go binaries were built. `-coverpkg` setup could therefore
+  consume the acceptance window and falsely report that the first prompt had
+  not created a run. The deadline now starts immediately before lifecycle
+  startup, keeping build setup outside the behavior being measured.
+
+## 2026-08-07 — Issue #1268 PTY EOF drain before success cleanup
+
+- Symptom: acceptance artifacts could be raw-empty or omit a terminal tail
+  after an otherwise successful real TUI exit.
+- Cause: both success paths in `internal/acceptance/ptyrunner` called
+  `master.Close` after `ptyCmd.Wait` but before the sole collector observed
+  EOF. Closing the master can cancel the pending reader and lose unread PTY
+  bytes.
+- Fix: both success paths now defer master cleanup immediately after collector
+  setup, then perform `Wait -> collector.waitEOF -> sealFinal`. Review found
+  that separate LIFO defers could run process cleanup before master close on an
+  error return, so both now use one tested helper that closes the master before
+  process cleanup. The Linux slave-close fixture now proves EOF and final bytes
+  with `context.Background` before deferred master cleanup.
+- Compatibility: no harnessd, API, TUI, tool, timeout, artifact-format, or
+  persistence behavior changed. Linux `EIO` remains normalized only after any
+  returned bytes are appended.
+- Verification: focused normal/race repetitions and package normal/race pass;
+  full regression is the remaining pre-PR command.
+
+## 2026-08-07 — Issue #1264 Runner test recursive-RLock deadlock
+
+- Symptom: GitHub's race test for the untrusted fork-policy assertion ran for
+  nearly twenty minutes and blocked #1263.
+- Cause: the test held `Runner.mu.RLock`, called `forkedRunID`, and the helper
+  tried a second `RLock`. A concurrent terminal child queued the production
+  pruning writer; Go's writer-preference behavior then blocked the nested read
+  while the outer read could not release.
+- Repair direction: copy only required child test fields under a sole helper
+  `RLock`, then assert after unlock at both recursive call sites. Production
+  Runner locking/pruning is intentionally unchanged.
+- Review correction: `PermissionConfig` can carry mutable data, so the
+  snapshot retains only its asserted `Sandbox` and `Approval` scalar values;
+  diagnostics render those scalars rather than dereferencing a post-unlock
+  container.
+- TDD evidence: the pre-fix bounded local race target compiled and passed once
+  because the writer schedule did not arise; issue #1264 retains the decisive
+  hosted timeout stack. The repair's focused policy tests then passed 50 normal
+  and 50 race repetitions without a timeout or assertion relaxation. Complete
+  `go test -race ./internal/harness/...` and
+  `./scripts/test-regression.sh` then passed; the latter reported 85.2% total
+  coverage and zero uncovered functions.
+
+## 2026-08-07 — Issue #1260 resumed TUI reply race
+
+- Symptom: the harness persisted a fresh same-conversation assistant reply,
+  while the resumed 100x30 TUI transcript omitted it.
+- Cause: a terminal bridge message discarded its server `run_id`; it could
+  settle a newer run, while shared assistant finalization suppressed one SSE
+  copy before global ID dedupe discarded the other.
+- Fix: retain terminal `RunID`, reject stale run terminals, and scope terminal
+  finalization/pre-start assistant accumulation to a run ID.
+- Regression: deterministic conversation/run ordering tests cover same-ID
+  copies, conversation-before-start, terminal-before-final, and late prior-run
+  terminal order.
+
+## 2026-08-07 — Issue #1261 continuation conversation identity
+
+- Cause: `POST /v1/runs/{id}/continue` created a child run in the source
+  conversation but returned only the child run ID. A blank TUI then applied
+  its fresh-run fallback and subscribed to `/v1/conversations/{child}/events`,
+  which correctly returned 404 even after the assistant had replied.
+- TDD: the server response first omitted inherited `conversation_id`; TUI
+  regressions then selected the child endpoint and skipped legacy identity
+  lookup.
+- Repair: the continuation response now adds the child run's authoritative
+  `conversation_id`. `RunStartedMsg` transports it; a blank reducer adopts it,
+  while an already selected mismatched conversation is not overwritten.
+  Older servers trigger an authenticated child-run GET and fail visibly if it
+  cannot establish identity, rather than inventing child-as-conversation.
+- Verification: focused normal/race server and TUI tests passed; real 30x100
+  (100 columns × 30 rows) PTY `/resume` and `/continue` evidence passed; and
+  the exact rebased full gate passed at 85.2% coverage with zero uncovered
+  functions (`/private/tmp/gocode-1261-rebased-regression.log`).
+
+## 2026-08-07 — Issue #1254 Child Task Completion
+
+- Cause: `spawn_agent` forwarded a child allowlist but the new child run never activated its deferred `task_complete`; the step engine also treated its validated marker like ordinary tool output and requested another provider turn.
+- Fix: `RunForkedSkill` marks only internally-created depth-positive children for per-run completion activation. The Runner retains that child-only marker through allowlist, selected-profile, and skill filtering while root runs remain excluded. The step engine rejects a mixed completion turn before executing siblings and terminally completes only a successful, validated marker; existing terminal paths clean activation state.
+- Regression coverage: restrictive child activation/one provider turn, root non-visibility, mixed sibling mutation rejection, malformed marker continuation, and terminal activation cleanup.
+
+## 2026-08-07 — Issue #1255 Trusted Fork Origin
+
+- Correction: a public `ForkDepth` context value could be forged and direct fork callers could receive child control semantics. The step engine now installs a private capability binding the current Runner and live parent run; `RunForkedSkill` validates it, derives depth from stored parent state, and otherwise creates an ordinary root-like run with no control activation.
+- Precedence: mandatory child completion survives restrictive allow/profile/skill filters, but an explicit `DeniedTools` entry, pre-tool hook, or permission rule still denies it. This preserves explicit security policy while keeping normal `spawn_agent` children reliable.
+## 2026-08-07 — Issue #1256 trusted rewind workspace
+
+- Cause: rewind capture could create its point before conversation metadata was
+  durable; terminal persistence then stored an empty workspace, especially for
+  the default tenant, so the intentionally strict restore route returned 404.
+- TDD: default and named tenant cases observed a captured point with an empty
+  owner workspace on exact `36237749`.
+- Repair: SQLite now has a metadata-only upsert that records the configured
+  `WorkspaceBaseOptions.RepoPath` before capture; terminal persistence stamps
+  the same canonical root for every tenant. Fork and 404 route boundaries are
+  unchanged.
+- Verification: focused runner/server normal tests pass; full regression and
+  real 30x100 PTY evidence remain required before delivery.
+- Concurrency repair: preserving a zero-workspace terminal run through a
+  runner-side read then write still raced a concurrent configured mutating
+  run. `PreserveConversationMeta` now makes the non-empty workspace/tenant
+  decision inside one SQLite statement; a concurrent empty writer cannot erase
+  the trusted root. A focused race regression starts configured and empty
+  writers together and requires the configured root to survive.
+
+## 2026-08-07 — Issue #1246 selected-session TUI rehydration
+
+- Symptom: a rendered `/sessions` overlay listed durable conversations, but
+  Enter left the transcript server-only and `/search` could not find its reply.
+- Cause: the global Submit handler consumed Enter before the generic sessions
+  overlay router; the picker never emitted `SessionPickerSelectedMsg`.
+- TDD red: `TestIssue1246_SessionSelectionRehydratesDurableTranscript` failed
+  on exact `f8b43be` with `Enter on sessions overlay must emit a
+  selected-session command`.
+- Fix: route sessions-overlay Submit through `sessionPicker.Update`, translate
+  its component message once, and start the existing atomic selected-session
+  replay boundary. Unsupported servers retain the existing cancel-before-GET
+  fallback; an empty legacy cursor stays snapshot-only. No API change.
+- Verification: normal and race `TestIssue1246_` passed; full
+  `./scripts/test-regression.sh` passed (85.1% total coverage, zero uncovered
+  functions). Exact-head 30x100 PTY evidence at
+  `/private/tmp/gocode-issue1246-pty-20260807T154241` selected `conversation_a`,
+  rendered `FIRST_REPLY`, returned `Search: FIRST_REPLY (1 result)`, then
+  rendered `POST_SELECTION_REPLY`; the durable post-selection run was recorded
+  in that same selected conversation.
+- Review repair: selected sessions now request the supported atomic boundary
+  rather than a GET-first handoff. Regressions prove one supported boundary
+  stream/no history GET, snapshot-plus-same-text future behavior, and an
+  unsupported empty-cursor fallback that remains snapshot-only.
+## 2026-08-07 — Issue #1252 explicit model-facing cron execution mode
+
+- Cause: the deferred model-facing `cron_create` handler silently selected
+  `shell` when `execution_type` was omitted. A recurring job could therefore
+  fire and retain shell history while producing no child conversation run.
+- TDD: `TestCronCreateRequiresExplicitExecutionType` first failed because the
+  schema required only name/schedule and the handler accepted omission.
+- Repair: `execution_type` is now required in both schema and handler. Agents
+  explicitly choose `shell` with a command or `harness` with a prompt; the
+  latter retains immutable run scope and the existing same-conversation child
+  execution path. Persisted shell jobs and REST/operator APIs are unchanged.
+- Verification: focused model-tool and composed embedded harness tests pass;
+  full regression and owned PTY evidence remain required before PR completion.
+
+## 2026-08-07 — Issue #1249 causal replay-boundary repair
+
+- Review finding: an SSE marker followed by an independent `/messages` GET
+  still allowed the GET snapshot to include a later event before its queued SSE
+  frame was processed; client cursor reconciliation could not prove which copy
+  to render.
+- Repair: `Runner.SubscribeConversationSnapshotFrom` captures messages, replay,
+  and live subscription under one conversation sequence/event critical section.
+  The opt-in marker carries that snapshot; the TUI suppresses every pre-marker
+  frame, renders the marker snapshot, and routes all later events through the
+  normal reducer. Legacy HTTP 200 without acknowledgement now cancels before
+  GET-first fallback and restart.
+- Evidence: A–F ordering/fallback regressions, full TUI normal/race, and the
+  full regression gate passed (85.1% coverage; zero uncovered functions).
+
+## 2026-08-07 — Issue #1249 conversation history/SSE replay boundary
+
+- Cause: a selected TUI conversation fetched and rendered messages before it
+  opened the empty-cursor conversation stream. Empty cursor is a valid durable
+  fallback, so the server correctly replayed the historic assistant event and
+  the user saw it twice.
+- TDD: `TestResumedConversationEmptyCursorReplayBoundaryRendersHistoricAndFutureOnce`
+  first timed out under the GET-first implementation. It now holds the
+  messages response after the replay marker, injects a scheduled future event
+  while that fetch is blocked, and proves historic and future transcript rows
+  each occur exactly once.
+- Repair: only an opt-in conversation SSE request uses the new boundary. The
+  server registers its existing subscriber, writes historic replay, then sends
+  an id-less `conversation.replay.completed` marker. The TUI suppresses
+  pre-marker replay, fetches/render the snapshot after the marker, and uses
+  only event order/cursor identity to discard buffered already-snapshotted
+  events. Empty snapshot cursor retains all post-marker live events.
+- Scope: no schema, tool, cron/callback execution, provider, GUI/native, or
+  public-route change. Existing SSE callers do not opt in and retain their
+  current replay wire behavior.
+
+## 2026-08-07 — Issue #1247 cron core-tool documentation and registry contract
+
+- Cause: `NewDefaultRegistryWithOptions` had already promoted all eight scoped
+  cron tools to its core list, while website docs still advertised six deferred
+  tools and instructed agents to call `find_tool`. That stale contract produced
+  the invalid deferred-discovery premise in #1245.
+- TDD: the first focused test read the public cron, tool-tier, and glossary
+  pages and failed on the deferred wording and omitted `cron_update`/
+  `cron_history` (and incomplete tier list). The registry assertion now also
+  rejects any cron definition returned by `DeferredDefinitions`.
+- Repair: public docs name all eight initial-turn core tools and state that
+  they are called directly. No default-registry assembly, `find_tool`, scoped
+  client, authorization, scheduling, persistence, or product-client code
+  changed.
+- Verification: focused normal/race `internal/harness` tests passed. The
+  SHA-bound external-cache full regression log
+  `/private/tmp/gocode-1247-full.log` passed normal, race, 85.1% total
+  coverage, and zero uncovered functions.
+
+## 2026-08-07 — Issue #1243 raw SSE header/envelope identity proof
+
+- Cause: #1231 decoded event JSON while discarding `event:` and used `id:` as
+  a fallback when the JSON envelope omitted its ID. A malformed stream could
+  therefore look internally consistent after test-only reconstruction.
+- TDD: the new decoder contract was first red because no provenance-preserving
+  decoder existed. The permanent table rejects missing `id:`/`event:`, empty
+  JSON ID/type, and header/JSON ID or type mismatches; it also proves a
+  comment-only ping is ignored and a multi-`data:` JSON event remains valid.
+- Repair: decoded test frames retain header ID/event and JSON envelope
+  separately. Every data-bearing frame requires both nonempty representations
+  and exact equality; headers never synthesize JSON identity. The existing
+  #1241 `(runID, callID)` matcher now consumes those verified frames, retaining
+  its valid concurrent A/B lifecycle behavior.
+- Scope: acceptance test/docs only. `internal/server.writeSSE`, HTTP wire
+  behavior, tools, persistence, clients, schedules, and callbacks are not
+  changed.
+- Verification: focused normal/race (including the real one-daemon #1231
+  four-turn fixture) passed. The external-cache full regression passed normal,
+  race, 85.1% coverage, and zero uncovered functions; log
+  `/private/tmp/gocode-1243-full.log`.
+
+## 2026-08-07 — Issue #1241 API raw-SSE tool lifecycle proof
+
+- Cause: the #1231 acceptance helper first collected every start and every
+  completion, then compared the two slices by index. A raw stream with a
+  completion before its matching start passed that assertion.
+- TDD: the first focused test fed exactly that stream and failed only at its
+  explicit regression sentinel, proving the old assertion falsely accepted it.
+  The permanent table covers completion-before-start, orphan completion,
+  duplicate start/completion, name mismatch, wrong-run frame, unfinished
+  start, concurrent A/B completion reversal, and later-run call-ID reuse.
+- Repair: validation now walks decoded raw frames in order and keys state by
+  `(runID, callID)`. It binds each start to one expected name/canonical-JSON
+  argument multiset item, accepts any later matching completion, and rejects
+  error output, extra/unmatched lifecycle frames, or an invalid terminal. The
+  wrapper receives the HTTP-created expected run ID rather than inferring it
+  from the first raw frame, so a wholly wrong-run stream cannot self-authorize.
+- Scope: `cmd/harnessd` test-only evidence code. It does not change Runner,
+  server SSE transport, tool implementations, stored data, or user clients.
+- Verification: focused normal and race runs, including the real one-daemon
+  #1231 four-turn API acceptance, passed. The SHA-bound full regression passed
+  normal, race, and coverage at 85.1% total with zero uncovered functions.
+- Delivery: code commit `8f8c58b6a2486acd3b8ef31f117be744ba6baf35` is pushed
+  in stacked PR #1242 against #1232's branch. The independent code review
+  approved that code head; this documentation amendment deliberately requires
+  a fresh exact-head read-only review before any stack promotion.
+
+## 2026-08-07 — Issue #1237 workflow terminal-history SSE completion
+
+- Cause: `handleWorkflowRunByID` flushed every persisted workflow event, then
+  unconditionally selected on the live subscriber channel. Plural workflow
+  subscriber channels intentionally stay open after a terminal event, so late
+  clients received `workflow.completed`/`workflow.failed` and then hung until
+  they cancelled their request.
+- Repair: after writing and flushing a terminal history event, the HTTP handler
+  returns and its existing deferred cancellation releases the subscription.
+  Nonterminal history still enters the existing live loop and terminates only
+  when a live terminal event arrives.
+- Regression: red-first completed/failed endpoint cases hold the live channel
+  open and require a deterministic handler return with exactly one terminal
+  frame. The nonterminal control verifies ordered history, live progress, and
+  live terminal frames before return.
+- Verification: focused normal/race and full `internal/server` package tests
+  passed; `./scripts/test-regression.sh` passed normal, race, and coverage
+  (85.1% total; zero uncovered functions).
+- Scope: server control flow only; no #1236 subscription handshake, event
+  schema, persistence, auth, client rendering, or script-workflow change.
+
+## 2026-08-07 — Issue #1236 plural workflow subscription handoff
+
+- Cause: `internal/workflows.Engine.Subscribe` copied persisted history before
+  registering its live channel. An emit after the Store snapshot and before
+  registration was persisted but reached neither returned history nor live
+  stream; a burst was likewise lossy. Repeated cancellation could also close
+  the same channel twice.
+- Fix: register a per-run subscriber under the engine mutex with a sequence
+  watermark, fetch history unlocked, trim it at the watermark, then atomically
+  fold and clear the initializing pending buffer. `GetEvents` failure removes
+  the entry; cancellation checks membership before close.
+- Scope: plural `internal/workflows` engine only. The adjacent HTTP workflow
+  SSE handler hangs after terminal history because it unconditionally enters
+  the live loop; that independent issue is #1237.
+- TDD: the controlled snapshot/return seam first failed with a lost event,
+  lost 64-event burst, and double-cancel panic. Focused normal/race and repeat
+  stress are green.
+- Durable review correction: a fresh engine began with `eventSeqs[runID] == 0`,
+  so the first watermark implementation trimmed durable pre-restart events and
+  reused sequence 1. `Store.LastEventSeq` now hydrates each run exactly once
+  before either Subscribe registration or emit; Memory and SQLite implement the
+  read-only high-water lookup. Fresh-engine replay, next-sequence, and
+  concurrent Subscribe/emit initialization are red-first regressions. The
+  prior full gate does not cover this corrected head; a rebased full gate is
+  required before the PR is updated.
+
+## 2026-08-07 — Issues #1234/#1235 PTY evidence repairs
+
+- Cause: an append-only PTY history could let a new action find an old matching
+  frame; Linux PTY master close reports `EIO` after a slave exits normally.
+- Repair: input-time barriers bind offset/version/baseline; semantic VT
+  boundaries evaluate complete predicates and enforce visible transition
+  chronology. The collector keeps final bytes then normalizes only EIO/EOF/
+  closed-master lifecycle outcomes.
+- Scope: acceptance infrastructure only; no product TUI, harness API, GUI,
+  tools, cron, callback, persistence, or macOS behavior changes.
+- Verification: full external-cache regression passed (85.0% coverage, zero
+  uncovered functions); hosted checks and independent exact-head review remain
+  promotion gates.
+- Review repair: explicit collector regressions retain final `n > 0` bytes
+  with wrapped EIO, assert nil EOF/read error and successful `waitEOF`, retain
+  arbitrary read failures, and prove EOF cannot seal a pending action. A
+  Linux-only real slave-close test is retained for hosted execution.
+
+## 2026-08-07 — Issue #1230 causal non-mutating TUI PTY batch
+
+- Symptom: the initial real batch expected the stale stats header `Activity
+  (Week)` and stopped even though the rendered production panel correctly said
+  `Activity (last 7 days)`. A later run reused the already-consumed source for
+  `/continue`, which correctly returned HTTP 400 under the one-shot continuation
+  contract.
+- TDD: the new direct-PTY batch first failed to compile because its scenario
+  was absent. The live red retained terminal evidence for the stats label and
+  continuation target errors before either acceptance-only correction.
+- Repair: the stats predicate requires the canonical header, toggle hint, total
+  run/cost values, and an Escape frame before `/config`. `/continue` now probes
+  and targets the completed `/resume` child; its keystroke/frame, same
+  conversation, three distinct runs, durable messages, and exactly-once child
+  terminal events are asserted.
+- Compatibility: this changes acceptance infrastructure only. Product TUI,
+  HTTP, provider, tools, cron, callback, and macOS behavior are unchanged.
+- Verification: focused live normal and race PTY batches pass; the full
+  regression gate passed with 85.0% total coverage and zero uncovered
+  functions. Independent review remains required before promotion.
+
+## 2026-08-06 — Issue #1224 deterministic script descendant cleanup fixture
+
+- Symptom: under concurrent race load, the real descendant fixture could report
+  a generic PID readiness timeout before it published its start barrier.
+- Cause: the test used its configured handler timeout as a setup deadline and
+  could not observe an early handler result while polling for the PID.
+- TDD: the focused package first failed to compile after the regression required
+  `waitForScriptPID` to return an early handler result rather than only fatal
+  generically. The green helper returns that result and the real fixture uses a
+  long test-only timeout plus parent cancellation after its barrier.
+- Repair: no `loader.go` production behavior changed. The existing one-second
+  configured-timeout test remains independent; the descendant case proves
+  cancellation completion and child death.
+- Verification: focused normal and race (`-count=3`) passed; `TMPDIR=/private/tmp
+  GOCACHE=/private/tmp/gocode-1224-go-build ./scripts/test-regression.sh`
+  passed normal, race, coverage, and the coverage gate (85.3% total, zero
+  uncovered functions).
+## 2026-08-06 — Issue #1222 semantic working-memory tool results
+
+- Symptom: a valid JSON value stored by `working_memory set` was exposed by
+  `get` and `list` as JSON text inside another JSON string. In the real API
+  continuation, `"api-memory-value"` became `"\\\"api-memory-value\\\""`.
+- Cause: `MemoryStore` and `SQLiteStore` intentionally return canonical JSON
+  text for snippets, but `WorkingMemoryTool` placed that text directly in a
+  `map[string]any` before marshalling its response.
+- TDD: new scalar/object/list tests were red before the adapter, showing every
+  valid JSON shape double encoded. The malformed-entry and missing-key tests
+  preserve the compatibility boundaries.
+- Repair: get/list now emit `json.RawMessage` only when stored text is valid
+  JSON; malformed legacy text remains a string. Stores, SQLite schema, and
+  snippet construction are unchanged.
+- Verification: focused normal and race tests passed after the repair; SQLite
+  close/reopen proves canonical storage and snippets remain stable; the real
+  harnessd HTTP/SSE same-conversation continuation passed. `TMPDIR=/private/tmp
+  ./scripts/test-regression.sh` then passed normal, race, coverage, and the
+  coverage gate at 85.3% total coverage with zero uncovered functions.
+
+## 2026-08-06 (Issue #1220 owner-created rendered-driver foundation)
+
+- Replaced the environment-asserted permission placeholder with Darwin
+  `AXIsProcessTrusted` and `CGPreflightScreenCaptureAccess` preflight calls.
+  Neither API requests consent; incomplete grants fail before lifecycle start.
+- Extended the #1205 owner with a distinct retained `0700` artifact root and a
+  post-child-shutdown/post-runtime-removal completion boundary. Launch and
+  scenario failures retain a diagnostic without widening cleanup beyond recorded
+  child handles and the exact disposable root.
+- Added an attested-PID Accessibility adapter for composer value/Send action and
+  AX-tree capture, plus largest-owned-window screenshot capture. Added a fixed
+  two-run collector for existing conversation/runs/messages/SSE APIs and a
+  fail-closed typed proof validator for paths, kinds, sizes, hashes, PNG format,
+  semantic markers, identities, and cleanup.
+- Regression tests cover admission-before-effects, partial grants, inconsistent
+  reports, retained launch diagnostics, post-cleanup finalization, deterministic
+  two-run correlation, extra conversation rejection, and malformed artifacts.
+- Review tightening rejects a final-component symlink even when its target is
+  still inside the retained root. Cleanup and proof-finalization failures now
+  always retain `failure.json`; only a fully sealed and validated proof can
+  produce `proof.json`.
+- Focused normal, race, and no-CGO fallback tests pass. The full Swift suite
+  passes 259 tests. The first repository-wide regression attempt exposed the
+  separately owned #1221 PTY readiness failure, so no commit or PASS was claimed
+  while that accepted baseline remained red.
+## 2026-08-06 — Issue #1221 fresh PTY conversation evidence
+
+- Symptom: an ad-hoc piped `script(1)` launch could retain durable API/SSE
+  records while inheriting zero rows and columns, making a deliberately empty
+  viewport look like a missing transcript. The official runner only covered
+  resumed conversations.
+- TDD: fresh-launch geometry and VT-frame tests were added before the runner;
+  the real fresh scenario first failed because its final incremental Bubble
+  Tea frame was emitted before alternate-buffer exit and cumulative replay
+  scrolled that frame out of the synthetic grid.
+- Repair: `RunFreshConversation` uses the official BSD/util-linux launcher
+  with explicit 30x100 geometry, drives two typed turns around `/search`, and
+  records hashed terminal, VT, keystroke, SSE, and API/store artifacts. The
+  reader snapshots both cumulative and latest-home frame views before buffer
+  exit. No TUI product runtime or API behavior changed.
+- Verification: focused VT/geometry plus fresh real PTY evidence, full
+  `ptyrunner` normal suite, and `go test -race ./internal/acceptance/ptyrunner`
+  passed before the repository regression gate.
+
+## 2026-08-06 — Issue #1215 harnessd fixture causal readiness
+
+- Symptom: aggregate race/load could fail cleaner and invalid-catalog daemon
+  tests on short fixture-level startup/health waits, even though the tests
+  already owned precise cleaner lifecycle channels and a listener-injection
+  seam.
+- Cause: the invalid-catalog case reserve-closed a port and polled that guessed
+  address directly; the cleaner cases waited only for a two-second wall-clock
+  channel observation and could not distinguish a real early daemon exit.
+- TDD: the invalid-catalog test first failed to compile after it was moved to a
+  not-yet-defined listener-aware helper. The green helper delegates to the
+  established actual-listener matrix path; no daemon runtime code changed.
+- Repair: lifecycle waits now race their injected event with the owned daemon
+  result, retaining a ten-second diagnostic only when neither causal path
+  resolves. The malformed-catalog case reaches real `/healthz` through the
+  actual acquired listener and still requires clean interrupt shutdown.
+- Verification: focused normal x20 and race x10 passed; complete
+  `go test ./cmd/harnessd -race` passed; `TMPDIR=/private/tmp
+  ./scripts/test-regression.sh` passed normal, race, coverage, and coverage
+  gate phases at 85.3% total coverage with zero uncovered functions.
+
+## 2026-08-06 — Issue #1216 script timeout process-tree ownership (in verification)
+
+- Symptom: aggregate race/load reported `TestScriptHandler_Timeout` at roughly
+  31 seconds despite a one-second tool timeout and a strict five-second
+  completion requirement.
+- Cause: `makeScriptHandler` combined `exec.CommandContext`, whose background
+  cancellation kills only the direct script PID, with a later handler-owned
+  process-group kill. That split ownership lets direct-child cancellation race
+  the group cleanup and leaves `Cmd.Wait` vulnerable to inherited stdout/stderr
+  descriptors held by a descendant.
+- Test-first evidence: before the production change, a real shell fixture was
+  added that starts a PID-recorded background `sleep`, holds inherited stdio,
+  and requires prompt timeout plus descendant death. The historical aggregate
+  race failure is the red evidence; focused pre-change normal/race stress did
+  not reproduce the timing-sensitive delay, so it is recorded as a
+  characterization rather than claimed as a deterministic local red.
+- Repair: the handler now uses `exec.Command`; its context branch is the sole
+  cancellation owner and kills the process group. A two-second `WaitDelay`
+  bounds pipe draining after group exit. JSON stdin, restricted environment,
+  normal stdout, stderr/non-zero errors, and the configured timeout contract
+  are unchanged.
+- Verification: focused normal lifecycle stress, focused race stress, and
+  complete script-package normal/race suites pass. `TMPDIR=/private/tmp
+  ./scripts/test-regression.sh` passed normal, race, coverage, and coverage
+  gate phases at 85.3% total coverage with zero uncovered functions.
+
+## 2026-08-06 — Issue #1214 source-workflow invalid-protocol fixture handshake
+
+- Symptom: `TestSourceManagerRunWorkflowFailsOnInvalidProtocolAfterResult`
+  used a raw child that wrote stdout and exited without consuming the parent's
+  initial `start` frame. Linux scheduling could therefore return EPIPE before
+  the intended late-message protocol assertion.
+- Cause: the fixture did not exercise the established source-workflow startup
+  boundary before manufacturing its terminal result.
+- Fix: the fixture child now uses `workflowsdk.Main` to consume `start` and
+  emit the valid result, then writes the same deliberately late raw `log`.
+  Production source workflow behavior, the SDK, and #1209 native scenarios are
+  unchanged.
+- Verification: focused normal `-count=100` and race `-count=20` pass; the
+  repository regression gate is recorded with the PR handoff.
+
+## 2026-08-06 — Issue #1212 live provider fetch explicit opt-in
+
+- Symptom: `TestLiveFetchAgainstRealProviders` ran from ordinary `go test`
+  whenever `OPENAI_API_KEY` or `OPENROUTER_API_KEY` existed, allowing the
+  normal regression gate to wait on real provider endpoints.
+- Cause: the test filename did not exclude it from Go's package test set and
+  its only guard was the credential itself.
+- TDD: `TestLiveProviderFetchEnabled` first failed to compile because the
+  explicit gate did not exist; the green table proves credential-only, flag
+  only, and non-`1` flag values stay disabled while flag-plus-credential is
+  enabled without a network request.
+- Repair: the test-local gate now requires `HARNESS_TEST_LIVE_PROVIDERS=1`
+  and the matching provider credential before constructing a fetcher. The
+  testing runbook preserves the narrow intentional command; production
+  modelstore behavior, endpoints, retries, and credentials are unchanged.
+- Verification: focused normal and race gates passed; an invocation with a
+  sentinel `OPENAI_API_KEY` but no opt-in visibly skipped both live provider
+  subtests without a network request. `TMPDIR=/private/tmp
+  ./scripts/test-regression.sh` passed normal, race, coverage, and coverage
+  gate phases at 85.4% total coverage with zero uncovered functions.
+
+## 2026-08-06 — Issue #1210 terminal SSE settlement
+
+- Symptom: a run-scoped SSE reconnect could replay `run.completed`,
+  `run.failed`, or `run.cancelled` before the corresponding `GET /v1/runs/{id}`
+  read model became terminal.
+- Cause: terminal event journaling precedes the durable terminal `UpdateRun`
+  and in-memory status commit; `Subscribe` legitimately snapshots the journal
+  during that interval.
+- Repair: `handleRunEvents` now waits, only for a terminal frame, on a
+  context-cancellable Runner status notification until the matching public
+  terminal state commits. It does not add an acceptance-runner retry or alter
+  journal/live ordering.
+- Regression: a blocked terminal `UpdateRun` server test proves no terminal
+  replay completes before release, then exactly one matching terminal frame and
+  matching GET status after release for completed, failed, cancelled, and a
+  `Last-Event-ID` replay.
+
+## 2026-08-05 — Issue #1204 real PTY continuation evidence (in implementation)
+
+- Adds an internal acceptance driver that builds disposable `harnessd` and
+  `harnesscli`, starts a fake-only loopback daemon, completes a source run, and
+  types both `/resume` and `/continue` through `script(1)` into the real TUI.
+- The fake-turn fixture format gains optional `deltas`, intentionally limited
+  to `HARNESS_PROVIDER=fake`, so the child lifecycle can prove its expected
+  `assistant.message.delta` without altering real-provider behavior.
+- Evidence is correlated by distinct source/child run IDs plus shared
+  conversation ID, ANSI/VT-interpreted visible screen, raw terminal and typed
+  keystrokes, child SSE, and an independent API/store probe; each retained
+  artifact is SHA-256 addressed.
+- Fixture repairs avoid false positives from startup escape bytes, alternate
+  buffers, ANSI erasure, Bubble Tea's final blank redraw, and wide/combining
+  Unicode cell geometry. Daemon process-group shutdown and artifact-root-local
+  DB/HOME/log paths keep acceptance state outside the checkout.
+- Verification remains pending: focused normal/race and full regression results
+  must be recorded before this becomes implemented.
+- #1207 portability repair: macOS BSD `script` accepts its direct child argv,
+  but Ubuntu util-linux requires `-c` with one command string. The runner now
+  selects the OS form, POSIX-quotes every Linux child argument, and observes
+  the owned `script` child while waiting for semantic screen readiness so an
+  early successful-or-failed exit is a useful error rather than a timeout.
+- Red-first coverage pins the Darwin argv, util-linux argv with quote-bearing
+  values, a real host `script` sentinel launch, and prompt early-exit failure.
+  Focused normal and race package tests passed with `TMPDIR=/private/tmp`; the
+  full regression also passed (normal, race, coverage `85.3%`, zero uncovered
+  functions). Independent review and hosted CI remain merge gates.
+- Follow-up review repair: `waitForChild` now receives the same owned PTY
+  completion signal as screen readiness. A real `script(1)` child consumes
+  post-input bytes then exits without a child run; discovery returns the useful
+  exit error promptly instead of waiting for its timeout.
+- The first real fixture used terminal-output readiness and could lose its
+  marker under full-suite PTY scheduling. It now uses a sentinel-owned,
+  mode-local filesystem rendezvous before post-input bytes are written; the
+  terminal exit assertion remains real and is stress-pinned.
+
+## 2026-08-06 — Issue #1208 owned native fake-provider scenario preflight
+
+- Added one deterministic fixture manifest for the first owned native cases:
+  core `ls` tool plus a second Chat message, recurring `cron_create` linked
+  continuation, and exactly-once `set_delayed_callback` continuation. The
+  owner generates a fresh nonce, validates the manifest before selecting its
+  lifecycle, and writes only its flattened fake turns into the owned root.
+- First red: the preflight types/functions were absent. The green tests reject
+  a missing typed artifact, duplicate artifact path, and repeated conversation
+  marker; they require separate nonce-scoped screenshot, AX, raw-SSE, and
+  API/store paths for every scenario.
+- No lifecycle was run. The change has no screenshot, AX/OCR, TCC, process, or
+  rendered acceptance evidence; a later driver requires explicit operator
+  foreground and Accessibility/Screen Recording authorization.
+
+### Review repair
+
+- P1 hardening moved path safety to the actual fake-turn write boundary:
+  lexical `..`, absolute/backslash paths, escaped resolved parents, and an
+  existing symlink target now fail before writing. New regression tests cover
+  traversal and symlink escapes.
+- P1 contract tests now parse and verify the core `ls` request and same-chat
+  continuation, harness-scoped `cron_create` plus linked continuation, and
+  five-second `set_delayed_callback` due/continuation/exactly-once semantics.
+- Cron fixture preflight now calls `cron.NextRunTime`, the same parser-backed
+  contract used by `cron_create`; a malformed `not-a-cron` schedule is rejected
+  before the fixture can be written.
+- The independently reported #1087 `tool:git_status` terminal `running`
+  failure did not reproduce at this exact tree: one normal run and 20 `-race`
+  repetitions passed. It remains subject to the required full gate; no test or
+  product behavior was waived or changed for it.
+
+## 2026-08-05 — Issue #1199 durable skill lifecycle
+
+- `create_skill` now reloads the authored-skill registry synchronously after its exclusive file creation. Core, deferred, and HTTP verification converge on persistence-first adapter wiring: write verification frontmatter, then reload; reload failures do not report success.
+
+## 2026-08-05 — Issue #1201 API/SSE executor foundation (parent #1087; in implementation)
+
+- Added `internal/acceptance/apisserunner`, which rejects incomplete
+  registry-derived API case sets before dispatch, starts normal runs through
+  HTTP, records raw SSE plus terminal API artifacts with digests, and requires
+  independently verified postconditions and cleanup through the v2 validator.
+- First red: the new package had no implementation. The first real-harnessd
+  run then exposed that the start response can omit `conversation_id`; the
+  executor now binds it from the independent terminal probe and rejects any
+  conflicting identity.
+- Current proof is one isolated fake-provider `create_profile` intent case
+  with durable filesystem probe and cleanup. It is not complete default-tool
+  coverage; remaining case authoring is required before a #1087 PR can claim
+  done.
+- The real daemon now also derives a denied/no-mutation case for every current
+  API row (63 at hash `8cafb764…190bc011`), requires the public blocked-event
+  reason, and probes the isolated workspace after each request. This is
+  explicitly negative coverage, not a substitute for positive intent cases.
+- #1202 review repair: a reviewed API manifest now requires the exact
+  `inventory_hash` it was authored against; coverage reporting rejects a
+  same-ID current catalog whose hash drifted before it reports gaps, and still
+  rejects stale, unavailable, wrong-surface, or invalid-invocation rows. Once
+  a run receives `202 Accepted`, cleanup is deferred before response parsing,
+  including malformed JSON or a missing `run_id`; a cleanup failure is joined
+  with the original failure rather than replacing it.
+## 2026-08-05 — Issue #1089 rendered-native proof validator
+
+- Review repair: validation now treats a qualifying native manifest as a
+  current one-shot proof rather than generic report history: every declared
+  applicable case needs exactly one PASS. Artifact roots and files are resolved
+  through symlinks, files must be regular and contained, and each record is
+  bound to launcher-created collection provenance.
+- Added a native-only validation lane around the #1086 suite overlay. It
+  compiles the running daemon's catalog, validates ordered case/evidence data,
+  and recomputes every passing artifact digest inside the declared isolated
+  root. ToolWalk is intentionally not accepted as rendered proof.
+- Strict TDD: the first regression records a valid native bundle, mutates its
+  screenshot artifact, then proves validation rejects the changed digest.
+- The launcher requires an explicit real AX/OCR driver and never discovers,
+  stops, or reuses an existing GoCode/harnessd process.
+
+## 2026-08-05 — Issue #1187 isolated harnessd profile CRUD
+
+- Symptom: profile mutation implementations existed, but harnessd omitted the
+  profile directory at registry, runner, and HTTP-server composition. Live
+  catalog discovery therefore omitted create/update/delete and API mutations
+  returned `501 not_configured`.
+- Cause: startup derived only a local user path for config loading; the
+  resolved paths were never carried across the runtime assembly boundary.
+- Repair: resolve one opt-in absolute `HARNESS_PROFILES_DIR` (default unchanged),
+  derive project profiles from `HARNESS_WORKSPACE`, and pass project/user paths
+  into the registry, runner, and server. Named profile reads and MCP profiles
+  preserve project > user > built-in precedence.
+- Regression coverage: listener-owned real daemon HTTP CRUD plus three
+  fake-provider agent-tool turns, explicit no-real-home write assertion,
+  precedence, default/relative path validation, forwarding, normal/race, and
+  canonical full regression.
+- Review repair: MCP stdio had built a second production registry without the
+  resolved profile paths. It now receives the same project/user directories;
+  an isolated MCP catalog regression executes `create_profile` and proves the
+  write does not fall back to the real home directory.
+## 2026-08-05 — Issue #1188 selected ordinary-run profile policy
+
+- Symptom: a TUI-selected `profile` reached `RunRequest.ProfileName`, but
+  ordinary Runner admission ignored its model, prompt, budgets, tools, and
+  capability policy; only later isolation/MCP preflight observed it.
+- Cause: `profiles.Profile.ApplyValues()` was used by startup/subagent paths,
+  not by `Runner.startRun`.
+- Repair: compose the resolved profile once before ordinary validation/state
+  creation. Explicit request values win for model/budgets/prompt/reasoning;
+  a profile tool list is intersected with request tools, and explicit false
+  bash/file-write/network settings add absolute denied tools.
+- Regression: expected-red tests proved model omission and request widening;
+  focused normal/race plus a fake-provider two-turn HTTP conversation prove
+  profile model/prompt/reasoning and blocked tools on both messages.
+- Follow-up regression: profile schema spells no isolation as `"none"`, while
+  `RunRequest.WorkspaceType` uses empty for no provisioning. Composition now
+  preserves empty at that boundary; the existing no-provisioning test and a
+  direct selected-profile regression prevent a synchronous 400.
+- Review P1: `download` combines outbound HTTP with `os.WriteFile`; the first
+  audited category list omitted it. It is now denied by either explicit
+  profile network or file-write denial, and a real handler regression proves
+  direct provider invocation makes zero HTTP requests and writes no file.
+- `allowed_commands` remains parsed profile metadata but is explicitly marked
+  unsupported for ordinary selected runs; it is not presented as a command
+  security boundary in the authoring runbook.
+- Re-review P1: an exhaustive name mapping still missed registered
+  `ActionFetch` tools such as `web_search`/`agentic_fetch` and future
+  `ActionWrite` tools. Registry now retains an action category at default
+  registration; selected profile capability denials filter offered definitions
+  and reject direct dispatch by action. Real fetch/write/download probes prove
+  no outbound request or file side effect before the handlers run.
+- Re-review P1 follow-up: continuations copied named tool filters but dropped
+  the selected profile identity and action-denial map, so a second turn could
+  execute forbidden actions. `ContinueRunWithOptions` now snapshots both;
+  a true two-turn provider regression proves continuation fetch/write/download
+  calls make zero HTTP requests and write no files. Dynamic replacement now
+  preserves a tool action, and externally hosted MCP calls are conservatively
+  classified as fetch so network-denied profiles fail closed before RPC.
+- Final review P1: `connect_mcp` was still actioned as execute even though it
+  invokes an external HTTP/SSE connector before tool discovery. It is now
+  actioned and registered as fetch; a selected net-denied profile regression
+  proves direct provider invocation makes zero connector calls.
+- Final review P1 follow-up: continuation `AllowedTools` replaced the source
+  filter, so a selected profile allowlist could be widened on a second turn.
+  The profile's non-empty allowlist is now persisted separately as an immutable
+  upper bound; overrides are intersected and a disjoint request retains the
+  source filter because an empty legacy filter means unrestricted. A true
+  source-to-continuation bash probe proves zero handler side effects.
+- Final review P1 follow-up: selected-profile intersection can itself be empty
+  at StartRun, which must mean deny ordinary tools rather than legacy
+  unrestricted; the immutable profile bound now also intersects skill
+  constraints at offer and dispatch.
+- Final review P1 follow-up: `run_recipe` held a prebuilt handler map, so the
+  outer call gate did not govern member steps. The runner now supplies a
+  context-scoped member authorizer; `run_recipe` checks every step's tool name
+  and selected-profile action policy before the executor invokes any handler.
+  The default-registry regression uses one recipe containing bash, write, and
+  fetch and proves a recipes-only profile makes zero file and HTTP side effects.
+- Final review P1 follow-up: member authorization initially covered only the
+  selected-profile name/action boundary, leaving active skill constraints and
+  per-call permission rules/approval outside the recipe dispatcher. The
+  authorizer now receives each substituted member argument immediately before
+  invocation and applies those direct-call gates; ask rules register and emit
+  an approval for the member (not merely the outer recipe). Regressions prove
+  an outer-only skill blocks a real bash write, deny blocks it, and ask executes
+  only after approval.
+- Final review P1/P2 follow-up: direct calls also pass `PreToolUseHooks`, which
+  can deny or mutate args, but recipe members originally skipped that stage.
+  Member authorization now invokes the same hook routine over substituted args
+  and returns any mutation to the executor. Member approval IDs are indexed
+  (`outer:recipe:index:step`) so empty or duplicate optional recipe step names
+  cannot collide. Regressions prove hook deny/mutation parity and two unnamed
+  ask-approved bash steps receive distinct approvals and execute in order.
+- Final review P1 follow-up: recipe hooks initially ran before direct-call
+  profile/allowlist/skill checks, so a rejected member could still trigger a
+  hook. The member path now matches direct ordering: capability/name/skill
+  gates first, hooks second, then permission rules/approval. Regressions prove
+  a blocked bash member causes neither hook observation nor a file side effect,
+  while hook errors retain direct fail-closed event behavior.
+
+## 2026-08-05 — Issue #1174 `/init` real SSE persistence
+
+- Symptom: `/init` wrote only through synthetic `RunCompletedMsg`; real `assistant.message` then `SSEDoneMsg(run.completed)` finalized the transcript without `AGENTS.md`.
+- Cause: the real terminal branch bypassed the init completion helper and pending state lacked accepted-run identity.
+- Repair: retain run/target/confirmation state, consume only matching terminals, and atomically re-stat/write/sync/rename the workspace file.
+- Regression coverage: real SSE success, failed/fatal paths, foreign terminal, appearing-file conflict, and mode-preserving confirmed replacement.
+- Follow-up P1: confirmed Ctrl+C and Escape cancel the local bridge without a guaranteed terminal frame, so each now consumes only the matching pending `/init` state; late output/terminal fixtures prove no post-cancel write.
+- Follow-up P2: reconnect exhaustion already abandoned the owned pending state; a deterministic six-close acceptance test now proves late output cannot write after the bridge is lost.
+
+## 2026-08-05 — Issue #1183 durable replay SSE fixture
+
+- Symptom: after durable replay merged, hosted race CI's replay command fixture
+  accepted the replay POST but rejected the intentionally started returned-run
+  stream at `GET /v1/runs/run_replayed_1/events`.
+- Cause: `Model.Update(RunStartedMsg)` has always started the returned run's
+  SSE bridge; the fixture represented only the first HTTP step.
+- Fix: fixture-only lifecycle coverage validates the durable POST, exact
+  returned-run SSE path and `Accept: text/event-stream`, rendered assistant
+  message, terminal `run.completed`, and handler closure. Rollout simulation
+  now explicitly proves it makes zero `/events` requests.
+- Verification: focused normal/race replay tests passed 20 repetitions each;
+  full TUI normal passed in 41.776s and race in 44.455s. Production replay,
+  server, cron, callback, and cancellation code remain unchanged.
+- Final gate: retained canonical-temp repository regression passed normal, race,
+  coverage, and coveragegate at 85.5% total coverage with zero uncovered
+  functions.
+
+## 2026-08-05 — Issue #1175 bootstrap provenance fixture
+
+- Symptom: macOS `/var` test paths differed textually from Git's `/private/var` canonical output.
+- Fix: fixture roots canonicalize through `EvalSymlinks` before expected worktree paths are derived; no bootstrap script or provenance acceptance rule changed.
+
+## 2026-08-05 — Issue #1177 harnessd race-readiness fixtures
+
+- Symptom: hosted race CI intermittently reported that the two memory startup
+  fixtures never became healthy within their three-second guessed-address
+  deadline.
+- Cause: each fixture used `freeLocalAddr`, closing a reservation before the
+  daemon bound it, so readiness could observe a recycled listener or an early
+  startup failure only as a timeout.
+- Fix: both tests retain their original environment/config cases but bind port
+  zero and use the existing listener-aware matrix helper. The helper receives
+  the daemon's actual listener address, reports early startup failure, then
+  exercises the existing graceful interrupt lifecycle. A test-only overload
+  retains their prior three-second health deadline while the shared matrix
+  default remains ten seconds. Production code is unchanged.
+- Verification note: the initial default-environment serial regression reached
+  the normal phase and failed five bootstrap-provenance fixtures before race or
+  coverage because macOS aliases the temporary path as `/private/var` while
+  those fixtures expected `/var`. The #1177 focused and complete harnessd
+  gates were green; the required canonical-temp serial run is recorded
+  separately rather than treating the alias result as a product regression.
+- Evidence: focused normal and race stress each passed 30 repetitions;
+  complete `cmd/harnessd` normal/race passed; the serial canonical-temp
+  regression passed normal, race, and coverage at 85.5% with zero uncovered
+  functions.
+
+## 2026-08-05 — Issue #1173 durable replay
+
+- Symptom: `/runs` advertised completed durable IDs but `/replay` treated them as absent rollout files.
+- Cause: rollout simulation and durable re-execution shared one endpoint and only the rollout directory could resolve a bare ID.
+- Fix: an authenticated per-run replay route starts a distinct same-conversation run from terminal durable source state; TUI routes only bare IDs there.
+## 2026-08-04 (Issue #1169 bootstrap VCS provenance)
+
+- Strict red reproduced Go 1.26 linked-worktree contamination: a clean child
+  `harnessd` inherited the parent revision and `vcs.modified=true`. The old
+  bootstrap also accepted a fake executable whose build info named the wrong
+  revision, leaving it at the normal binary path.
+- `scripts/init.sh` now clears ambient Git routing variables, resolves the
+  fetched origin commit (rather than stale local `main`), resolves the actual
+  target worktree's absolute Git directory and HEAD, builds each local binary
+  with those values plus `-buildvcs=true`, then compares the binary's own build
+  info to that exact clean revision. Missing/dirty/mismatched output is deleted
+  and returns a nonzero bootstrap error.
+- The #1165 acceptance guard is unchanged. New disposable-repository tests
+  cover dirty-parent isolation, inherited external metadata, and rejected
+  candidate removal; scheduler, provider, API, TUI, and native code are out of
+  scope.
+- Hosted CI exposed a fixture-only portability error: a bare repository's
+  symbolic HEAD is host-config dependent, so an unqualified clone could commit
+  an unrelated initial branch and reject the intended `HEAD:main` update. The
+  origin divergence regression now explicitly checks out `main`; a no-global-
+  config run reproduces the CI default and passes before the full gate rerun.
+
+## 2026-08-04 (Issue #830 Anthropic Retry Fixture Budget)
+
+- Symptom: full-suite coverage instrumentation previously let
+  `TestClientRetriesOn503` exhaust its test-local 100ms retry budget, returning
+  `retry budget exhausted: server returned 503 Service Unavailable`.
+- Cause: the shared package-local fixture treated wall-clock scheduling under
+  coverage contention as part of a two-attempt HTTP retry assertion.
+- Fix: increase only `internal/provider/anthropic/client_test.go`'s bounded
+  fixture `MaxTotal` to one second. Production retry defaults, attempt count,
+  delays, jitter, status classification, and mock-server behavior are unchanged.
+- TDD evidence: issue #830 retains the coverage-phase red; unchanged focused
+  normal/race stress passed, confirming the flake requires full-suite load.
+  After the fixture change, 429/503 stress, the complete Anthropic normal/race
+  package suites, and the full regression gate pass.
+## 2026-08-04 (Issue #1165 acceptance runtime provenance)
+
+- The incident is reproducible: a clean requested worktree at `3ffc3d764`
+  produced a binary whose `go version -m` reported dirty `7f8b2c92557b`.
+  Checkout metadata is therefore not acceptance evidence.
+- Added the sourceable acceptance guard and wired the deterministic smoke lane
+  before daemon startup. It requires clean git build metadata matching the
+  exact requested SHA and writes raw build info plus binary SHA-256 only after
+  success. It never rebuilds, retries, or dispatches after rejection.
+- Red-first regression proves a stale/dirty binary cannot create the daemon
+  marker; the matching clean fixture proves its artifact exists before daemon
+  start. Provider routing, scheduler behavior, credentials, API, and storage
+  remain outside this slice.
+
+## 2026-08-04 (Issue #1161 scheduled routing preservation)
+
+- Confirmed the narrowing defect before implementation: `RunRequest` owns the
+  routing policy, but `RunMetadata`, harness cron config/`RunStartRequest`,
+  remote cron JSON/server mapping, and durable callback rows omit it.
+- The permanent first regression failed to compile because
+  `cron.RunStartRequest` had no model/provider/fallback fields. Independent
+  remote and server fingerprint reds failed on the same missing typed fields;
+  the harnessd fallback regression then ran but used `default-model`. Callback
+  reds failed on missing metadata and durable callback fields.
+- The implementation copies the four safe routing values through immutable
+  tool metadata, cron config, typed/remote/authenticated starts, durable
+  callbacks, and Runner admission. The cron fingerprint binds all four values,
+  including fallback order. A final red proved the initially persisted queued
+  run omitted the requested provider; initial durable state now records it so
+  crash recovery cannot narrow the scheduled policy before dispatch.
+- Fix boundary is additive propagation of model/provider/fallback names and the
+  fallback boolean only. Tenant/auth/scope, secrets, provider resolution,
+  retries, leases, clients, and Issue #1162 are explicitly unchanged. Focused
+  boundary suites and complete affected normal/race suites are green after the
+  rebase to `c991a725`. Final handoff evidence is the repository regression
+  gate plus exact branch/base/merge-base identity recorded outside this log.
+## 2026-08-04 (Issue #1162 authoritative fake-provider routing)
+
+- Strict red: daemon assembly with `HARNESS_PROVIDER=fake`, a loaded OpenAI catalog/client, and `allow_fallback=false` returned the real fixture response for `gpt-4.1-mini` and failed absent `fake-model` lookup.
+- Added `ForcedDefaultProviderName` to the shared `RunnerConfig` assembly. Only explicit fake sets it to `fake`; `Runner.resolveProvider` now returns its direct default before requested-provider or model-catalog lookup. Registry/catalog ownership remains intact for metadata, tools, and pricing.
+- Green daemon assembly covers both models, `/v1/models` catalog visibility, `provider_name=fake`, fake response completion, and zero configured-real-client factory calls. Independent review found that caller-supplied fallback providers could still construct a real registry client. Forced routing now terminates candidate construction before any fallback lookup; the regression explicitly requests `allow_fallback:true` plus `fallback_providers:["openai"]` and still proves zero real-factory calls. Focused normal/race and the final isolated full regression pass normal, race, coverage, 85.5% total coverage, and zero uncovered functions. An earlier retry-budget flake was not waived.
+- Final review required the retryable execution branch itself to use the concrete `fakeprovider.Provider`, not a same-shape test double. The daemon regression now gives that provider a real 429 turn while the request names OpenAI as a fallback; the run fails locally and proves the real registry factory is never constructed.
+
+## 2026-08-04 (Issue #1158 conversation history watermark foundation)
+
+- Added `Runner.ConversationMessagesSnapshot`, which returns cloned messages
+  and an exact durable event ID at one per-conversation publication boundary.
+  `completeRun` now samples the durable event cursor, persists conversation
+  content, and publishes the in-memory pair while holding the existing
+  conversation sequence plus event locks. An in-flight later run therefore
+  cannot advance the cursor ahead of the completed transcript snapshot.
+- No cursor is reconstructed after restart: conversation mutations are not
+  transactionally versioned with the event store, so even a historical
+  `run.completed` cannot prove equivalence to loaded messages. Missing readers,
+  store errors, destructive invalidation, overlapping runs, and absent
+  process-local pairs all return empty and require full replay.
+- `GET /v1/conversations/{id}/messages` now adds `last_event_id` after the
+  unchanged `runs:read` and tenant gate. The TUI decodes it into
+  `ConversationHistoryMsg`; omitted old-server fields remain empty.
+- Strict red: the new TUI/API tests failed to compile with
+  `ConversationHistoryMsg has no field or method LastEventID`. After the
+  minimal implementation, the same-text two-turn/in-flight snapshot,
+  restart-after-undo fallback, inverted overlapping-run ordering, copy
+  isolation, no-reader fallback, API response,
+  auth-before-lookup, tenant boundary, and old-server decode are green.
+- Verification: focused normal x10 and race x5 passed. Complete affected
+  package normal and race suites passed for `internal/harness`,
+  `internal/server`, and `cmd/harnesscli/tui`. The non-concurrent full
+  regression normal, race, and coverage phases passed at 85.5% with zero
+  uncovered functions.
+- Independent review found two P1s in the first green: a conversation-wide
+  cursor could pass an overlapping later run absent from the message slice, and
+  restart recovery could pass undo/rewind mutations. The final tree detects
+  overlapping run lifetimes before sampling and never reconstructs a cursor
+  without a process-local pair; deterministic regressions cover both findings.
+
+## 2026-08-04 (Issue #1156 MCP HTTP test transport isolation)
+
+- `NewHTTPConnForTest` previously left `http.Client.Transport` nil, so every
+  MCP HTTP test shared `http.DefaultTransport`'s idle pool. Parallel
+  `httptest.Server` shutdown could therefore turn a strict 401/403 assertion
+  into a cross-test transport failure.
+- The test-only constructor now clones `http.DefaultTransport` for each client.
+  Production `dialHTTP`, pooling, timeout, error mapping, headers, and retry
+  behavior remain unchanged. The clone owns its own idle pool.
+- TDD evidence: `TestNewHTTPConnForTestOwnsTransport` first failed with
+  `Client.Transport is nil; test client shares http.DefaultTransport`. A
+  nonparallel spy proves `httptest.Server.Close` invokes global default
+  cleanup, legacy nil clients are coupled to it, and a prebuilt clone is not.
+  This is the actual standard-library boundary; it does not fabricate an
+  active-dial cancellation claim.
+- Verification: focused ownership plus strict-auth tests passed normal x20 and
+  race x20; `go test -race ./internal/mcp -count=1` passed. The complete
+  `./scripts/test-regression.sh` normal, race, and coverage phases passed at
+  85.5% total coverage with zero uncovered functions.
+
+## 2026-08-04 (Issue #1152 harnessd startup race fixtures)
+
+- Hosted race CI for unrelated `cmd/harnessd` lifecycle tests became sensitive
+  to #1150's intentionally durable default callback bootstrap. The affected
+  fixtures now explicitly set `HARNESS_ENABLE_CALLBACKS=false`; callback
+  enablement and shutdown retain their dedicated tests.
+- `TestLookupModelAPIWiredInRunWithSignals` and
+  `TestLookupModelAPIWithAlias` wait for their actual provider-factory call
+  before signalling shutdown. `TestShutdownCronOrderingDeterministic` waits
+  for the exact listener and `/healthz` readiness before each real shutdown.
+  Cleaner tests retain their injected start/cancellation acknowledgement gates.
+- TDD evidence: the first targeted command failed to compile because the five
+  tests referred to the not-yet-defined
+  `disableCallbacksForUnrelatedHarnessFixture`; the helper then made their
+  test-owned opt-out explicit. No production source changed.
+- Verification: targeted normal x20 passed in 4.945s, targeted race x20 passed
+  in 7.142s, and complete `go test ./cmd/harnessd -race -count=1` passed in
+  12.537s. The normal and race phases of `./scripts/test-regression.sh` passed;
+  its coverage phase then failed the existing zero-function gate at
+  `internal/server/cron_run_idempotency.go:266 waitForCronRunDispatch` (total
+  85.5%). That production function is from `dd7737d6`, not this test-only
+  slice, so the baseline remains a blocker rather than being waived.
+
+## 2026-08-03 (Issue #1144 transient heartbeat-busy fixture)
+
+- Hosted race evidence from #1143 exposed that
+  `TestCallbackManagerTransientHeartbeatBusyRetainsClaim` inferred a post-busy
+  heartbeat renewal with a 90 ms lease and `Sleep(150ms)`. The fixture could
+  observe after its initial durable lease expired and then misclassify a safe
+  retry as a product failure.
+- `transientLeaseStore` remains test-only and still delegates every successful
+  extension to the real SQLite store. It now emits one buffered event for its
+  injected first `database is locked` error and one only after the first real
+  delegated extension succeeds. The regression uses a one-second lease,
+  captures the initial token/deadline, waits for both events, and re-reads the
+  durable row to require same token, attempt one, and a later deadline.
+- TDD evidence: the new causal assertions first failed to compile because the
+  fixture had no `failed` or `renewedUntil` gates. No callback production
+  source changed. Idempotent cleanup unblocks the starter before manager
+  shutdown so assertion failure cannot leave dispatch work blocked.
+- Final validation: focused normal x100 passed in 51.249s; persisted focused
+  race x100 exited 0 in 53.917s; complete tools normal/race passed in
+  13.740s/15.259s; full regression passed with 85.5% coverage and zero
+  uncovered functions.
+
+## 2026-08-03 (Issue #1140 matrix listener identity)
+
+- Hosted race evidence showed that parallel `TestMatrix_` fixtures reserved an
+  address with `freeLocalAddr`, released it, and could later query a sibling
+  harness that had acquired that port. The affected custom-global-skill case
+  therefore observed an empty registry even though its own runtime loaded one
+  skill.
+- `runDeps` now accepts an optional listener function and defaults to
+  `net.Listen`, leaving production startup behavior unchanged. `runMatrixTest`
+  requests `127.0.0.1:0`, captures the address of the listener actually
+  returned through that dependency, and fails promptly if startup exits before
+  health is available.
+- TDD evidence: `TestRunMatrixTestUsesActualListenerAddress` was first red at
+  compile time because `runMatrixTestWithListener` did not exist. It now starts
+  the real daemon, serves a custom global skill, and proves its `/v1/skills`
+  request uses the acquired address. Focused normal/race x100, full matrix
+  normal/race x10, and `cmd/harnessd` normal/race passed before the full gate.
+
+## 2026-08-03 (Issue #1124 retry-wait recovery fixture)
+
+- Hosted race CI exposed a test boundary, not a confirmed early-dispatch
+  product defect: the old recovery fixture used `next_attempt_at = now + 60ms`
+  then asserted after `Sleep(15ms)`. Aggregate scheduling could move the real
+  timer across that unowned observation point.
+- The test-only `callbackFixtureClock` is mutex-protected for race safety.
+  Recovery receives a one-hour persisted retry deadline; manual `fire` before
+  fake expiry asserts no starter call and byte-for-byte-relevant durable
+  checkpoint invariants, then manual fire after exact fake expiry asserts one
+  attempt-two admission using the original run ID and cleared token/lease.
+- Strict red evidence: focused compilation initially failed with
+  `undefined: newCallbackFixtureClock`; no production callback source changed.
+- Final-tree focused normal/race x100 passed in 0.419s/2.549s; complete tools
+  normal/race passed in 13.200s/14.719s. Isolated foreground
+  `./scripts/test-regression.sh` then passed normal/race plus 85.5% total
+  coverage and zero uncovered functions in 2m26s.
+## 2026-08-03 (Issue #1136 immutable timeout authority)
+
+- Replaced the provisional public handle cancel with a package-visible opaque
+  `TimedOutSubmissionTicket`. Its initializer is fileprivate to `Runner`; the
+  only mint point is `waitForTerminal`'s final deadline-edge lifecycle check.
+  Ticket consumption retains the private `RunSubmission` owner-token/generation
+  recheck and is transport-only. Terminal, failure, reset, and load revoke it.
+- `RunSession` now tracks every submission stream by handle. Reset/load cancels
+  both displaced A and selected C rather than only the most recent stream.
+- TDD red: removing the old API produced nine expected focused compile errors
+  at former direct call sites. Gated proof now requires no ticket/action before
+  deadline, B -> C -> A exact-one dispatch, duplicate refusal, and post-ticket
+  terminal/failure/reset revocation. Remaining full-gate evidence is recorded
+  by this corrected PR rather than inherited from the superseded implementation.
+- Review correction: the first ticket implementation left a package-scoped raw
+  transport method callable before deadline. The ticket, constructor, and
+  transport closure now live in GoCodeUI; ToolWalk binds the immutable duration
+  at submission and `submissionTimeoutGate(for:)` alone verifies the derived
+  deadline and mints once. The #1146 CI-flake repair introduces an internal
+  `RunSession` monotonic-now seam shared by `RunSubmission.markStarted` and
+  `SubmissionTimeoutGate`; tests freeze/advance it at epsilon and exact
+  deadline instead of sleeping. `Runner.waitForTerminal` now accepts only its
+  poll interval so a caller cannot silently pass a conflicting timeout after
+  submission. A direct
+  gate regression plus a source-surface drift test prevents that bypass.
+
+## 2026-08-03 (Issue #1133 passive displaced-submission outcome)
+
+- Corrected the #1130 wait-policy gap: displacement is now a permanent action
+  fence, not a terminal ToolWalk result. Runner waits for its immutable A
+  handle's terminal/failure through deadline and never auto-answers/approves a
+  mismatched or displaced selected B.
+- `cancelTimedOutSubmission` retains exact locally owned A transport authority
+  after B selection, but its displaced path is transport-only: it cannot alter
+  B selection, transcript, pending UI, or cancellation state.
+- Test-first evidence: four URLSession-gated `RunSession.submit()` + Runner
+  tests were red before the repair (terminal/EOF/timeout returned displaced;
+  delayed ACK returned without A identity). The resulting #1133 tests prove
+  passive terminal, EOF failure, delayed acknowledgement, and B-safe timeout
+  policy. The stronger B -> C authority and revocation proof is tracked in
+  the separate #1136 entry above.
+- Verification: final combined focused `PassiveSubmissionOutcomeIntegrationTests`
+  passes 10/10 (not the earlier intermediate 4/4 or 8/8 counts); strict format
+  (0/7 touched Swift files require formatting) and
+  full `swift test --package-path macapp` (244 tests / 46 suites) pass. Full
+  regression, independent review, and hosted checks remain.
+
+## 2026-08-03 (Issue #1130 submission-local outcomes)
+
+- Split `RunSubmission` into independent A-local `Lifecycle` and displacement
+  facts. A terminal or failure therefore remains available to the initiating
+  caller after scheduled B selection instead of becoming a false timeout.
+- A delayed `startRun` acknowledgement now binds A's handle first, but only an
+  exact, undisplaced active handle may select/activate/account it. Stream EOF
+  and start/transport errors always settle A locally; they fail visible state
+  only while that same A still owns it. `finishRunIfCurrent` clears by object
+  identity rather than a reusable run-id lookup.
+- ToolWalk now uses typed wait outcomes. Terminal/failure precede displacement,
+  and only `.timedOut` reaches guarded A cancellation. New deterministic gate
+  tests cover late acknowledgement, late start/EOF failure, reset/load
+  detachment, and zero B mutation; outcome tests cover ordering and cancellation.
+- Verification: strict Swift formatting, focused submission/ToolWalk suites
+  (13 tests/2 suites), full `swift test` (238 tests/45 suites), and the
+  retained-pane `./scripts/test-regression.sh` pass (normal, race, 85.5% total
+  coverage, zero uncovered functions).
+
+## 2026-08-03 (Issue #1128 submitted-run ownership)
+
+- Added `RunSubmission`, returned by both native submit layers. It records A's
+  `startRun` identity, per-run transcript, terminal result, failure, and
+  displacement independently from the conversation's selected run.
+- ToolWalk now waits, auto-controls, times out, and judges the handle. A
+  selected B produces an explicit displaced result before any B endpoint call.
+  A local lifecycle timestamp is retained so later authoritative B selection
+  works without weakening provisional stale-replay protection.
+- Composer captures `.submit` or `.steer(A)` once; the pure execution seam
+  proves stale steering cannot fall through to a new submission.
+- Verification: strict Swift format; focused submission/external/ToolWalk
+  suite (37 tests/5 suites); full Swift package (230 tests/44 suites); exact
+  repository normal/race regression; coverage 85.5% with zero uncovered
+  functions.
+
+## 2026-08-03 (Issue #1125 native action-owner fence)
+
+- Added expected-run cancel/steer boundaries. Chat Stop, Composer, and ToolWalk
+  timeout carry their rendered/decision A identity; a B mismatch exits before
+  local mutation, Task creation, or HTTP.
+- Deterministic A-to-B tests prove stale Stop, steer, and timeout send zero B
+  endpoint requests while legitimate B actions still reach their endpoints.
+
+## 2026-08-03 (Issue #1007 External Scheduled-Run Controls Rebase)
+
+- System/component: `RunSession` control-owner reducer, accounting fence,
+  request generations, `RunSession+RunControls`, and `InlineRunStatus`.
+- Ownership/order: scoped conversation events select control ownership before
+  accounting. A selected terminal is rendered before a live fallback resumes;
+  a foreign terminal is tombstoned without changing the selected lifecycle or
+  accounting. Selection changes invalidate outstanding answer/input/control
+  requests.
+- Visibility/safety: the scheduled-run accessibility/status text is composed
+  alongside—not hidden by—project status. A second Stop cancels a per-run
+  stream only when that stream belongs to the selected run.
+- Verification: focused `RunSessionExternalControlTests` (6), full macapp
+  (217 tests/43 suites), and `./scripts/test-regression.sh` normal/race/
+  coverage pass from the exact rebased tree (85.5% total, zero uncovered
+  functions). Hosted CI and independent review remain promotion gates.
+
+## 2026-08-03 (Issue #1120 blocked-heartbeat fixture)
+
+- Sol classified the hosted race failure as a test timing gap: a 90 ms fixture
+  lease could cancel admission before its first blocking heartbeat entered.
+  Production callback fencing, heartbeat, deadlines, and SQLite semantics stay
+  untouched.
+- The fixture now uses a one-second lease and orders starter, blocked renewal,
+  process-fence rejection, deadline cancellation, exact-token durable release,
+  and no replacement admission. It proves the released row is `retry_wait`
+  with cleared token/lease, attempt one, and the original reserved run ID.
+- Pre-change local race x200 passed in 22.373s, so it is recorded as
+  characterization and not falsely presented as a production reproduction.
+  Final normal/race x100 passed in 100.791s/103.045s; tools package
+  normal/race passed in 13.562s/14.836s; isolated full regression passed normal,
+  race, 85.5% coverage, and zero uncovered functions.
+
+## 2026-08-03 (Issue #1117 callback duplicate-manager fixture)
+
+- Sol classified the hosted duplicate-dispatch report as a test-fixture timing
+  defect: a deliberately blocked admission outlived the test's 30 ms lease,
+  so a sequential reclaim could legitimately create attempt two. This slice
+  keeps #1106 production ownership/retry/lease code untouched.
+- The fixture uses the manager's default lease, retains the direct second
+  `Recover` process-fence failure and exact one starter/run/attempt assertions,
+  and remove only the unrelated wait beyond an artificially short lease.
+- The transient SQLite-claim-contention fixture additionally asserts that
+  its durable single attempt/run resulted in exactly one `StartCallback` call.
+  Branch provenance: #1119 (closing #1117) and child #1121 (closing #1120)
+  are merged into the current #1106 stack; they are not yet on `main`.
+- TDD evidence: pre-change focused normal x100 failed with `attempts = 2, want
+  1` at the old 30 ms-lease/100 ms-wait fixture; focused race x100 passed,
+  confirming schedule sensitivity. After the test-only correction, focused
+  normal/race x100 and complete tools normal/race passed. A first overlapping
+  repository run is explicitly rejected as non-authoritative. After its
+  processes drained, one isolated foreground regression passed normal, race,
+  85.5% coverage, and the zero-uncovered-function gate.
+
+## 2026-08-03 — Issue #1112 authenticated cron assembly fixture cost
+
+- Symptom: the repository race gate could record the assembled authenticated
+  remote cron execution as timed out even though harnessd logged the same
+  idempotent start at the five-second request boundary.
+- Root cause: `assembly_integration_test.go` stored the production cost-12
+  bcrypt hash returned by `store.GenerateAPIKey`. Race instrumentation and
+  aggregate package CPU pressure amplified the authentication comparison from
+  roughly 0.21 seconds normally to 2.47 seconds in isolation and beyond the
+  request budget in the hosted aggregate gate.
+- Fix: retain the random bearer, real harnessd auth/scope middleware, finite
+  request/job deadlines, durable idempotency, run linkage, terminal
+  observation, and scope assertions, but rehash that synthetic test token at
+  `bcrypt.MinCost`. A deterministic cost assertion fails before dispatch if a
+  production-cost hash returns to the fixture.
+- TDD evidence: the new invariant first failed with `cost = 12, want 4`.
+  After the fixture correction, the assembled path passed normal x25, race
+  x10, the complete cron package in normal and race modes, and the repository
+  regression gate (normal, all-package race, 85.5% total coverage, zero
+  uncovered functions).
+- Production behavior: unchanged. In particular, production bcrypt remains
+  cost 12, no timeout changed, and no application retry was added; #1003
+  explicitly classifies retryability without implementing remote retries.
+- Delivery status: [PR #1113](https://github.com/dennisonbertram/go-code/pull/1113)
+  merged to `main`; the test-only fixture repair is part of the #1106 rebase
+  baseline.
+
+## 2026-08-03 (Issue #1106 final liveness and mixed-version repair)
+
+- Every filesystem-backed durable callback manager now acquires and holds the
+  common workspace process-loss fence before `Set` or dispatch, for that
+  manager's lifetime, instead of only during `Recover`. `Recover` additionally
+  requires that authority; setup fails closed when it is unavailable, and the
+  authority is released after failed bootstrap, on shutdown, or by process
+  exit.
+  Current claims persist private state `dispatching_fenced`; the pre-#1106
+  binary's exact expired-reclaim predicate matches only `dispatching`. If old
+  wins pending/retry admission, current leaves that live state untouched. If
+  current wins, old cannot reclaim it. Manager/API reads normalize the private
+  state to public `dispatching`.
+- Crash recovery now requires both the kernel-released workspace lock and an
+  expected-token CAS captured only from the bootstrap snapshot. It can mutate
+  only current-version private `dispatching_fenced` rows, including expired or
+  `NULL` leases; legacy public `dispatching` rows fail closed even when expired
+  or `NULL`. A second timer in the same live manager cannot reuse the lock to
+  reclaim its own unwinding admission. A killed child that claimed the current
+  state is recovered under the same reserved ID after process death; stale
+  observed tokens cannot clear a replacement.
+- Replaced the finite local claim retry cap with cancellation-aware exponential
+  rearming whose delay exponent saturates. Nine consecutive failed claim
+  windows recover in the same daemon without consuming a durable admission
+  attempt. Concurrent authority joins are serialized so valid concurrent Sets
+  cannot fail the second check/acquire racer. The persisted safe retry reason
+  remains `callback admission unavailable`; raw store/context errors are never
+  surfaced.
+- Deadline handoff persists the safe `callback admission unavailable` reason
+  on `retry_wait`, making the retry state truthful to API consumers without
+  exposing storage or context errors. Client presentation remains explicitly
+  in #1007/#1009/#1010 rather than being claimed by this backend PR.
+- TDD evidence: current-owner/legacy-takeover, finite-rearm, stale-token CAS,
+  same-manager recovery, private cancel-state exposure, and concurrent
+  authority join all failed before their production repairs. The mixed-version
+  and crash/liveness matrix passes normal x30, race x20, all callback tests pass
+  race x3, and the complete host tools package passes.
+- The required exact-tree regression normal phase passed, but the race phase
+  failed in the out-of-scope cron assembly integration test when its authenticated
+  remote start exceeded the 5-second request timeout. A focused host-local race
+  rerun passed x5 but reached 4.711 seconds of remote-start latency and 14.83
+  seconds total. This remains an unwaived baseline blocker under #1112; no #1106
+  commit or push was made and no cron code was changed here.
+
+## 2026-08-03 (Issue #1110 — Notify-Parent Activation Test Lifetime)
+
+- Symptom: hosted race coverage reported that a recorded-parent subagent lacked
+  `notify_parent` after `StartRun` returned.
+- Cause: the test used an instant provider and read the activation registry
+  after starting asynchronous execution. A fast terminal run legitimately
+  cleans transient activation before that read, so the assertion did not
+  observe the user-visible first provider request.
+- Fix: replace only the fixture with a capturing provider blocked after its
+  first `CompletionRequest`; assert `notify_parent` there, then release and
+  assert normal terminal cleanup. Production Runner activation remains out of
+  scope unless this deterministic boundary fails.
+- TDD evidence: the deliberately terminal-waited form of the old assertion
+  fails deterministically (`expected notify_parent to be auto-activated...`),
+  proving its lifetime boundary was wrong. The gated replacement passes
+  focused positive/negative normal x1000 and race x1000 plus the adjacent
+  stored parent-handoff test x100; it has no production diff.
+
+## 2026-08-03 (Issue #994 — Terminal SSE Before Control Acknowledgement)
+
+- Review found that `RunSession` tied control-post cleanup to `currentRunID`.
+  A run's terminal SSE can arrive before its delayed approve/deny/steer HTTP
+  acknowledgement, and the per-run stream then correctly clears that ID while
+  incorrectly leaving `runControlInFlight` set forever.
+- The deterministic red uses a real terminal SSE frame followed by delayed
+  HTTP completion. It covers accepted approval, rejected steering with draft
+  restoration, and verifies that reset and conversation loading still reject
+  an old completion by request generation.
+- Control completion now uses the request-generation ownership fence only.
+  Reset/load increment that generation; a terminal event does not. This lets
+  the same run settle its own pending control after it terminates without
+  allowing an old conversation to mutate a replacement session.
+- Follow-up review found the keyboard path did not use the visually disabled
+  composer boundary: Return could start B after A terminaled but before A's
+  pending control completion. `canSubmit` and `submit` now both reject while
+  `runControlInFlight`; the terminal-SSE fixture attempts that exact B submit
+  and proves no second start, no draft loss, and no stale error.
+- Verification after the follow-up repair: focused `RunControlAckTests` passes
+  16 tests; strict format, full Swift (211), build, live fake-harness (2),
+  and the repository normal/race/coverage gate pass at 85.5% with zero
+  uncovered production functions. Fresh independent review remains required
+  before promotion.
+
+## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
+
+- Planned a test-only repair for a hosted native live-harness flake: terminal
+  accounting can precede asynchronous durable `/messages` reconciliation.
+- The accepted barrier must observe `RunSession`/`Transcript` state, then
+  release the fixture and await rendered durable assistant rows; raw request
+  presence and transport completion are insufficient evidence.
+- The gated red failed exactly at the old premature C durable-text assertion.
+  The repaired fixture passed strict format, the 11-test stream suite, C x20,
+  full Swift (190), live RunSession tests (2), and Go normal/race/coverage
+  regression (85.5% total, zero uncovered functions).
+## 2026-08-03 (Issue #1106 durable callback claim ownership)
+
+- Reproduced the two-manager duplicate dispatch deterministically: one
+  transient heartbeat `database is locked` error canceled the original
+  admission before its valid lease expired, allowing a competing manager to
+  reclaim and start the same reserved callback run ID.
+- SQLite callback stores now configure WAL and `busy_timeout=5000` in the
+  driver DSN so every pooled physical connection receives them. `ClaimDue` and
+  `ReclaimExpired` use conditional `UPDATE ... RETURNING` and verify the
+  private caller token before reporting ownership; the manager retries bounded
+  pre-claim contention and retains a successful lease through transient
+  heartbeat errors until its confirmed deadline.
+- New regressions prove transient-busy single dispatch, deadline-bounded
+  surrender/takeover, pooled connection pragmas, and returned-token fencing.
+- Review repair: a per-dispatch deadline guard now cancels admission even when
+  `ExtendLease` remains blocked until its renewal context expires; the
+  heartbeat also compares the actual return time rather than its stale tick.
+  SQLite DSNs are now escaped `file:` URIs, preserving literal `?` filenames
+  while applying pragma query values on every pooled connection.
+- Follow-up repair: ordinary callback-store paths are first made absolute and
+  then escaped as file URIs, so relative, `?`, and Windows-like names retain a
+  physical database identity. A small bounded local fence
+  cancels old admission before the persisted lease expires; a concurrent
+  contender's starter now proves it cannot admit first at the handoff edge.
+- Structural handoff repair: a local pre-expiry timer cannot establish a
+  happens-before relation with another manager. A deadline-canceled owner now
+  waits for `StartCallback` to return and `ReleaseLease` token-fences the row
+  into `retry_wait`; ordinary timers never reclaim a live `dispatching` row.
+  `RecoverExpiredLease` is reserved for the documented bootstrap process-loss
+  boundary. The new contender is armed before expiry and requires durable
+  release, rather than merely observing cancellation.
+
+## 2026-08-03 (Issue #1102 — Deterministic AskUser Wait Test)
+
+- Symptom: hosted race execution of `TestRunnerAskUserQuestionWaitsAndResumes` intermittently read `running` after `PendingInput` succeeded.
+- Cause: `InMemoryAskUserQuestionBroker.Ask` deliberately registers readable pending input before its asynchronous `OnPending` notifier calls `Runner.setStatusAndEmitContext`; the old fixture used registration as though it were the later public status/event boundary.
+- TDD evidence: the existing hosted exact red was `expected waiting_for_user status, got "running"`; local pre-fix `-race -count=500` passed, confirming that delay-based repetition cannot make this fixture deterministic. The revised test first failed to compile while naming the missing event-boundary test helper, then passed once the helper subscribed to runner history/live events without sleeps.
+- Fix: the test now subscribes atomically after run creation, waits for `run.waiting_for_user`, then retains the pending-call ID, immediate `GetRun` waiting-state, submit, completion, provider-call, and full event-order assertions. Production runner/broker code is unchanged.
+- Verification: focused normal and `-race -count=20` passed; complete `internal/harness` normal/race passed; foreground `./scripts/test-regression.sh` completed normal, full race, coverage, and the 80%/no-zero-function gate at 85.6%. The tmux run's Keychain/live-network failures were environment-only and not accepted as the final gate.
+
+## 2026-08-03 (Issue #1006 — Callback Retry/Linkage Planning)
+
+- Current architecture search found #1005's `CallbackManager.fire` commits
+  `fired` before calling an error-only `RunStarter`; its SQLite store has only
+  pending/fired/canceled semantics. The callback's resulting run is therefore
+  neither durable nor linked on a failed start.
+- The existing remote-cron path has a stronger, separate pattern:
+  `Server.getOrStartCronRun` reserves a `run_` ID and calls
+  `Runner.StartRunWithIDContext` under a durable lease. #1006 will adapt the
+  Runner identity boundary for embedded callbacks without sharing cron's HTTP
+  idempotency tables or changing #1005 durability behavior.
+- Implementation: callback creation reserves `run_callback_<callback-id>`.
+  SQLite conditionally claims due/retry work into `dispatching`, fences every
+  completion by token, heartbeats live admission, reclaims expired leases, and
+  records `started`, bounded `retry_wait`, or safe terminal `failed` state.
+- Runner boundary: `EnsureRunWithIDContext` normalizes default scope, rejects
+  prompt/scope identity conflicts, reconciles queued/terminal identities, and
+  rereads duplicate-create races. A cancellation fence after durable create or
+  replay preflight retains the queued identity without local publication.
+- Runtime/API: `harnessd.callbackRunStarter` uses that authoritative boundary;
+  callback tasks expose state, run ID, attempt, next attempt, and bounded safe
+  error while never serializing lease tokens. Dispatching/terminal callbacks
+  remain visible but do not advertise a cancel action.
+- TDD evidence: the original retry red recorded `fired` with no attempt/next
+  retry. Store review also captured a 300-byte retry summary before the 256-byte
+  store fence. A later store red proved inserting Go's zero `time.Time` into
+  nullable `next_attempt_at` made a future pending row immediately claimable;
+  create now writes SQL NULL for an absent retry time. Focused callback/Runner
+  tests pass under `-race -count=20`; the
+  assembled recovery path admits the reserved run into the same tenant, agent,
+  and conversation.
+- Full-gate repair: a #1005 local-zone timestamp compared lexically with a UTC
+  claim time lost the claim even though the parsed instant was overdue. The
+  manager then rescheduled that overdue row at zero delay, producing millions
+  of attempts while admission never began. Migration now accepts driver
+  `time.Time`, string, byte, and NULL forms and rewrites all timestamps UTC;
+  every new timestamp write is UTC and admission-wait tests are bounded.
+- Verification: focused migration/cancel/parser race tests pass x20, complete
+  affected normal/race suites pass, and `./scripts/test-regression.sh` passes
+  at 85.5% total coverage with zero uncovered functions.
+- Independent review found three release blockers. Later callback lifecycle
+  events were discarded after the scheduling run became terminal; a durable
+  callback-list failure could fall back to partial process memory and return
+  HTTP 200; and truncating an arbitrary classified error did not prevent
+  credentials from reaching SQLite, tasks, or SSE.
+- Review repair: later lifecycle events publish at conversation scope without
+  appending after a terminal run. Startup reads every durable callback state
+  and republishes its current lifecycle snapshot before rearming active timers,
+  rebuilding API/TUI replay semantics after Runner restart. Durable listing is
+  error-aware and fails tasks, the agent list tool, and cancel authorization
+  closed. Error summaries use a callback-owned allowlist at classification,
+  persistence, read, and exposure boundaries. Focused red/green and affected
+  normal/race suites pass; the final repository gate remains required on this
+  reviewed candidate.
+- Final gate observation: after recovery changed to all-state publication, the
+  earlier active-only SQLite listing helper had no production caller and failed
+  the zero-function gate. The dead interface/store method was removed; the
+  all-state source of truth and compatibility pending-list method remain.
+- Final verification: retained host tmux `issue1006-final-gate-v4` exited zero;
+  the exact `./scripts/test-regression.sh` passed normal, full race, and coverage
+  at 85.5% total with zero uncovered functions.
+
+## 2026-08-03 (Issue #1098 — Deleted-Job Cron Reconciliation Coverage)
+
+- Intent: restore the zero-function regression gate for the merged #1004
+  deleted-job recovery helpers without broadening cron behavior.
+- Planned regression: a recovered scoped active row with a definitively absent
+  job must persist a failed unavailable terminal record, preserve RunID, avoid
+  `TouchJobRun`, and release admission only after persistence; persistence
+  failure must retain the lease and deny a duplicate.
+- Status: documentation and architecture mapping precede strict red tests on
+  exact `origin/main` `224d667a`.
+- Outcome: direct test-only coverage exercises both `ErrJobNotFound` and
+  `sql.ErrNoRows`, verifies unavailable status/RunID/error/duration, forbids
+  deleted-job touches, proves persistence-before-release/readmission, and
+  preserves duplicate denial on persistence failure. No production code was
+  needed. Rebased focused normal/race x20 and full regression passed.
+
+## 2026-08-02 (Issue #1093 — Deterministic Conversation-Cleaner Shutdown)
+
+- Symptom: hosted PR #1092 race test `TestShutdownConversationCleanerCancellation` could exceed its five-second deadline. The cleaner accepted a context but exposed no completion acknowledgement, so daemon shutdown could only request cancellation before closing persistence and returning.
+- TDD red: a channel-controlled cleaner observed cancellation and deliberately withheld completion. On the original code, `runWithSignalsWithDeps` returned `<nil>` before that cleaner acknowledgement; the original startup sleep was removed from the regression.
+- Fix: `ConversationCleaner.Start` now returns a channel that closes exactly when its goroutine stops using the conversation store. `persistenceBootstrap` owns an idempotent cancel-and-await lifecycle; normal signal shutdown and every deferred startup-failure path invoke it before the conversation store closes.
+- Compatibility: conversation retention interval, immediate startup sweep, disabled-retention behavior, pinned-conversation protection, persistence schema, API, CLI, and clients are unchanged. Startup failure still returns its original error after deterministic cleanup.
+- Verification: normal signal and bound-port startup-failure tests block until a controlled cleaner releases; a direct lifecycle test proves idempotent ownership. `TestShutdownConversationCleanerCancellation -race -count=20`, `TestStartupFailureCancelsConversationCleaner -race -count=20`, combined lifecycle `-race -count=20`, and complete affected harnessd/harness normal/race suites pass. The tmux full gate's two real Keychain failures were reproduced as launch-context-only; the identical foreground Keychain tests pass, and the authoritative foreground full regression is the acceptance gate.
+
+## 2026-08-01 (Issue #1086 — Acceptance Inventory and Evidence Schema)
+
+- Added an additive internal compiler that derives available tool rows from the
+  resolved harness registry (or the running `/v1/tools` boundary) and built-in
+  TUI command rows from `NewCommandRegistry`; there is no second catalog of
+  names or aliases.
+- The canonical schema hashes sorted inventory rows, rejects duplicate command
+  aliases and conditionless not-applicable records, records owner/condition/
+  applicability, and requires exactly one intent case per available
+  item/surface pair.
+- Pass evidence requires exact ordered actions, matching expected postcondition
+  contract, separate verified probe observation, run/conversation/event IDs,
+  artifacts, timing, and verified cleanup. Tool completion or narration alone
+  is not representable as a pass. Failed evidence requires a failure class.
+- Added `acceptance-inventory`, a read-only command that compiles a Markdown
+  report from a running daemon's `/v1/tools` catalog plus the actual TUI
+  registry; it executes no tools and does not change ToolWalk behavior.
+- Unavailable dynamic providers are represented as provenance-bearing `toolset`
+  observations. The compiler rejects a configured unavailable provider without
+  its observation and rejects unproven individual tool names, preventing both
+  silent skips and fabricated static catalogs.
+- Review symptom: the first Registry metadata pass flattened every default
+  core/deferred source into two generic labels, while runtime MCP registration
+  and `ReplaceByTag` wrote no owner or condition at all. This made the schema
+  non-empty but not authoritative.
+- Cause: tool construction accumulated bare `[]tools.Tool` values before
+  registration, discarding the conditional branch that owned each value;
+  dynamic Registry mutation paths bypassed `RegisterWithOptions`.
+- Fix: the default builder now accumulates `catalogTool` values at each actual
+  registration branch. Initial MCP discovery adds an exact `mcp_server:` tag,
+  runtime MCP and hot reloads stamp Registry-owned provenance, and `/v1/tools`
+  exposes those stable fields. No production tool-name ownership map exists.
+- TDD/verification: focused reds observed missing MCP server tags, generic goals
+  ownership, empty runtime MCP/hot-reload provenance, and generic conditional
+  default provenance. A final fail-closed red showed whitespace-padded
+  `harness.registry` could evade the generic-owner rejection; compiler input is
+  now normalized before validation and hashing. The five affected Go packages
+  pass normally, and the provenance/reconciliation/concurrency subset passes
+  under `-race`. Swift and full repository gates are intentionally deferred to
+  the promotion lane.
+- Review repair: `RenderResultMarkdown` emitted its correct per-surface rows and
+  then an extra six-column item summary under the seven-column table header.
+  The regression observed four `tool:read` rows for its three applicable
+  surfaces; removing only the unconditional legacy summary emission restored
+  one well-formed row per item/surface.
+- Independent review repair: evidence validation previously trusted the
+  caller's `Case`, configured-unavailable reconciliation matched only a name,
+  resolver provenance was dropped from the canonical item/hash, and the report
+  renderer accepted raw structurally empty PASS records. Deterministic reds
+  covered unknown/not-applicable items, unsupported surfaces, five provenance
+  mismatches, duplicate configured toolsets, provenance-sensitive hashes,
+  invalid TUI observations, and unvalidated rendering. Validation now resolves
+  the authoritative compiled item and surface, configured and observed
+  toolsets match the complete normalized tuple, provenance is hashed/reported,
+  and rendering validates every record against its case before showing a
+  result.
+- Live-boundary repair: `/v1/tools` and `acceptance-inventory` previously
+  carried only present tools, so a configured MCP provider that failed
+  discovery vanished. The runtime now retains a redacted paired
+  configured/observed toolset snapshot, preserves healthy partial catalogs,
+  binds failure evidence to the exact discovery call, and exposes the pair
+  additively through `/v1/tools`. Focused inventory, registry, MCP, server, CLI,
+  and harnessd suites pass normally and under race.
+- Exact-head coverage/review repair: the first command compiler fabricated
+  every TUI row as a built-in and the HTTP/CLI resolver boundary treated absent
+  evidence as an empty successful snapshot. Behavioral reds captured both
+  paths. `CommandEntry` now owns owner/condition metadata for built-ins, bundle
+  commands, and legacy plugins; compilation copies it and rejects omissions.
+  The server requires resolver snapshots, the CLI distinguishes explicit empty
+  arrays from absent/null fields, and unidentified generic MCP discovery
+  failures mark resolution incomplete and make `/v1/tools` fail with 503.
+- Coverage repair: the report command entrypoint has injected argument/output/
+  run/exit seams with success and failure behavior tests; the obsolete
+  present-only `InputFromHTTPTools` adapter was removed; `errors.Is` now proves
+  `ToolsetResolutionError.Unwrap` preserves the discovery sentinel.
+- Surface-runner integration repair: `ValidateCasesForSurface` validates one
+  runner's complete mapping against the unchanged full inventory/hash, rejects
+  missing, duplicate, stale, or cross-surface rows, and does not make an API
+  runner fabricate TUI/native cases.
+- Final verification: the seven affected Go packages pass normally, the full
+  affected set passes under race, and the authoritative logged-in foreground
+  `./scripts/test-regression.sh` passes normal, full race, and coverage at
+  85.7% with zero uncovered functions. Swift is inapplicable because this
+  repair changes no `macapp/` or ToolWalk schema/consumer.
+- PTY-runner schema review exposed that the v1 draft collapsed canonical and
+  alias spellings, required runtime IDs for local commands, supported only one
+  untyped probe, and accepted bare artifact paths. Failing tests captured each
+  weakness before the v2 change. Command aliases now produce distinct stable
+  invocation IDs and completeness/report/evidence keys; evidence classes make
+  runtime IDs conditional; every typed expected assertion requires its own
+  matching verified observation; typed artifacts require kind, path, SHA-256
+  digest, and an explicit redaction declaration.
+- Required negative paths cannot be registry-derived. `CompileSuiteContract`
+  therefore builds a separate stable-ID catalog for unknown-command and
+  invalid-form scenarios, hashes it with the full inventory hash, and requires
+  every selected-surface declaration exactly once. Undeclared/missing scenario
+  cases and mismatched suite evidence fail; suite rendering keeps scenario rows
+  visibly separate from registered inventory rows. The unshipped v1 draft is
+  intentionally not accepted as a weaker compatibility path.
+- Native-runner review exposed that registry presence was being treated as
+  automatic native GUI applicability. A strict red showed missing/unknown
+  mappings and proof-free native passes had no schema representation. Suite
+  contracts now hash a complete per-item native applicability overlay with
+  source references and UX rationale. Native-available items require cases;
+  explicit N/A items reject cases. A native pass requires typed screenshot,
+  AX snapshot, raw SSE/event, and API/store artifacts plus build SHA, bundle
+  path, daemon PID/port, and asserted isolated workspace metadata.
+- The pre-native-overlay v2 foreground regression checkpoint passed normal,
+  full race, and coverage at 85.6% with zero uncovered functions. Focused
+  final-v2 inventory normal and race tests pass. The authoritative final-v2
+  foreground regression then passed normal, full race, and coverage at 85.7%
+  with zero uncovered functions.
+## 2026-08-03 (Issue #1096 — Deterministic Keychain Regression Gate)
+
+- Symptom: unrelated regression runs could execute real `security add-generic-password` commands merely because `security(1)` was present, then die at the existing 15-second context deadline under an unavailable login-Keychain session.
+- TDD red: new modelstore command-contract tests would not compile on the exact base because Keychain calls constructed `exec.Cmd` directly and no real-mutation opt-in or unique-account helper existed.
+- Fix: modelstore now owns a package-private, default-to-`exec.CommandContext` command factory plus availability seam. Deterministic fakes cover `find`, `add -U`, and `delete` arguments; ensure secrets are stdin-only; and retain existing bounded context/error translation. Real mutation tests require `HARNESS_TEST_REAL_KEYCHAIN=1`, announce their skip reason, and use test/process-specific accounts with scoped cleanup.
+- Safety: no timeout extension, retry, global serialization, suppressed error, provider behavior, persisted credential grammar, or HTTP/client contract changed.
+- Verification: the exact fake/opt-in red failed to compile against base `2709fa1` because the seam/helpers were absent. Green evidence: `go test ./internal/modelstore -count=1`; `go test ./internal/modelstore -race -count=20`; and standard `-v` output showed both real mutation tests explicitly SKIP without the flag. The named host-live command passed both mutation paths for five repetitions (ten live mutations total, 1.044s). First full regression correctly failed only because the new adapter's `SetStdin` was 0.0%; a no-run adapter stream-wiring test closed that real coverage gap. The rerun `./scripts/test-regression.sh` passed normal, race, coverage 85.6%, and zero uncovered production functions.
+
+## 2026-08-03 — Issue #1005 durable callbacks
+
+- Added SQLite-backed callback persistence and manager recovery. The strict
+  red failed because durable-store/recovery seams did not exist; the green
+  proves scoped round-trip plus shutdown/restart overdue dispatch. Dispatch
+  retry/idempotency is intentionally not encoded here (#1006).
+- Review repair: recovery now follows successful runtime binding and listener
+  acquisition; an occupied listener leaves preseeded overdue scoped work pending
+  and the store reopenable. Durable cancellation persists before stopping its
+  timer, one failed fired-state write gets one persistence-only re-arm, and a
+  shutdown waits for a committed `StartRun` without adding dispatch retry or
+  idempotency policy.
+## 2026-08-03 (Issue #1038 — Native Live Terminal Usage Reconciliation)
+
+- Symptom: the real fake-provider `RunSessionLiveTests.submitProducesTranscript` reached a completed transcript with `usage.totalTokens == 0`, making the native usage summary visibly wrong even though harnessd had completed successfully.
+- Root cause: raw local SSE proved that `usage.delta` and the final terminal `usage_totals`/`cost_totals` both arrive correctly. The native conversation stream then reconciled durable messages at the terminal boundary; `Transcript.reconcile` called `load`, resetting the value-type transcript and discarding the accounting snapshot.
+- TDD red: a terminal-only completed event with harnessd's real accounting JSON left all transcript totals at zero. A second deterministic red applied that terminal event and then reconciled durable messages; the rebuild reset total tokens and cost to zero.
+- Fix: terminal reducers reconcile the existing final accounting snapshot before marking terminal state, and durable-message reconciliation retains that known usage while rebuilding only persisted conversation rows. Missing terminal fields preserve prior delta-derived values.
+- Verification: focused reducer suite (19 tests), strict Swift formatting, build, full Swift suite (185 tests), and the same full Swift suite against a real fake-provider harness (185 tests) pass. The foreground repository regression completes normal, race, coverage, and coverage-gate phases at 85.6% total coverage with zero uncovered production functions. The equivalent tmux gate was discarded because Keychain integration prompted in that launch context.
+- Review repair: accounting is now admitted by `RunSession` run identity. Every local/external run boundary clears prior totals; terminal accounting is retained through durable reconciliation only for that same accepted run; an ordinary durable sync clears unknown-run totals. Deterministic multi-run incomplete-terminal and local-stream-failure reds both previously displayed run A's `130` tokens and `$0.0025` for run B, and now pass. The full Swift suite has 187 passing tests; the repeated foreground repository gate again passes at 85.6% coverage with no uncovered production functions.
+- Follow-up review repair: the per-run stream can admit a terminal event before the conversation stream receives its duplicate. Deduplication then returns `false`, but that means “already reduced,” not “unowned.” Conversation terminal reconciliation now retains accounting whenever `accountingRunID` still matches the terminal event's run. The deterministic URL-protocol regression gates the duplicate conversation terminal on completion of the per-run stream, confirms durable-message reconciliation occurred, and asserts prompt `120`, completion `10`, total `130`, priced `$0.0025`, and `available` status. The real fake-provider test now waits for the observable durable reconciliation fence (`lastEventID == nil`) before asserting all five usage fields.
+- Fresh verification for that ordering repair: strict Swift format lint, build, and full suite pass (187 tests); the focused real fake-provider suite passes (2 tests). A fresh foreground `./scripts/test-regression.sh` completed normal, race, coverage, and coverage-gate phases; its newly generated profile passes at 85.5% total coverage with zero uncovered production functions.
+- Final review repair: accounting admission correctly rejected a stale terminal from run A after run B took ownership, but the old path still reduced A's lifecycle and rebuilt durable rows as if A were current. Stale terminals are now lifecycle-suppressed while their durable rows are reconciled with B's usage and run state retained. A deterministic app-level barrier delivers B's full per-run terminal first, then releases A's conversation terminal and durable snapshot; it proves owner `run_b`, exact `120/10/130/$0.0025/available` accounting, B's completed state, A and B durable replies, and exactly one B durable row.
+- Fresh verification for the stale-terminal repair: strict Swift format lint and build pass; the focused conversation suite passes 9 tests, full Swift passes 188 tests, and the real fake-provider suite passes 2 tests. A fresh foreground `./scripts/test-regression.sh` completed normal, race, coverage, and coverage-gate phases; its newly generated profile passes at 85.5% total coverage with zero uncovered production functions.
+- Acceptance repair: the stale terminal test no longer waits for a transport response to finish. Its conversation response blocks on a named test gate; only after `RunSession` visibly exposes B's owner, completed state, and exact five accounting fields does the test release stale A, then reassert B plus durable rows. `Transcript.reconcile(preservingRunState:)` now restores failed-run errors rather than returning immediately after durable `load` erases them. The second deterministic gate drives failed B followed by stale A and proves B's event-only error survives. Fresh evidence: strict lint/build, focused 10 tests, full Swift 189 tests, real fake-provider 2 tests, and foreground repository normal/race/coverage gate at 85.5% with zero uncovered production functions.
+- Final acceptance repair: terminal-only suppression still allowed stale A's earlier `run.started` through the transcript reducer. That changed completed B to running; when A's terminal then requested durable rows, `reconcilePersistedMessages` correctly refused because the UI appeared busy. Foreign frames rejected by the accounting owner now suppress all lifecycle, approval, and waiting mutations while still allowing transcript content history. The deterministic stale-A replay now places `run.started` before A's terminal after the application-level B fence, and proves B's completed state/accounting and A/B durable rows survive.
+- Final cheap-review repair: local submission allocates B before its first SSE timestamp. A stale A timestamp was therefore incorrectly considered newer and could steal that provisional ownership. Foreign events no longer supersede a non-nil owner lacking a timestamp. The app-level regression opens A only after B is allocated but before B's first SSE; B remains queued with zero usage, then completes with exact `120/10/130/$0.0025/available`. Fresh verification: focused 11 tests, full Swift 190 tests, live fake-provider 2 tests, and foreground Go normal/race/coverage at 85.5% with zero uncovered production functions.
+- Final Sol repair: when B's per-run stream failed before its first SSE, its nil-timestamp ownership was never released, permanently rejecting later external C. Failure handling now releases only that unobserved provisional owner; B's queued interval remains stale-protected until the failure is known. The deterministic stream-500 regression proves later timestamped C owns lifecycle/accounting, completes with `7/3/10/$0.0005/available`, and reconciles its durable reply. The pre-SSE stale-A test now waits on the terminal-triggered durable-message request rather than transport completion. Fresh evidence remains focused 11 tests, full Swift 190 tests, live fake-provider 2 tests, and foreground Go normal/race/coverage at 85.5% with zero uncovered production functions.
+## 2026-08-03 (Issue #994 Native Run-Control Acknowledgements)
+
+- Symptom: macOS run controls discarded HTTP acknowledgement failures, cleared a pending structured question before its answer was acknowledged, and could interpret a second cancel during the first request as a local force-stop.
+- Cause: `RunSession` used fire-and-forget `try?` calls and a pre-acknowledgement boolean rather than request-owned state.
+- Fix: the session now owns generation-scoped answer, pending-input, and shared control state; controls are single-flight, errors remain visible and VoiceOver-announced, answer state clears only for the acknowledged prompt, and steering restores an unedited draft after failure.
+- Regression evidence: the stub suite covers endpoint/server failures, retry, cancel escalation, duplicate suppression, stale completions, request/prompt identity, and empty required answers.
+
+- Review repair: steering now checks the shared single-flight guard before reading or clearing the composer draft, so a second keyboard action cannot erase new text while the first ACK is pending. Retries clear an old visible error at request start. Approve/deny remain disabled after HTTP 2xx until their own approval/terminal lifecycle event advances; per-run lifecycle generations handle ACK-versus-SSE reordering, and foreign terminal replay cannot release the current run's control.
+- TDD evidence: three reds captured draft loss, stale retry error, and premature 2xx re-enable. The expanded deterministic acknowledgment suite passes 12 tests, including answer failure→retry→delayed success with duplicate suppression, the stale-A/matching-B lifecycle fence, matching lifecycle-before-HTTP-ack, and preservation of a newer error during delayed successful retry. Full Swift has 207 tests; format, build, and real fake-harness `RunSessionLiveTests` pass. Repository regression remains required before promotion.
+## 2026-08-03 (Issue #1115 — Workflow Subscriber Terminal-Close Fixture)
+
+- Symptom: hosted fast CI reported that a full-buffer workflow subscriber never observed channel closure after terminal execution.
+- Root cause: production already closes and deregisters every registered subscriber under `Engine.mu`; the regression comment claimed subscribe-before-start but the test called asynchronous `Start` before `Subscribe`, allowing a loaded host to finish and delete the run's subscriber map before the test registered its channel.
+- TDD red: an explicit execution gate was added and intentionally withheld; the focused test failed after 3.05 seconds with `run ... did not complete`, proving the gate controls script progress rather than relying on scheduling.
+- Fix: release the chatty script only after `Subscribe` returns, emit 100 logs without draining, then require exactly 64 ordered buffered log events followed by `ok=false`. Production workflow, callback, cron, and late-subscriber replay semantics are unchanged.
+- Verification: the focused close/cancel pair passes normal and race at `-count=100`; the complete `internal/workflow` package passes normal and race. The authoritative logged-in foreground repository regression passes normal, race, and coverage at 85.6% with zero uncovered functions. A prior tmux run failed only the two real-Keychain tests by `security(1)` process kill, matching the documented macOS launch-context boundary; workflow passed in that run too.
+
+## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
+
+- Symptom: a live SSE client could receive `tool.approval_required` and immediately POST `/approve` or `/deny`, but the shared broker had not yet registered the request and the server correctly returned `ErrNoPendingApproval` as HTTP 404.
+- Cause: both the ordinary tool gate and plan-exit gate emitted their approval-required event before invoking `ApprovalBroker.Ask`; both concrete brokers create pending state inside `Ask`.
+- TDD red: `TestE2E_ToolApprovalEventIsImmediatelyResolvable` used a test-only pre-registration gate on the legacy `Ask` path, observed the real HTTP/SSE event, and deterministically failed `POST approve immediately after event: expected 200, got 404`.
+- Review TDD red: registering with a 20 ms deadline, successfully approving or denying before `Wait`, delaying `Wait` for 40 ms, then waiting returned `ApprovalTimeoutError` for both in-memory and checkpoint brokers. The event precision regression also parsed the emitted timestamp and found it truncated fractional seconds relative to `PendingApproval.DeadlineAt`.
+- Fix: the existing `ApprovalBroker` now separates `Register` from `ApprovalWaiter.Wait`. In-memory entries and checkpoint records are registered before the runner emits tool or plan approval events; the waiter retains a decision that arrives before it starts waiting. The tool event reads `deadline_at` from the exact registered pending entry rather than a second clock read.
+- Review fix: in-memory resolution records its decision under the same mutex used by expiry, while checkpoint expiry uses `ExpirePending`; whichever operation wins is authoritative. A resolution winner is returned even after delayed `Wait`, and an expiry winner makes late approve/deny return `ErrNoPendingApproval`. Tool deadlines now use `RFC3339Nano`, so parsing the event round-trips the exact registered timestamp.
+- Compatibility: direct `Ask` remains register-and-wait; duplicate/late resolution, option selection, timeout, fail-closed tool execution, and in-memory cancellation cleanup retain their existing behavior. Checkpoint parent-context cancellation continues to return cancellation while retaining the durable pending record (pre-existing; not changed by this slice); checkpoint expiry remains timeout-owned.
+- Verification: focused harness/server/E2E approval regressions passed normally at `-count=10` and under `-race -count=5`, covering immediate approve and deny, terminal tool and plan conversations, in-memory and checkpoint registration readiness, timeout/duplicate/cancellation characterization, and existing HTTP routes. The concurrent resolution-vs-expiry tests additionally passed `-race -count=100` for both brokers.
+
+## 2026-08-01 (Issue #1081 — Portable Keychain Parser Coverage)
+
+- Root cause: hosted Ubuntu `test-regression` run `30672776651` completed the
+  normal/race suites and profile collection, then rejected exact `main` because
+  `internal/modelstore/credref.go:keychainParts` was 0.0%. macOS reaches that
+  helper through the Darwin-only real Keychain integration; Linux correctly
+  returns from `KeychainAvailable` before any Keychain CRUD path calls it.
+- Fix scope: add portable, table-driven direct validation of the existing pure
+  parser. The test preserves the first-slash split, retained account slashes,
+  and established malformed-reference error contract without invoking
+  `security(1)` or changing production credential behavior.
+- Verification evidence: targeted modelstore normal/race and the authoritative
+  foreground full regression pass; the latter completes normal, full race,
+  and coverage at 85.7% with zero uncovered production functions. The retained
+  Darwin integration passes in the logged-in foreground host context.
+- Launch-context diagnostic: an earlier tmux-hosted full run killed both real
+  Keychain tests at their 15-second process boundary. Re-running the identical
+  candidate in the required non-TTY foreground host context passed, isolating
+  the red to Keychain session access rather than the parser test.
+
+## 2026-08-01 (Issue #1056 — TUI Terminal Assistant Message)
+
+- Symptom: real non-streaming runs persisted `assistant.message` followed by
+  `run.completed`, while the TUI displayed the user prompts but no assistant
+  reply and exported no assistant transcript row.
+- Cause: the SSE bridge forwarded `assistant.message`, but `Model.Update`
+  reduced only `assistant.message.delta`; valid final-only responses therefore
+  left `lastAssistantText` empty.
+- Current-main red: two complete final-only turns produced only the two user
+  transcript entries instead of exact user/assistant/user/assistant order.
+- Fix: the existing reducer treats non-empty `assistant.message.content` as the
+  authoritative response and reuses the active bubble renderer. Tool start
+  closes the prior bubble's viewport-tail ownership, and a per-run finalization
+  bit makes terminal replay/completion consumptive while reopening on the next
+  `RunStartedMsg`.
+- Regressions: final-only, delta plus identical/differing final, mixed
+  delta -> tool -> final, replay idempotency, repeated completion, and two-turn
+  viewport/transcript ordering.
+- Focused evidence: the required two-turn red is green; the focused assistant
+  suite and complete TUI suite pass normal and race. The full repository gate
+  passes at 85.7% coverage with zero uncovered production functions.
+- Real PTY evidence: an isolated exact-candidate `harnessd` and `harnesscli`
+  rendered `PTY_1059_USER_ONE`, `PTY_1059_REPLY_ONE`,
+  `PTY_1059_USER_TWO`, `PTY_1059_REPLY_TWO` once and in order. Both runs used
+  the same conversation id; raw SSE emitted one authoritative
+  `assistant.message` before `run.completed` per run; HTTP and SQLite stored
+  exactly four alternating rows; and a fresh `--resume` TUI replayed the four
+  rows once with an active composer.
+- Exact-head review finding: `/resume` appended its user row but did not clear
+  `lastAssistantText`; `RunStartedMsg` reopened transcript finalization while
+  retaining the prior reply. A contentless completed or failed continuation
+  therefore exported that stale reply again.
+- Review fix: `RunStartedMsg`, the shared boundary for initial and continuation
+  API starts, now clears the assistant accumulator before reopening per-run
+  finalization. The actual `/resume` command regression failed with a third
+  stale assistant row for both `run.completed` and `run.failed`, then passed
+  with exactly the prior assistant row and continuation user prompt. The
+  focused resume, new-content, replay, and two-turn matrix passes normal and
+  race on the rebased candidate.
+- Hosted-test isolation follow-up: the first terminal event correctly consumed
+  the injected cancel function, so the regression's continuation start opened
+  a real SSE bridge against its command-only `httptest.Server`; GitHub race
+  exposed the unexpected `GET /v1/runs/run_next/events`. Reinstalling the
+  cancel seam between runs keeps the test on its intended reducer/API path.
+  The focused regression passes 20 normal and 10 race repetitions. The same
+  hosted wave also hit the unrelated workflow subscriber-close timing test;
+  that baseline test passed 20 normal and 10 race repetitions locally and is
+  being rechecked independently rather than waived.
+
+## 2026-08-01 (Conversational Cron CRUD Acceptance Repair — Issue #1002)
+
+- Symptoms: model GET could fall through to global name lookup; same-name global lookup selected an arbitrary scope; active resume leaked a second robfig entry; scheduler failure followed persistence without rollback; migration recognized only a narrow `UNIQUE` spelling.
+- Final lifecycle repair: create and paused→active resume use paused-first registration so failure remains restart-safe. Active schedule replacement uses inert `Prepare` → durable CAS → infallible `Commit`, preserving the prior active row/entry on prepare or CAS failure. Registration identities are globally monotonic; after jitter and durable reload, identity validation and `CreateExecution` form one scheduler-locked admission point shared with prepare/commit/remove.
+- Deterministic reds: embedded model get accepted `shared-name`; the ID route invoked name lookup; global same-name lookup lacked `IsJobAmbiguous`; duplicate add left two live entries; quoted/bracketed/backtick migrations retained global uniqueness.
+- Fix: split `/v1/jobs/{id}` from explicit `/v1/jobs/by-name?name=...`, add typed ambiguity, put remote/embedded ownership in SQLite predicates, replace old live entries through prepared scheduler transactions, and broaden transactional migration recognition. Query encoding preserves arbitrary non-empty names, including slash, spaces, percent, and Unicode.
+- Durable proof: a four-variant legacy matrix preserves two jobs, two execution rows, run metadata, exact timestamps, and scoped uniqueness across an idempotent second migrate; `integrity_check` and `foreign_key_check` pass.
+- Earlier candidate evidence (superseded by the lifecycle follow-ups below): remote CRUD/history and concurrent update/delete tests passed the then-current focused packages. It is not latest-head broad/full regression evidence.
+- Review follow-up: `url.PathEscape` could not preserve a slash once Go exposed
+  decoded `URL.Path`. The exact operator route now reads `name` from the query,
+  rejects empty input at client/server boundaries, and advertises GET only.
+  Slash/space/percent/Unicode regressions passed normal/race; complete
+  `internal/cron` passed normal in 8.783s and race in 10.807s.
+- Blocking review follow-up: production registries captured the raw cron
+  adapter, pause/resume omitted the model's read version, and DDL regex parsing
+  missed legal `UNIQUE(name COLLATE NOCASE)`. The mutation audit found the same
+  stale-write gap on model delete.
+- Deterministic reds: assembled embedded and remote default registries both let
+  scope B read scope A; pause/resume/delete schemas required only `id`; stale
+  model delete succeeded; and the semantic index inspector was absent while
+  the collated migration variant retained global uniqueness.
+- Fix: `NewDefaultRegistryWithOptions` now applies one idempotent scoped client,
+  which covers top-level, worktree per-run, and subagent registry construction
+  while operator adapters remain raw. Pause/resume/delete require
+  `expected_updated_at`; remote and embedded delete use persistence CAS and
+  return typed conflict. Migration now uses SQLite `index_list`/`index_xinfo`
+  key metadata and ignores composite or partial uniqueness.
+- Superseded lifecycle-convergence chronology: deterministic remote and embedded reds used
+  scheduler add/replacement failures plus an injected `TouchJobRun` between the
+  successful write and rollback CAS; both left an active durable row divergent
+  from live dispatch. Separate create reds made scheduler registration and
+  compensating delete fail, leaving an active stored orphan.
+- Superseded fix chronology: both adapters called a rollback recovery policy. Rollback conflict
+  reloads durable authority and re-registers that exact active row; persistent
+  registration failure calls atomic `DeactivateJob`, which changes only status
+  and version, then removes live dispatch. Failed create deletion uses the same
+  durable deactivation. This design and the dead `DeactivateJob` API were later
+  replaced by prepared scheduler transactions.
+- Lifecycle-convergence verification: the bounded nine-package normal command
+  passed in 8.993s/11.698s/1.642s/9.359s/1.307s/1.547s/4.757s/5.893s/3.169s;
+  the same package set with `-race` passed in
+  11.223s/12.901s/2.103s/10.298s/1.416s/2.454s/4.639s/7.720s/4.077s. No full
+  regression, staging, commit, rebase, push, server launch, or GitHub mutation
+  was authorized.
+- Durable proof: the five-variant migration matrix preserves jobs, executions,
+  timestamps, foreign keys, and integrity across an idempotent second migrate;
+  assembled embedded/remote registries reject cross-scope and stale mutations
+  without a manual wrapper.
+- Focused verification: `go test ./internal/cron ./internal/harness/tools/... ./internal/harness ./cmd/harnessd -count=1` passed all nine emitted packages in 9.284s/11.486s/1.553s/9.323s/1.295s/1.573s/4.473s/6.469s/3.333s; the same bounded package set with `-race` passed in 10.958s/12.295s/2.499s/10.693s/1.971s/2.268s/4.424s/6.985s/3.122s. No full regression, live server, commit, push, or GitHub mutation was authorized.
+- Final read-only review found that `cron_get` converted every history retrieval
+  error into `recent_executions: []` without an availability signal, letting a
+  model mistake database failure for proof that a job never ran. The new red
+  required explicit unavailable state and warning while keeping the job and
+  backward-compatible empty array. The tool now emits
+  `recent_executions_available` on every result and
+  `recent_executions_warning` on failure; its description documents the
+  interpretation rule.
+- Latest admission-lock and history-availability verification:
+  `go test ./internal/cron ./internal/harness ./internal/harness/tools ./internal/harness/tools/deferred ./cmd/harnessd -count=1`
+  passed in 9.522s/5.596s/11.403s/9.466s/2.402s; the same five packages with
+  `-race` passed in 11.202s/8.741s/12.588s/10.954s/4.512s. The focused history
+  red failed for missing availability/warning fields before production code;
+  its normal/race green passed in 0.330s/1.349s. The candidate was then rebased
+  onto `origin/main` `3506e01c`.
+- Live provider compatibility follow-up: an OpenAI-compatible harness canary
+  rejected `cron_create` before model execution because the function schema
+  carried top-level `oneOf`. Those providers require the top-level schema to
+  be a plain object and reject composition keywords there. The schema now
+  advertises the optional shell `command` and harness `prompt` fields without
+  top-level composition; the existing handler remains the fail-closed authority
+  for execution-type pairing and required non-empty payloads. The focused
+  regression asserts every provider-forbidden top-level composition keyword is
+  absent while retaining the required object root.
+- Final exact-tree verification: the foreground `./scripts/test-regression.sh`
+  passed normal, complete race, and coverage at 85.7% total with zero uncovered
+  production functions. The assembled core-registry regression also checks
+  every visible root schema and explicitly covers all eight cron tools.
+- Real-provider proof: OpenAI `gpt-4.1-mini` invoked all eight model-facing cron
+  tools in one persisted conversation. The first job fired twice into distinct
+  scheduler-started runs whose assistant output appeared in conversation SSE
+  and transcript. A stale update version was rejected; a fresh update moved the
+  schedule to 2027 and changed the harness prompt; get/history returned both
+  execution records with linked run IDs; pause/resume changed durable status;
+  and versioned delete ended with `jobs: []` plus HTTP 404 for the former ID.
+  All eleven runs completed with the exact tenant/conversation/agent tuple.
+- Final promotion-review repair: `cron_create` still told the model to use
+  `bash` plus `sleep` for one-shot delayed work, contradicting the core-visible
+  `set_delayed_callback` path and its same-conversation continuation intent.
+  The description regression failed on the old guidance, then passed normal
+  and race after routing one-shot conversational work to
+  `set_delayed_callback`. Frontier review identified the defect and an
+  independent cheap-agent exact-diff re-review returned CLEAR.
+## 2026-08-01 — Issue #1003 cronsd ingress hardening
+
+- Added mandatory static bearer ingress bound to one configured tenant,
+  constant-time token comparison, authenticated `/readyz`, and authentication
+  on all `/v1/jobs` CRUD/history routes. `/healthz` remains minimal liveness.
+- Create derives tenant from the authenticated principal; list/get/update/
+  delete/history return only owned rows. Startup claims legacy shell rows and
+  rejects unowned harness or foreign-tenant rows before scheduler start.
+- Wired `HARNESS_CRON_API_KEY` and `CRONSD_API_KEY` through the real harnessd
+  and cronctl clients; missing runtime credentials fail before first use.
+- Added real-HTTP full CRUD/history, auth, spoofing, tenant isolation,
+  readiness, startup, legacy compatibility, and caller-wiring regressions.
+- Follow-up P1 repair: added SQLite `ClaimJobTenant` with one conditional
+  `UPDATE ... RETURNING` linearization point. Server visibility and daemon
+  startup require the persisted claim; non-claiming stores fail closed.
+- Follow-up P1 repair: run migration now scans normalized legacy
+  tenant/agent ownership, rejects historical or persisted disagreement, and
+  backfills owners in an immediate transaction. Upgrade/restart, preserved-row,
+  two-store migration, two-server HTTP, and two-startup races are covered.
+
+## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
+
+- Symptom: hosted `test-race` run `30660042116` reported only
+  `write |1: broken pipe` for a source-workflow child that wrote
+  `child stderr diagnostic` and exited status 7.
+- Cause: the first `enc.Encode(start)` error returns directly after killing the
+  process group, before stdin close, `cmd.Wait`, bounded stderr collection, and
+  `resolveSourceWorkflowOutcome`.
+- TDD contract: hold the parent after `cmd.Start` until a FIFO plus OS-released
+  advisory lock prove the real child wrote stderr and exited; require child-exit
+  diagnostics and a reaped PID. Extend the pure resolver table for initial-write
+  precedence and its standalone-error control before production edits.
+- First red: the exited-child fixture returned raw EPIPE instead of exit status
+  7 plus stderr; the standalone resolver control returned missing-result.
+- Review red: a live child closed stdin and remained active; cleanup killed and
+  reaped it, but the resulting `signal: killed` wait error incorrectly masked
+  the initial EPIPE.
+- Fix: capture the initial-write error, retain process-group cleanup,
+  skip protocol serving, then enter the same close/wait/arbitration path used by
+  every other started-child outcome. Record when this path successfully requests
+  SIGKILL and classify that matching wait status as cleanup, while natural exit
+  status 7 remains primary with bounded stderr.
+- Attribution boundary: a matching SIGKILL after this cleanup request cannot be
+  distinguished from an identical concurrent signal without broader WNOWAIT or
+  process-supervision machinery; EPIPE is intentionally primary in that narrow
+  ambiguous case. Natural exit statuses remain unambiguous.
+- Green evidence: both lifecycle branches and the resolver plus real timeout
+  passed; focused normal/race x100 passed in 84.986s/90.588s; workflow
+  normal/race passed in 13.719s/16.534s; and `make test-race` passed. Full
+  non-PTY regression passed normal, full race, and coverage at 85.6% with zero
+  uncovered functions. Parent-run hosted gates remain.
+
+## 2026-07-31 (Runner Dispatcher Shutdown Isolation — Issue #1068)
+
+- Symptom: `go test -race ./internal/harness -count=5` failed four of five
+  repetitions because `TestRunnerWithoutShutdownLeaksDispatcher` found some
+  `poolDispatcher` frame after its target Runner's `Shutdown` returned.
+- Cause: the test scanned all goroutine stacks by shared function name, so the
+  assertion had no target identity. Review then found a second defect: five
+  bounded construction sites in `runner_worker_pool_test.go` create seven
+  Runners per package repetition and omitted `Shutdown`, so their dispatchers
+  survived after their tests completed. The production path already closes a
+  target's `done` channel and waits its `dispatcherWG` before returning.
+- TDD red: a deterministic two-Runner fixture kept a control Runner alive,
+  shut down the target, and failed the old global-absence assertion immediately.
+- Review TDD red: a bounded Runner returned from a subtest without its exact
+  dispatcher-exit hook firing; the parent then shut it down explicitly so the
+  red proof did not itself leak.
+- Fix: replace target lifecycle inference with a narrow per-Runner dispatcher
+  exit hook invoked immediately before the existing `dispatcherWG.Done`.
+  The test blocks that exact target hook, proves `Shutdown` cannot return,
+  releases it, then proves Shutdown returns while the control's global stack
+  frame remains visible.
+- Review fix: a shared worker-pool test constructor now registers cleanup that
+  releases any blocked provider before calling bounded `Runner.Shutdown` with
+  a five-second diagnostic deadline. Every affected worker-pool fixture uses
+  that constructor; the cleanup regression itself blocks inside the provider
+  until cleanup establishes the required release-before-Shutdown ordering.
+- Compatibility: queue draining, inflight accounting, cancellation timeout,
+  idempotency, and production shutdown ordering are unchanged.
+- Verification: the cleanup regression passed normal/race; all worker-pool
+  tests passed normal/race at `-count=100`; complete harness race passed at
+  `-count=5`; harness vet passed; and unchanged foreground non-TTY
+  `./scripts/test-regression.sh` passed at 85.6% total coverage with zero
+  uncovered functions.
+
+## 2026-07-31 (Terminal Status/Event Atomicity — Issue #1067)
+
+- Symptom: aggregate race load exposed `RunStatusFailed` from `GetRun` while
+  the same run's immediate replay ended at `llm.turn.requested` without
+  `run.failed`; code inspection found the same status-first window on completed
+  and cancelled paths.
+- Cause: every terminal helper called `setStatus` before `emit`, splitting the
+  public run record from the event journal's ledger, bounded store append,
+  subscriber fanout, and recorder drain.
+- Deterministic red: a no-sleep transition barrier reproduced all three states.
+  Completed replay lacked `run.completed`, failed replay contained the required
+  `error.context` but lacked `run.failed`, and cancelled replay lacked
+  `run.cancelled` while `GetRun` already returned each terminal status.
+- Fix: one `transitionTerminal` seam now lets the winning terminal emit seal and
+  append the matching event, completes bounded store append and ordered recorder
+  dispatch/drain, conditionally persists the matching status, commits in-memory
+  status, then fans out. Every status transition shares a per-run mutex, so a
+  delayed running/waiting snapshot cannot overwrite terminal state.
+- Preserved reliability: terminal store I/O remains outside `Runner.mu`, and
+  status-store I/O remains outside the global conversation journal lock;
+  a refcounted per-conversation sequence guard prevents same-conversation
+  overtaking while unrelated `GetRun` and unrelated event journals stay
+  responsive, then reclaims idle keys. Terminal redaction sealing, event IDs,
+  causal/error snapshot order, recorder order, backup, and pruning contracts
+  remain intact.
+- Failure policy: retained terminal status persistence is never attempted when
+  terminal append reports failure. If append succeeds but final status update
+  errors or reaches its context deadline, durable status may remain
+  non-terminal while the durable event, in-memory terminal state, and subscriber
+  fanout proceed. This is the strongest one-way guarantee available without a
+  store transaction and does not claim two-way atomicity.
+- Explicit exception: existing terminal `StorageModeNone` configurations still
+  suppress the matching replay event while sealing and publishing status, as
+  pinned by terminal-redaction tests. The stronger replay implication applies
+  to terminal events retained by policy.
+- Review regressions: append failure cannot persist terminal status; status
+  update failure/timeout still completes live publication; unrelated
+  conversations progress during terminal I/O while target events cannot
+  overtake; delayed non-terminal status cannot overwrite terminal; explicit
+  terminal redaction waits for recorder drain; and contended/distinct keyed
+  locks reclaim to zero.
+- Exact-head retention cause: the terminal event success marker made a run
+  eligible for pruning even when the matching final `UpdateRun` failed, because
+  that return value was discarded. The truthful in-memory terminal state could
+  be evicted while the durable row remained running. Both append- and
+  status-failure exceptions could also accumulate without an admission bound.
+- Retention/admission fix: terminal event resolution and terminal status
+  persistence are tracked separately. Store-backed pruning requires both;
+  `StorageModeNone` is explicit event suppression plus durable status, while
+  no-store runs remain process-local. Both unresolved append and status states
+  count toward `MaxCompletedRetention`. At the cap, Start/Continue retry only
+  status gaps under one shared deadline of at most 250 ms and otherwise return
+  `TerminalDurabilityBackpressureError`; their HTTP routes map it to 503
+  `terminal_durability_unavailable`.
+- Recovery and boundedness: no recovery store I/O holds Runner, status,
+  event-journal, or conversation locks. Status overwrite retries are safe and
+  immediately restore the completed-retention bound before reopening admission
+  once acknowledged. Ambiguous failed appends are protected but never retried
+  because a third-party store may have applied the append.
+  Already-admitted work finishes and remains visible; admission closes at the
+  cap so permanent failure growth stops at that finite admitted population.
+- Exact-head regressions: retention 1 preserves several already-admitted
+  UpdateRun-failed completions while durable rows stay non-terminal; concurrent
+  admissions reject during outage and recover under race; one blocked retry
+  proves the shared deadline and unlocked state/journal access; append failure,
+  StorageModeNone, no-store, Continue error precedence, and both HTTP 503 routes
+  are pinned.
+- Concurrent review red: a phase hook paused Continue immediately after its
+  completed-source validation. A concurrent Start recovered three pending
+  statuses, pruned the oldest validated source at retention 1, and the resumed
+  Continue deterministically failed with `run not found`.
+- Concurrent review fix: validation now increments an in-state continuation
+  reservation under `Runner.mu`. The one shared completed-run prune candidate
+  filter excludes reserved sources for every caller. A defer releases on every
+  success/error path and immediately re-prunes; the existing later write-lock
+  `continued` check still chooses exactly one continuation winner. Recovery
+  store I/O remains outside Runner/status/journal/conversation locks.
+- Gate-test correction: full race exposed one test treating terminal replay as
+  proof status had already committed. The one-way contract is the reverse:
+  terminal status implies replay, while replay may lead status. The test now
+  waits independently for failed status and retains both replay/status checks.
+- Verification: the concurrent red is green with cleanup and single-winner
+  controls normal/race at `-count=100`; the expanded durability harness and HTTP
+  suites pass normal/race at `-count=100`; complete `internal/harness` plus
+  `internal/server` normal/race and affected `go vet` pass. The final direct
+  foreground non-TTY `./scripts/test-regression.sh` passes normal, full race,
+  and `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)`.
+- Hosted settled-helper symptom: exact rebased race run `30656467482` failed
+  `TestRunnerHookErrorFailOpen` because `collectRunEvents` returned terminal
+  replay history before the valid later status commit; the immediate `GetRun`
+  still reported `running`.
+- Audit/cause: 215 `collectRunEvents` references, its sole configurable-timeout
+  caller, and 79 `collectEvents` snapshot references were reviewed. No shared
+  collector caller intentionally observes the event-leading-status window.
+  Exact ordering regressions use direct phase hooks/subscriptions; snapshot
+  consumers either wait separately or intentionally inspect nonterminal state.
+- Deterministic red/fix: a pre-status terminal barrier made replay visible and
+  failed the old collector immediately with `returned before terminal status
+  commit`. Both collector variants now preserve event assertions and then poll
+  for any terminal status within the same total deadline. A missing status is a
+  timeout failure rather than a false settled result; production order is
+  unchanged.
+- Hosted-equivalent verification: the collector, all hook scenarios, and the
+  configurable-timeout caller pass normal/race at `-count=100`; `make
+  test-race` passes. The final outside-sandbox foreground
+  `TMPDIR=/private/tmp GOCACHE=/private/tmp/gocode-go-cache
+  ./scripts/test-regression.sh` passes normal, full race, and
+  `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)`. GitHub
+  comment publication was blocked by external-write safety review and was not
+  retried; this repository evidence records the run.
+- Exact-head helper review: commit `8757e8a3` still let settlement succeed when
+  a closed stream had no terminal event, or when the sole terminal event did
+  not match the later terminal status. This was a P1 test-integrity defect, not
+  a production-path defect: it could mask the exact #1067 invariant across the
+  shared collector callers.
+- Review TDD reds: a completed run plus closed stream containing only
+  `run.started` returned success, and failed status plus `run.completed`
+  returned success. Both failures were immediate and deterministic.
+- Review fix: the test-only subscribed-stream core now requires exactly one
+  terminal event and requires its completed/failed/cancelled meaning to match
+  the observed terminal status. Event slices remain unchanged on success and
+  error, and both event collection and status settlement consume the original
+  single deadline. The phase regression now waits for an explicit settlement
+  entry signal before proving the collector cannot return ahead of status.
+- Review verification: the two regressions, explicit settlement barrier, hook
+  family, and configurable-timeout caller pass normal/race at `-count=100`.
+  Outside-sandbox `make test-race` passes. The authoritative foreground
+  `TMPDIR=/private/tmp GOCACHE=/private/tmp/gocode-go-cache
+  ./scripts/test-regression.sh` passes normal, full race, and
+  `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)` on this exact
+  follow-up diff.
+- Promotion integration regression: the semantic merge with #1054 initially
+  persisted every non-terminal status before committing it in memory. A failed
+  best-effort `UpdateRun` therefore left an executing run visibly stale; the
+  AskUser broker could own a live pending question while API, TUI, and GUI
+  still saw `running` instead of `waiting_for_user`. A deterministic failing
+  store test reproduced `queued` after a requested transition to `running`.
+  The unified per-run status lock now commits live non-terminal state first,
+  retaining the persistence attempt and false return so strict
+  waiting-status/event publication can retry without making the pending prompt
+  invisible. Terminal transitions retain their event-before-status contract.
+
+## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
+
+- Symptom: hosted race run `30583930460` failed
+  `TestMatrix_ProviderAPIKeyCapture` when its three-second `/healthz` wait
+  expired; the same address began listening roughly one second later.
+- Cause: this fixture used a startup budget shorter than the established
+  ten-second `runMatrixTest` budget and measured shared race-runner scheduling
+  latency instead of the provider-key capture invariant.
+- Planned fix: retain the real health probe, exact captured-key assertion, and
+  bounded shutdown, but use the established ten-second matrix startup budget.
+- Verification contract: focused normal/race stress, adjacent matrix tests,
+  the complete regression gate, and hosted PR checks.
+- Result: provider-key capture passed normal/race at `-count=100`; the complete
+  matrix and harness slices passed normal/race; subscriber-pinned retention and
+  adjacent pruning stress stayed green; and `./scripts/test-regression.sh`
+  passed with 85.6% total coverage and zero uncovered functions.
+- Hosted result: PR #1063 `test-fast` run `30592818353` and `test-race` run
+  `30592818361` both passed on the pushed exact head.
+
+## 2026-07-31 (Issue #1064 — Workflow Exit Error Precedence)
+
+- Symptom: hosted PR #1057 run `30592451360` observed
+  `TestSourceManagerRunWorkflowFailsOnProcessExit` return
+  `write |1: broken pipe` even though the workflow child exited status 7.
+- Cause: `runSourceWorkflow` captured both `closeErr` and `waitErr` after
+  protocol serving, then returned the stdin-close cleanup error before
+  inspecting the primary process-exit error.
+- Fix: extracted one internal `sourceWorkflowOutcome` arbitration seam and
+  ordered terminal evidence as deadline, protocol, non-zero process exit with
+  bounded stderr, stdin-close cleanup, missing result, and success. Process
+  cleanup and waiting remain unchanged.
+- TDD evidence:
+  - the deterministic dual-error test supplies both `syscall.EPIPE` and
+    `exit status 7` without sleeps; against the old ordering it failed with
+    actual `broken pipe`;
+  - the same assertion is green after the fix and includes the child stderr;
+  - table controls pin timeout/protocol precedence, close-only reporting,
+    missing-result behavior, success behavior, and stderr bounding;
+  - focused arbitration and real-child normal/race stress passed at
+    `-count=100`;
+  - complete `internal/workflow` normal/race passed;
+  - unchanged foreground non-TTY `./scripts/test-regression.sh` passed normal,
+    race, and coverage at 85.6% with zero uncovered functions.
+## 2026-07-30 — Issue #1052 provider API-key capture readiness coupling
+
+- Symptom: PR #1051's hosted race job failed because
+  `TestMatrix_ProviderAPIKeyCapture` did not observe `/healthz` within three
+  seconds; the same job log showed the server listening immediately after the
+  deadline.
+- Cause: A provider-configuration unit contract was synchronized through the
+  entire parallel harness startup path, adding unrelated scheduler, watcher,
+  persistence, and HTTP timing.
+- Intended fix: Publish a test-local signal from the injected provider factory,
+  assert the captured sentinel after that signal, then keep the existing
+  interrupt and bounded shutdown proof.
+- Scope: Test and documentation only; no runtime behavior change.
+- TDD evidence: Adding the direct signal wait without emitting it failed with
+  `timed out waiting for provider factory`; closing the channel after protected
+  key capture made it green.
+- Verification: Focused normal and race tests passed 100 repetitions each;
+  complete `cmd/harnessd` normal/race suites passed; the repository regression
+  gate passed normal, race, and coverage at 85.6% with zero uncovered functions.
+
+## 2026-07-30 — Issue #1054 wait state precedes pending input
+
+- Symptom: Hosted race execution observed `waiting_for_user`, then
+  `PendingInput` returned `no pending input`.
+- Cause: `runner_step_engine.go` publishes status/event before invoking the
+  AskUserQuestion tool; broker registration happens later inside the handler.
+- Impact: Event-driven TUI/macOS clients can render a wait state with no
+  question available to display or submit.
+- Intended fix: Let each broker notify after its pending state is
+  readable/durable, forward that notification through the core tool, and
+  publish the runner wait state from that point.
+- TDD evidence: A gated broker made registration impossible while the tool was
+  entered; pre-fix status was already `waiting_for_user`, proving the gap. The
+  test now keeps status `running` until registration, then requires both
+  readable pending input and `waiting_for_user`.
+- Implementation: `AskUserQuestionRequest.OnPending` is a typed,
+  post-registration notifier. Both built-in brokers start it exactly once with
+  the question's deadline context; the core tool forwards it from context; the
+  runner uses it to publish status and the existing event without polling.
+- Verification: Focused AskUser/wait suites passed 100 normal and 100 race
+  repetitions; complete harness normal/race suites passed; repository normal,
+  race, and coverage gates passed at 85.6% with zero uncovered functions.
+- Review follow-up: Exact-head Codex review correctly noted that both brokers
+  computed `DeadlineAt` before `OnPending` but started their timeout afterward.
+  Regressions that held notification beyond the deadline failed on both
+  backends, then passed after the timer/context moved before notification.
+  These deadline tests passed 10 normal and 10 race repetitions; complete
+  harness normal/race and repository normal/race/coverage gates passed again.
+- Second review follow-up: Starting the clock was insufficient because a
+  notifier that never returned still prevented `Ask` from selecting the
+  expired timer. Strengthened regressions kept both notifiers blocked while
+  requiring `Ask` to return its timeout. Brokers now run notification
+  independently with the same deadline context, while answer/cancel/timeout
+  selection continues immediately; the runner checks that context before
+  status and event publication.
+- Third review follow-up: Letting answer selection race notification created
+  the opposite ordering bug: a quick submission could emit `run.resumed` while
+  waiting-state persistence was still blocked, then cancel the notifier before
+  `run.waiting_for_user`. A deterministic blocking-store regression reproduced
+  the reversed event order. Brokers now wait for notification completion before
+  consuming a buffered answer, while the same deadline remains independently
+  enforceable if notification stalls.
+- Fourth review follow-up: Deadline resolution still exposed two durable-state
+  races. A timely checkpoint answer could be overwritten as expired, and a
+  blocked stale `waiting_for_user` write could land after the terminal failure
+  write. Checkpoint resolution is now serialized and `ExpirePending` never
+  replaces an accepted result; run status persistence uses a monotonic in-memory
+  version and rewrites the latest state after any stale write completes.
+  Deterministic regressions cover both races, followed by the full normal,
+  race, and coverage gate at 85.6% with zero uncovered functions.
+- Fifth review follow-up: The in-memory broker was not symmetric with the
+  checkpoint broker when a timely answer was buffered while notification hit
+  its deadline, and a losing checkpoint resume still returned false success.
+  In-memory submission now publishes the buffered answer before removing the
+  pending entry, deadline cleanup returns any accepted answer, and checkpoint
+  resolution returns exported `ErrAlreadyResolved` when another terminal
+  transition already won. Focused normal/race stress covers both contracts.
+- Sixth review follow-up: The ordinary checkpoint wait deadline still bypassed
+  accepted-answer recovery, and the new sentinel escaped as HTTP 500 through
+  run input, approval/deny, and generic checkpoint resume paths. Both AskUser
+  deadline branches now share one pending-only expiry/recovery function;
+  broker/runner boundaries normalize lost races to their existing no-pending
+  contracts; and generic resume returns stable `409 already_resolved` without
+  changing status, payload, or update time. Deterministic gates cover accepted
+  resume-before-notify, approval/deny expiry races, repeated resume, and both
+  API error shapes without unbounded channel receives.
+- Seventh review follow-up: Accepted-answer recovery at the notifier deadline
+  returned before the blocked pending-state publication completed, so
+  `run.resumed` could still overtake `run.waiting_for_user`. Deterministic
+  regressions now require both brokers to retain the accepted answer without
+  returning it until pending publication finishes. Unresolved timeout paths
+  remain independent, while accepted answers wait on notification completion
+  with the parent context as the cancellation escape hatch.
+- Eighth review follow-up: A broader concurrency review found four remaining
+  ownership gaps. The built-in notifier used a background store context;
+  checkpoint resolution was process-local and service-wide; stale run writes
+  still depended on a fallible corrective retry; and third-party brokers could
+  omit `OnPending`. New deterministic reds pinned each failure. Status writes
+  are now serialized per run and snapshot after a context-aware lock;
+  notification passes its deadline through status and event persistence;
+  checkpoint stores expose atomic pending-only resolution with per-record,
+  context-aware service coordination and cross-service waiter observation; and
+  the runner observes readable broker pending state as a callback fallback.
+  Both callback and fallback paths share exactly-once wait publication.
+  Status mutation, persistence, and its lifecycle event share the per-run lock;
+  terminal state rejects any delayed nonterminal downgrade, so a notifier
+  cannot publish stale waiting state after completion, failure, or cancellation.
+- Ninth review follow-up: Pending publication still used once-on-attempt and
+  the fallback observer cancelled its context as soon as the tool returned.
+  Immediate `UpdateRun` or `AppendEvent` failures could therefore consume the
+  only publication attempt, while a quick accepted answer could cancel an
+  observer already persisting the wait. The callback and observer now share a
+  serialized once-on-success publisher; started observer publication drains to
+  success or the question deadline, and transient failures retry. Strict
+  durable-before-visible event behavior is limited to this waiting lifecycle;
+  ordinary nonterminal events preserve the existing best-effort persistence
+  contract. Failed strict appends roll back the final sequence allocation, so
+  run SSE IDs remain contiguous and `Last-Event-ID` reconnect returns only
+  unseen events. A redaction-policy drop counts as successful suppression and
+  cannot cause retries or block an accepted answer. Cross-Service checkpoint
+  polling is opportunistic after local waiter registration: a transient poll
+  read error is retried instead of unregistering the waiter or masking a later
+  local/remote resolution; the caller context remains the termination bound.
 ## 2026-07-31 (TUI Waiting Conversation Overlay — Issue #1058)
 
 - Review finding: PR #1061 comment 3687057509 showed that the first fix
@@ -75,6 +2227,68 @@
 - Result: the focused test passed normal/race at `-count=100`, the complete
   harness package passed normal/race, and `./scripts/test-regression.sh` passed
   with 85.6% total coverage and zero uncovered functions.
+
+## 2026-07-30 (Swarm Activation Control Lifecycle Race — Issue #1046)
+
+- Symptom: hosted fast CI intermittently reported `agent_swarm` missing from an
+  unrestricted run immediately after test-local activation.
+- Cause: the control reused an exhausted scripted provider, so terminal cleanup
+  could clear the activation before the fixture inspected definitions.
+- Planned fix: use a dedicated provider that blocks until after the definition
+  assertion, then release it and wait for normal terminal cleanup.
+- Verification contract: focused normal/race stress, harness normal/race, full
+  regression, and GitHub required checks.
+- Result: the focused test passed normal/race at `-count=100`, the complete
+  harness package passed normal/race, and `./scripts/test-regression.sh` passed
+  with 85.6% total coverage and zero uncovered functions.
+## 2026-07-30 (Worktree Containment CI Synchronization — Issue #1039)
+
+- Symptom: GitHub Actions fast run 30551198514 received
+  `tool.call.completed` but found neither `out.txt` nor `marker.txt` in the
+  provisioned worktree.
+- Cause: the test consumes a buffered event while the runner immediately starts
+  its terminal provider turn and can remove the worktree before the subscriber
+  performs filesystem assertions.
+- Fix: hold only the test provider's terminal turn until containment
+  assertions finish, then release normal workspace cleanup.
+- TDD evidence: a deterministic pre-subscription wait for terminal cleanup made
+  the existing assertion fail with both files missing. The final provider
+  handshake retains the same real bash command and exact filesystem checks.
+- Verification: focused normal and race tests pass 100 consecutive runs each;
+  the full harness package passes in normal and race modes; and
+  `./scripts/test-regression.sh` passes normal, full race, and `coveragegate`
+  at 85.6% with zero uncovered functions.
+## 2026-07-30 (Default Workspace Registry Test Isolation — Issue #1042)
+
+- Symptom: `TestDefaultRegistry_Functions` fails on its second in-process
+  invocation with `workspace: implementation already registered`.
+- Cause: every invocation registers the fixed
+  `test-default-impl-unique-12345` name in the intentionally persistent package
+  registry.
+- Planned fix: assign each invocation a process-local atomic suffix while
+  retaining the same-name duplicate assertion inside that invocation.
+- Verification contract: focused normal/race `-count=100`, workspace
+  normal/race, and full repository normal/race/coverage gate.
+- Result: the focused normal/race tests passed at `-count=100`, the complete
+  workspace package passed normal/race at `-count=5`, and
+  `./scripts/test-regression.sh` passed with 85.6% total coverage and zero
+  uncovered functions.
+
+## 2026-07-30 (Subscriber-Pinned Retention Quota — Issue #1048)
+
+- Symptom: hosted race CI could not subscribe to a just-completed extra run
+  because pruning had already removed it.
+- Cause: a persisted terminal run with an active subscriber consumed the
+  retention quota despite being ineligible for deletion.
+- Planned fix: compute pruning pressure only from persisted, terminal,
+  zero-subscriber candidates; pinned states remain protected exceptions until
+  cancellation re-runs pruning.
+- Verification contract: focused/adjacent normal and race stress, harness
+  normal/race, full regression, and GitHub required checks.
+- Result: focused normal/race passed at `-count=100`, adjacent pruning
+  normal/race passed at `-count=20`, the complete harness package passed
+  normal/race, and the final full regression passed with 85.6% coverage and
+  zero uncovered functions.
 
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
@@ -2510,9 +4724,929 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   and then the full regression suite, directly in the logged-in context passed.
   This is a test-launch environment distinction, not an accepted failing
   baseline.
+
+## 2026-07-31 (Issue #1003 Remote cronsd Harness Dispatch)
+
+- Root cause: standalone `cmd/cronsd` instantiated `ShellExecutor` directly,
+  so `execution_type="harness"` jobs never crossed into `harnessd`.
+- Fix: added `internal/cron.RemoteRunStarter` with the typed #1001 scope and
+  job/execution correlation contract, bearer authentication, finite connect
+  and request timeouts, safe retry-aware `RemoteRunError` values, and
+  endpoint-class/job/execution/status/latency observability without prompt or
+  credential contents.
+- Boundary: added authenticated `POST /v1/cron/runs` in `internal/server`;
+  it enforces `runs:write`, derives the effective tenant from auth, starts the
+  existing runner, and returns a stable run ID. `DispatchExecutor` now
+  validates harness readiness and never falls back to shell.
+- Config: `cmd/cronsd` reads `CRONSD_HARNESS_URL`,
+  `CRONSD_HARNESS_API_KEY`, `CRONSD_HARNESS_CONNECT_TIMEOUT`, and
+  `CRONSD_HARNESS_REQUEST_TIMEOUT`; active harness jobs fail startup/create
+  readiness when URL or credentials are absent, while shell-only operation is
+  unchanged.
+- TDD evidence: the new remote, auth, timeout/cancellation, malformed/non-2xx,
+  readiness, and no-shell-fallback tests were added before implementation.
+  The initial red run failed on the missing production symbols; targeted
+  green and affected-package race tests now pass.
+- Full regression: the exact unmodified `./scripts/test-regression.sh` passed
+  in foreground execution with package tests, race tests, and coverage gate
+  green (`85.6%` total, `zero-functions=0`). Detached tmux was not used for
+  this final command because its PTY makes macOS `security(1)` ignore the
+  test's piped secret; the foreground result is the authoritative gate.
+- Real local canary: built current `harnessd` and `cronsd`, created a harness
+  job through cronsd, and observed execution
+  `789d3759-ad8d-4670-a6eb-91a4e4c27cd0` succeed with output summary
+  `started run run_9b6b2d9c-5922-4330-a09b-fb99eddb538c`. Sanitized logs
+  showed HTTP 202 and the same job/execution/correlation key on both daemons.
+- No merge is part of issue #1003; this branch is ready only for review.
+
+## 2026-07-31 (Issue #1003 Review Fixes)
+
+- Review findings on PR #1060 identified three boundary gaps: duplicate
+  `Idempotency-Key` requests could call `StartRun` twice, typed remote
+  `code=timeout` errors were stored as failed executions, and the dedicated
+  cron endpoint omitted the authenticated API-key prefix from `RunRequest`.
+- Strict red-green fix: added a process-local, per-tenant correlation cache
+  with fingerprint conflict detection; duplicate concurrent and sequential
+  requests now return the accepted run result without another `StartRun`.
+  `Scheduler.isTimeoutError` recognizes `RemoteRunError{Code:"timeout"}`
+  and wrapped deadline errors, and `handleCronRun` copies the auth-context
+  prefix into audit provenance.
+- Focused evidence: the server/cron focused normal and race commands passed,
+  as did the broader affected-package normal and race gates, before push.
+
+## 2026-07-31 (Issue #1003 Durable Replay Review Fix)
+
+- Independent review found the process-local cache still allowed a replayed
+  accepted POST to call `StartRun` again after harnessd restart. This is a
+  server-idempotency defect even though cronsd adds no application retry loop:
+  Go's transport can replay a request with `Idempotency-Key` and a replayable
+  body when a reused connection loses the response.
+- Strict red-green evidence:
+  `TestCronRunEndpointDurablyDeduplicatesAfterRestart` reopened the same
+  SQLite store with a replacement runner and initially received a second run
+  ID. `TestRemoteRunStarterRejectsRedirectWithoutForwardingCredentials`
+  initially followed HTTP 307 and accepted the redirect target's response.
+- Fix: built-in run stores now atomically reserve a tenant/key/fingerprint and
+  server-reserved run ID before `StartRun`, then mark acceptance. In-process
+  single-flight covers concurrent deliveries; an accepted durable binding
+  returns the original run after restart; an interrupted reservation either
+  recovers the persisted run or restarts the same reserved ID. Synchronous
+  failures are no longer cached forever.
+- Security/reliability hardening: remote starts refuse redirects, identifiers
+  are quoted in logs, oversized request bodies remain rejected, tenant
+  mismatch and fingerprint conflict are endpoint-tested, and the
+  authenticated API-key prefix/timeout classification remain intact.
+- Scope: terminal cron execution `run_id` persistence and terminal lifecycle
+  remain #1004; #1003 only makes the start boundary replay-safe.
+- Rebase: the three PR commits were cleanly rebased from `fedcf607` onto
+  `origin/main` `b3afc7ec`.
+- Verification before final documentation:
+  - focused server/cron/store normal and race tests passed;
+  - affected `internal/store`, `internal/harness`, `internal/server`,
+    `internal/cron`, and `cmd/cronsd` normal and race suites passed;
+  - unchanged foreground non-TTY `./scripts/test-regression.sh` passed with
+    85.6% total coverage and zero uncovered functions, including the final
+    rerun after adding the concurrent HTTP delivery regression.
+
+## 2026-07-31 (Issue #1003 Fresh-Store API-Key Migration)
+
+- Live review reproduced a production bootstrap gap at exact PR head
+  `a27adfeb`: `buildPersistenceBootstrap` migrated the base run schema but
+  omitted the separately defined API-key schema.
+- Red evidence:
+  `TestBuildPersistenceBootstrapMigratesAPIKeysOnFreshRunDB` failed while
+  creating the first key with `no such table: api_keys`.
+- Fix: harnessd now invokes the existing idempotent `MigrateAPIKeys`
+  immediately after the base run-store migration and fails startup if either
+  migration fails. The regression validates both key creation and bearer-key
+  validation against a genuinely new database.
+- Boundary: no cron execution schema or terminal `run_id` linkage changed;
+  that remains issue #1004.
+
+## 2026-07-31 (Issue #1003 Final Review Reliability Fixes)
+
+- Exact-head review confirmed three additional production defects:
+  reserved-ID starts could dispatch and mark a binding accepted after the
+  initial run insert failed; harness starts ignored `job.timeout_seconds`; and
+  completed single-flight entries accumulated for every unique execution.
+- Strict red:
+  - the persistence regression returned HTTP 202 and marked the binding after
+    a simulated `CreateRun` failure;
+  - the deadline regression observed the 5-second parent deadline instead of
+    the persisted 1-second job deadline;
+  - the cache regression found one completed entry after the start returned.
+- Fix:
+  - reserved-ID starts require a configured durable store and synchronously
+    create the run record before it enters runner state or dispatch; failures
+    wrap `ErrRunPersistence`, map to 503, and leave the binding unaccepted;
+  - `HarnessExecutor` derives a job-timeout context, preserving any earlier
+    parent deadline/cancellation, while `RemoteRunStarter` still applies the
+    earlier daemon transport bound;
+  - the process cache closes waiters then evicts every completed entry;
+    durable tenant/key/fingerprint storage remains the sequential/restart
+    replay source of truth.
+- Compatibility: ordinary `StartRun` retains non-fatal persistence behavior.
+  No `cron_executions` schema or terminal run linkage changed.
+- Central follow-up found the remaining shutdown window after successful
+  reserved persistence but before dispatch. A deterministic CreateRun hook
+  shut down the first runner at that exact point; before the fix, replacement
+  replay returned HTTP 202 but never registered/dispatched the queued run.
+  `ResumeRunWithID` now requires an exact queued persisted match for ID,
+  prompt, tenant, agent, and conversation, reuses its durable model/timestamps,
+  dispatches it in the replacement runner, and only then permits acceptance.
+- A second deterministic failure seam made the initial accepted-binding write
+  fail after successful dispatch while the run remained queued. The retry now
+  detects and reuses that active in-process run before retrying the binding
+  write; it does not invoke resume or enqueue a duplicate. A barrier-store
+  regression also proved two concurrent direct resumes could pass the early
+  lookup together, so insertion now rechecks under the runner lock and permits
+  exactly one same-ID dispatch.
+- Final execution audit found resume hydrated the visible run model but still
+  dispatched the original request with the replacement process's current
+  default. The strict red provider capture observed `new-process-default`;
+  resume now copies the persisted model/provider into the request and
+  re-resolves the prompt before dispatch, so execution observes the durable
+  model selected when the queued reservation was created.
+- Exact-head review then exposed the accepted variant of the queued shutdown
+  window: the binding could be marked accepted before shutdown drained its
+  queued worker item. Restart previously returned the accepted ID forever
+  without resuming it. Every existing binding is now inspected; an active
+  same-process run is reused, otherwise an exact durable queued row is resumed.
+- PATCH could persist nonpositive `timeout_seconds`, bypassing the harness
+  deadline added in this review. The current-main rebase preserves the merged
+  conversational contract: explicit zero or negative values are rejected
+  before CAS mutation or dispatch, while valid persisted values bound dispatch.
+- A 202 response whose body stalled until timeout/cancellation was mislabeled
+  `malformed_response`. Body-decode failures now consult the request context,
+  preserve typed timeout/cancel causes and retryability, and log latency after
+  the body outcome is known.
+
+## 2026-08-01 (Issue #1003 Persisted Conversation Agent Ownership)
+
+- Review reproduced a restart-time authorization gap: ConversationStore had
+  the tenant but no agent field, so agent B in `tenant-shared` was admitted to
+  agent A's conversation after reopening both SQLite stores.
+- Fix: `checkConversationOwnership` now consults conversation-scoped durable
+  run records when configured. All persisted tenant/agent pairs must match;
+  read failures fail closed. The companion regression proves agent A still
+  resumes after restart. This adds no schema and does not alter #1004 linkage.
+
+## 2026-08-01 (Issue #1003 Atomic First Conversation Ownership)
+
+- Adversarial review found a TOCTOU after the restart repair: two reserved
+  starts with different idempotency keys could both read an empty run list and
+  then persist/dispatch different agents for one new conversation.
+- Strict reds forced both ownership reads to snapshot empty. The in-process
+  barrier and two-runner/shared-SQLite variants each observed two successes and
+  zero denials.
+- Fix: built-in `CreateRun` now couples a normalized tenant/agent claim in
+  `conversation_run_owners` with the run insert atomically. MemoryStore uses
+  one mutex; SQLite uses one transaction. Conflicts map to
+  `ErrConversationAccessDenied` for reserved starts. Contract coverage proves
+  same-owner continuation and rollback when the run insert fails.
+- Scope correction: this additive schema supersedes the preceding note's
+  no-schema statement; #1004 terminal execution linkage remains untouched.
+
+## 2026-08-01 (Issue #1003 Ordinary Start Ownership Ordering)
+
+- Follow-up review proved ordinary `StartRun` still admitted state, ignored an
+  atomic owner-conflict error from `storeCreateRun`, and dispatched both agents.
+  Deterministic in-memory and two-runner SQLite reds each reported two
+  successes and zero denials; SQLite persisted only the winning run while both
+  providers were invoked.
+- Fix: ordinary `StartRun` now makes exactly one `CreateRun` attempt before
+  recorder/state admission and dispatch. A typed owner conflict cleans any
+  pre-activation and returns `ErrConversationAccessDenied`. Other CreateRun
+  failures are still logged and non-fatal, as proven by the existing store
+  outage regression. The later duplicate insertion was removed.
+
+## 2026-08-01 (Issue #1003 Cross-Process Cron Dispatch Lease)
+
+- Final P1 review found that process-local single-flight and runner locking did
+  not fence separate harnessd processes. With two SQLite handles, initial
+  delivery produced a duplicate reserved-run persistence failure and queued
+  recovery dispatched two provider calls.
+- Added an atomic expiring dispatch lease to `CronRunStartStore`. SQLite uses a
+  conditional update over owner/expiry; MemoryStore applies the same contract
+  under its mutex. Only the current owner can mark the binding accepted.
+- `getOrStartCronRun` acquires before both initial and resume dispatch. Losers
+  wait for an unaccepted owner, return the accepted stable run while its lease
+  is live, or recover after expiry. Same-server mark retry renews its stable
+  owner and reuses the active run.
+- Added deterministic two-server/shared-SQLite initial and expired queued
+  recovery tests, lease fencing/expiry store contracts, stale-owner rejection,
+  and an upgrade test from the prior `cron_run_starts` schema.
+- Focused normal and race suites passed. The first full server run was blocked
+  only by sandbox denial of an unrelated IPv6 `httptest` bind; the identical
+  command outside that restriction passed both store and server packages.
+
+## 2026-08-01 (Issue #1003 Lease Linearizability and Heartbeat Repair)
+
+- Two independent reviews identified the same remaining defect: SQLite
+  acquisition updated and then read without a transaction, accepted caller
+  wall-clock expiry, and never renewed a live backlogged owner's lease.
+- Deterministic reds observed A report `acquired=true` with owner B, a
+  +24-hour-skewed B steal A's lease, one concurrent migration fail with
+  duplicate `dispatch_owner`, and B admit A's still-live queued run.
+- Acquisition now uses one SQLite-clock `UPDATE ... RETURNING`; only a no-row
+  loser performs a current-state read with `acquired=false`. Renewal is a
+  distinct owner/live-expiry-qualified `UPDATE ... RETURNING`.
+- A server-scoped heartbeat renews queued/running local runs and stops on
+  terminal status, local absence, runner shutdown, or ownership loss. The
+  shared-SQLite regression drives near-expiry renewal, rejects a skewed B while
+  A is worker-backlogged, then stops A, expires the row, and proves exactly one
+  B recovery/provider dispatch.
+- Concurrent old-schema migration now accepts an ALTER race only after a
+  schema recheck proves the other process added the column. Store/server normal
+  suites and focused race suites pass.
+
+## 2026-08-02 (Issue #1003 Frontier Pre-Admission Review Repairs)
+
+- Red regression: an owner could acquire a lease, block in reserved-run
+  preflight, lose the lease, and still dispatch after a competing owner took
+  over because heartbeat renewal began only after runner admission. The repair
+  starts a cancellable heartbeat before admission and passes its owner-loss
+  context into context-aware `StartRunWithID`/`ResumeRunWithID`; the regression
+  proves the blocked owner publishes neither durable nor local run state.
+- Duplicate in-process idempotency deliveries now select the request context
+  while waiting for the starter. Remote URL/key configuration is canonicalized
+  once, queued replays load their persisted model before image/prompt preflight,
+  and authenticated DELETE enforces the same 1 MiB mutation-body bound with
+  HTTP 413.
+- An assembled external integration regression exercises Scheduler,
+  HarnessExecutor, RemoteRunStarter, authenticated harnessd, and the scoped
+  remote run. The current execution output carries the accepted run identity;
+  durable `Execution.RunID` linkage remains owned by #1004.
+- Evidence interpretation is now explicit: a successful history record proves
+  remote start acceptance, not the terminal harness outcome. The transitional
+  #1003 canary reads `started run <id>` from output summary only to inspect
+  scope through GET; it does not populate or infer `Execution.RunID`.
 # 2026-07-28 — macOS inline loading states
 
 - Added `CollectionLoadState` and a single Reduce-Motion-aware `LoadingPlaceholder` primitive in GoCodeUI's DesignSystem.
 - `ProjectSession` now tracks each fetched collection independently, and empty messages are rendered only after the corresponding request succeeds with no entries.
 - Replaced model-settings pane replacement and inline status/control swaps with fixed-shape skeletons or fixed slots; added load-state regression coverage.
 - Verification note: the Swift toolchain could not create its Xcode module cache under sandboxed `/var/folders`, including when `TMPDIR` was set to `/private/tmp`; build/test execution remains blocked by that environment restriction.
+## 2026-08-02 (Issue #1004 merge-review lifecycle repairs)
+
+- Merge review found four correctness gaps in the first candidate: in-memory
+  no-overlap did not coordinate separate SQLite scheduler processes; runner
+  binding could make restart observation falsely terminal; a transient
+  post-StartRun database failure could lose the typed `run_id`; and an equal
+  `last_run_at` could regress other tracking clocks.
+- `Store.AdmitExecution` is a durable SQLite `BEGIN IMMEDIATE` admission
+  predicate over active executions joined to tenant/agent/conversation scope;
+  the losing process writes a skipped-overlap history row.
+- `ErrRunObservationUnavailable` is nonterminal. Startup and reconciliation
+  retain the scope lease until an observer is bound. Run-link persistence
+  retries before terminal observation; exhaustion fails closed and preserves
+  both local and durable active leases.
+- `TouchJobRun` advances an equal run timestamp only when `updated_at` and
+  `next_run_at` are nondecreasing. TDD regressions cover all four cases.
+- A second review found `Scheduler.Start` synchronously observing restored
+  remote runs, holding cronsd/harnessd boot while a conversation remained
+  live. The isolated pre-fix `0a00575b` regression timed out in
+  `Start -> reconcileExecutions -> RemoteRunStarter.ObserveRun`. Startup now
+  restores leases synchronously and observes terminals in a cancellable
+  background pass. Embedded runner binding schedules one idempotent retry;
+  remote cronsd uses the same background path without a bind callback.
+
+## 2026-08-02 (Issue #1004 shutdown-owned reconciliation)
+
+- Review found asynchronous restart observers were cancelled but not joined by
+  `Scheduler.Stop`; an embedded post-bind callback could also start fresh work
+  after Stop. A canceled remote poll could then race cron-store teardown and be
+  converted to a false terminal failure.
+- The scheduler now owns reconciliation context/admission and a dedicated wait
+  group. Stop seals admission, cancels, joins observers, then returns; observer
+  cancellation is nonterminal and preserves the active durable lease. A bind
+  notification after Stop is ignored.
+- Exact pre-fix `5583f04d` test-only replay failed Stop/join and post-stop
+  no-op regressions. Direct normal tests and race x10 passed for those cases,
+  authenticated recovered remote poll cancellation, and prior embedded/remote
+  startup paths. The earlier repository-wide `cmd/harnessd` race timeout is
+  not waived by this focused evidence.
+
+## 2026-08-02 (Issue #1004 terminal persistence lifecycle fence)
+
+- Review found a TOCTOU after observer return: `finishObservedExecution`
+  checked cancellation, then could persist/release after `Stop` won; conversely
+  Stop could return while a committed terminal write was still blocked. The
+  generic job lookup path also converted cancellation and transient store
+  errors into false "job unavailable" terminals.
+- Exact `9181311` red tests independently reproduced cancel-wins persistence,
+  commit-wins early Stop return, canceled lookup terminalization, and transient
+  lookup terminalization.
+- Terminal persistence now takes `lifecycleMu` only after observation returns;
+  it atomically updates the execution, releases its local lease, and touches
+  job tracking relative to Stop. `IsJobNotFound` is the only unavailable
+  classification; cancel/transient failures preserve the active row for retry.
+- Each new test passed normal and race x20; existing lifecycle normal/race x20
+  passed host-local. Sandbox execution cannot bind the real `httptest` IPv6
+  listener, but the identical host-local run passed. The full repository race
+  gate remains required and unwaived.
+
+## 2026-08-02 (Issue #1004 live observation shutdown ownership)
+
+- New harness executions previously observed terminal state on dispatch's
+  background context. A live embedded stream or remote poll could therefore
+  make `Scheduler.Stop()` hang forever.
+- Live observation now has a scheduler-owned context and wait group. Stop
+  seals/cancels observation before joining it, without cancelling StartRun or
+  shell dispatch. Observer cancellation, `observed=false`, and all observer
+  errors preserve the active execution/run link/lease; a terminal write failure
+  also preserves them and skips job tracking.
+- Isolated exact-base `6838e25` replays were red for embedded cancellation,
+  real remote poll cancellation, stop-wins, and terminal write failure.
+  Commit-wins and shell-drain were passing base controls. Expanded direct
+  normal and race x20 live tests pass; repository-wide regression remains
+  required and unwaived.
+
+## 2026-08-02 (Issue #1004 recovered observer errors are nonterminal)
+
+- Review found recovery diverged from the live harness path: a recovered
+  observer 503/stream error was written as failed/timeout, touched job run
+  tracking, and released its restored no-overlap lease.
+- `reconcileExecutionRows` now terminalizes only when the observer reports
+  `observed=true` and nil error. Error/unobserved/canceled results retain the
+  row/link/lease and continue to later active rows; explicit observed terminal
+  failures still finalize normally.
+- Exact `1d699808` test-only replay was red for recovered 503, stream error,
+  and mixed error-plus-success rows. Direct focused normal and race x20 pass;
+  repository-wide regression remains required and unwaived.
+
+## 2026-08-03 (Issue #1004 embedded terminal replay race)
+
+- Symptom: the composed embedded cron conversation test intermittently retained
+  a durable `running` execution before `Stop`, even though most repetitions
+  passed.
+- Cause: terminal event replay can be returned after the subscriber snapshot
+  but before `Runner` commits status/fanout. `cronRunStarter.ObserveRun`
+  discarded that replay and could block forever on its silent live channel.
+- Fix: replay terminal events trigger authoritative `GetRun` confirmation with
+  cancellation-aware bounded polling; the same low-rate polling is the
+  fallback for intentionally suppressed terminal events. Terminal result fields
+  come only from the committed run, never from event payload. Focused
+  normal/race x20 and the composed embedded flow x100 pass.
+## 2026-08-03 (Issue #1106 liveness and process-loss recovery repair)
+
+- A deadline-cancelled callback previously persisted `retry_wait` but passed
+  `schedule=false` to its own durable state reconciliation. A normal
+  single-manager daemon therefore stranded the callback until a later restart.
+  The release path now re-arms its retry and a deterministic blocked-renewal
+  test proves a second same-ID admission without constructing another manager.
+- An expired callback lease is not proof that its process died. The
+  filesystem-backed SQLite callback store now owns a sidecar non-blocking
+  `flock` for the recovered manager lifetime. A second bootstrap sharing the
+  workspace fails before it can turn a live owner's expired dispatch into a
+  retry. The kernel releases this authority on process crash.
+- This intermediate legacy-`NULL` recovery contract was superseded by the
+  final mixed-version fencing repair: only a current private
+  `dispatching_fenced` row with its exact bootstrap-observed token may recover
+  a `NULL` lease; legacy public `dispatching` remains fail-closed.
+## 2026-08-03 (Issue #1106 future-lease and bounded-handoff repair)
+
+- Recovery had only a bootstrap-time expired-lease check. A crash row whose
+  persisted lease was still future was armed at that timestamp, but ordinary
+  dispatch treated it as live forever. The already-authorized manager now
+  re-enters `RecoverExpiredLease` when that timer fires.
+- Deadline cancellation now honors the persisted attempt cap and exponential
+  retry delay. At the cap it token-fenced terminalizes as `failed`, preventing
+  endless same-ID admission loops.
+- Durable `Recover` now requires workspace authority for every store; SQLite
+  `:memory:` and opaque non-filesystem locations return the typed authority
+  requirement instead of silently bypassing fencing. A killed subprocess test
+  proves flock release occurs on process death.
+
+## 2026-08-03 (Issue #1132 deterministic compaction-after-wait fixture)
+
+- The compaction/resume regression had polled `PendingInput`, then assumed the
+  separate public wait-state publication had completed. That assumption is
+  invalid: broker registration deliberately precedes the `waiting_for_user`
+  status/event.
+- The test now subscribes immediately after `StartRun` and awaits
+  `EventRunWaitingForUser` through the shared history/live-stream helper before
+  inspecting pending input or state. All existing compaction, event ordering,
+  resumed output, and exact message/tool-delta assertions remain unchanged.
+- No production code changed. Focused normal and race stress (`-count=100`)
+  passed; package and full regression evidence is recorded with this slice.
+## 2026-08-03 (Issue #1135 deterministic cron recovery fixture)
+
+- Replaced terminal-notification timing in the embedded post-bind and remote
+  asynchronous recovery tests with an explicit terminal `UpdateExecution`
+  gate. Each test now proves same-scope admission remains denied before the
+  durable terminal call returns, releases it, joins `reconcileWG`, verifies
+  the exact scope and recovered lease are absent, then admits the next run.
+- No production scheduler code changed. The remote fixture holds its existing
+  authenticated terminal response rather than racing a local status mutation.
+- Focused normal/race x100, complete cron normal/race, and the full repository
+  normal/race/coverage gate pass at 85.5% total coverage with zero uncovered
+  functions.
+## 2026-08-03 (Issue #1141 callback deadline-release fixture)
+
+- Three callback deadline-release fixtures now use a one-second test lease and causal gates: admitted callback, heartbeat renewal entry, deadline signal, then cancellation-aware starter cancellation before unblocking renewal.
+- This is test-only. The strengthened assertions retain the durable safe error, attempt/run identity, retry state, and token/lease clearing contracts. Focused normal x20 (60.593s), race x20 (62.087s), and the full normal/race/coverage gate passed at 85.5% total coverage with zero uncovered functions.
+## 2026-08-03 (Issue #1122 native interactive-state ownership)
+
+- `PendingApproval` and `PendingPlan` now retain their originating SSE
+  `run_id`. `RunSession` clears approval, plan, and pending input synchronously
+  when selection changes, a selected run retires/falls back, or active runs are
+  cleared. Chat and ToolWalk pass that captured id to guarded action APIs.
+- Deterministic external-run tests cover approval, plan, and input from A being
+  displaced by timestamp-newer B; stale captured actions produce no B endpoint
+  request. They also cover selected terminal clearing and a foreign terminal
+  preserving B's interaction. The expected-red focused Swift build initially
+  failed because run IDs and explicit actions did not exist; the focused green
+  suite passes after implementation.
+- Exact final verification: focused external ownership (11 tests), complete
+  Swift package (222 tests / 43 suites), and `scripts/test-regression.sh` all
+  pass; the repository coverage gate reports 85.5% total and zero uncovered
+  functions.
+## 2026-08-04 (Issue #1147 default callback run admission)
+
+- Symptom: a callbacks-enabled default harness persisted a delayed callback and
+  retried due-time dispatch three times with `callback admission unavailable`.
+  The callback's durable reserved run ID was correctly retained, but no run
+  could start or advance the originating conversation.
+- Cause: `buildPersistenceBootstrap` created a run store only for explicit
+  `HARNESS_RUN_DB`; `callbackRunStarter.StartCallback` correctly calls
+  `Runner.EnsureRunWithIDContext`, which correctly refuses a reserved run ID
+  without durable persistence. The supported default configuration wired those
+  two correct contracts incompatibly.
+- Fix: when callbacks are enabled and no explicit run DB is configured,
+  bootstrap/migrate workspace `.harness/runs.db` and pass it to the Runner.
+  Mark this store internal so server auth remains disabled by default; explicit
+  `HARNESS_RUN_DB` retains normal authentication behavior.
+- Tests: the initial default-bootstrap regression failed with no run store.
+  Bootstrap/auth compatibility and composed durable callback recovery/admission
+  tests pass. The acceptance regression posts an unauthenticated HTTP run,
+  invokes the agent-visible tool, waits through its five-second due time, and
+  asserts a started callback plus the real follow-up assistant marker in the
+  same conversation.
+
+## 2026-08-04 (Issue #1153 cron durable dispatch polling coverage)
+
+- `waitForCronRunDispatch` was reachable only when a durable foreign lease was
+  unaccepted. Existing multi-server tests usually elected a dispatcher before
+  that poll, leaving a genuine 0%-coverage concurrency path.
+- A scripted `CronRunStartStore` test wrapper now drives the real
+  `getOrStartCronRun` path through an unaccepted foreign lease, then the normal
+  lease acquisition. It proves one durable reserved ID, at least two acquire
+  attempts, one run admission, and one provider dispatch.
+- A separate pre-seeded foreign lease with an already-cancelled context proves
+  the long poll does not delay cancellation and makes zero run/provider
+  admissions. Production lease, tenant, and API behavior are unchanged.
+## 2026-08-04 (Issue #1149 cron execution-history API)
+
+- Added `GET /v1/cron/jobs/{id}/executions`, authorizing the tenant-visible job
+  before calling the existing adapter. HTTP regressions cover linked runs,
+  pagination, scope denial, foreign/missing 404s, adapter failure, and absent cron.
+## 2026-08-04 (Issue #1148 idle scheduled conversation continuation)
+
+- The TUI now maintains a selected-conversation SSE bridge after run terminal,
+  reconciles fetched history with replay by event identity, rejects stale
+  conversation bridge results, and preserves active-run terminal finalization.
+- Independent cheap review found and the final tree covers the local-terminal
+  to external-assistant transition plus bounded (4096-event) identity dedupe;
+  content text is never used as a replay key. The full
+  `./scripts/test-regression.sh` rerun passed normal, race, and coverage at
+  85.5% with zero uncovered functions. This is not PTY or native-GUI proof;
+  those remain the #1000 convergence matrix.
+
+## 2026-08-04 (Issue #1009 — scheduled-task lifecycle and macOS controls)
+
+- Change: `GET /v1/tasks` now projects optional, server-authored cron and
+  callback lifecycle fields: conversation linkage, cron next/last timestamps,
+  most-recent execution state/run/error, callback due time, and update time.
+  Existing type-specific routes remain the sole mutation authority.
+- Native app: `TaskInfo` now has typed forward-compatible kind, state, and
+  action values; unknown server values decode without making the Activity page
+  unusable. HarnessKit adds scoped pause/resume/delete/cancel requests.
+  Activity displays lifecycle detail and accessible controls, asks before cron
+  deletion, and always reloads server state after an action succeeds or fails.
+- TDD: the first Go test failed because `Task` had no lifecycle fields; the
+  first Swift test failed because task values were raw strings and control APIs
+  were absent. A full Swift run then caught a global URLProtocol-stub race in
+  the new tests; the task tests now use their own isolated protocol class.
+- Verification: focused task lifecycle tests, `go test ./internal/server
+  -count=1`, `go test ./internal/server -race -count=1`, and the full Swift
+  suite (`256` tests) passed. The direct full repository gate, run with its own
+  temporary cache and coverage profile after rebase to `f7b6c70`, passed normal,
+  race, and coverage phases at `85.5%` total coverage with zero uncovered
+  functions. This makes the implementation ready for review; it is not the
+  separate #1010 API/TUI/native full-conversation proof.
+- Review repair: cron Activity actions now carry optional `expected_updated_at`
+  only when the row provides it; server actions preserve empty legacy bodies,
+  require active-to-pause and paused-to-resume state, and map stale/invalid
+  mutations to 409 without changing the job. Callback `updated_at` is read
+  from the durable row on every list/get/returning path and projects into the
+  task row. The native "Open linked run" control opens the durable conversation
+  and lets only non-terminal run-event reducer evidence establish live control
+  ownership; terminal and missing links cannot manufacture controls. Repair
+  regressions cover stale/current actions, persisted callback freshness, JSON
+  request shape, and active/terminal/missing navigation.
+- Repair verification: complete affected server/tool normal and race suites
+  passed; the full native suite passed 259 tests. The first full repository
+  attempt ran concurrently with another coverage regression and hit two
+  unrelated `cmd/harnessd` three-second startup timeouts, so it was not
+  accepted. After that load completed, the serial rerun with fresh cache/profile
+  passed normal, race, and coverage at 85.5% total with zero uncovered
+  functions.
+
+## 2026-08-04 (Issue #1009 review repair — opaque cron task version)
+
+- Cause: HarnessKit decoded task `updated_at` into `Date`, then encoded it
+  with a new ISO-8601 formatter for `expected_updated_at`. That conversion can
+  discard server-issued nanoseconds, making an otherwise fresh Activity row
+  fail its cron CAS action with 409.
+- Fix: `TaskInfo.updatedAtVersion` retains the raw optional `updated_at`
+  string through ProjectSession and `TaskActionVersion`; standard `Encodable`
+  now emits the token unchanged. Missing versions still use the existing empty
+  request body for older additive task payloads.
+- Regression: Swift asserts a `.123456789Z` task token and the exact JSON
+  action field; Go lists a nanosecond cron token, proves `.123Z` returns 409
+  without mutation, then proves the exact listed token pauses it.
+
+## 2026-08-04 (Issue #1009 review repair — no-store callback terminals)
+
+- Cause: no-store callback terminal rows stay in `m.callbacks` but leave the
+  active `byConv` index. `ListAllCallbacks` incorrectly walked that active
+  index, making canceled/fired/shutdown callbacks vanish from `/v1/tasks`.
+- Fix: all-state listing snapshots and safely projects `m.callbacks`; legacy
+  conversation `List`/`ListCallbacks` remain active-only through `byConv`.
+  Legacy cancel, fire, and shutdown cancellation now stamp `UpdatedAt` from
+  the manager clock. The durable cancel/list branches are unchanged.
+- Regression: deterministic manager coverage proves terminal timestamps and
+  all-state retention while agent-facing lists exclude terminals; server
+  coverage proves cancel then `GET /v1/tasks` returns one canceled read-only
+  row with nonzero `updated_at`.
+
+## 2026-08-05 (Issue #1180 bootstrap staging clone)
+
+- Symptom: direct Go 1.26.4 `-buildvcs=true` compilation in a linked worktree
+  produced missing VCS settings despite clean target Git state.
+- Cause: Go's VCS discovery requires directory-form `.git`; the linked
+  worktree has a Git indirection file, and setting `GIT_DIR`/`GIT_WORK_TREE`
+  did not make buildvcs stamp the binary.
+- Fix: `scripts/init.sh` validates target state, makes an ephemeral local
+  clone, detaches it to the target SHA, checks it clean, builds there with Git
+  overrides removed, validates candidates, atomically publishes, and removes
+  the owned clone on exit.
+- Regression: linked-worktree fake compiler accepts only a directory-form
+  `.git`; legacy target-CWD build fails it, while the isolated clone passes.
+
+## 2026-08-05 (Issue #1174 review repair — unbound init start failure)
+
+- Cause: `startRunCmd` emits `RunFailedMsg` without a `RunID` when run creation
+  fails before the harness accepts it. The `/init` pending-write fence rejected
+  that empty identity but left the unbound state for a later ordinary
+  `RunStartedMsg` to claim.
+- Fix: a failed message with an empty identity now consumes only an unbound
+  `/init` pending state; bound and foreign nonempty run IDs retain exact-ID
+  isolation.
+- Regression: `/init` then empty-ID start failure followed by an ordinary
+  start, assistant output, and completion never creates `AGENTS.md`.
+
+## 2026-08-05 (Issue #1174 review repair — malformed run creation response)
+
+- Cause: a 2xx `/v1/runs` response containing valid JSON but no `run_id`
+  decoded successfully and emitted `RunStartedMsg{RunID:""}`. That left an
+  unbound `/init` fence vulnerable to a later run binding it.
+- Fix: `startRunCmd` now rejects missing or whitespace-only `run_id` values as
+  `RunFailedMsg`; existing unbound-start cleanup consumes the pending `/init`
+  state.
+- Regression: a real 2xx `{}` response during `/init`, followed by close and
+  ordinary-run output/completion, never creates `AGENTS.md`.
+
+## 2026-08-05 (Issue #1174 review repair — normalized run identity)
+
+- Cause: the missing-ID guard trimmed only for validation, then returned the
+  untrimmed `run_id`; valid responses with surrounding whitespace could fail
+  later exact-ID comparisons.
+- Fix: `startRunCmd` stores the trimmed value before validation and emits that
+  normalized identity in `RunStartedMsg`; omitted and whitespace-only IDs still
+  fail closed.
+- Regression: a surrounding-whitespace run ID becomes the canonical identity,
+  while a whitespace-only JSON value returns `RunFailedMsg`.
+
+## 2026-08-05 (Issue #1190 production MCP HTTP transport ownership)
+
+- Cause: production `dialHTTP` created a nil-transport `http.Client`, so its
+  MCP requests used process-global `http.DefaultTransport`. An unrelated
+  `httptest.Server.Close` can close that pool and turn an expected 401 into a
+  transport cancellation.
+- Fix: production and `NewHTTPConnForTest` now share one factory that clones
+  the default `*http.Transport`; every `httpConn.Close` atomically marks its
+  own connection closed then idempotently closes only that client pool.
+- Regression: a nonparallel, gated production auth dial survives unrelated
+  global cleanup and returns `ErrUnauthorized`; sibling/local-close and token
+  provider precedence coverage retains ownership and strict error contracts.
+- Review follow-up: an explicit legacy nil-transport control now holds a
+  request in a cleanup-cancelling global transport. `httptest.Server.Close`
+  reaches it and deterministically returns a transport error rather than
+  `ErrUnauthorized`, proving the historic coupling rather than only asserting
+  the fixed client's nonnil field.
+# 2026-08-05 (Issue #1186 public cron validation identity)
+
+- Cause: raw cronsd already emitted `400 validation_error`, but its client
+  flattened that response and harnessd POST rendered every adapter error as
+  500. The embedded adapter likewise returned untyped validation strings.
+- Fix: `cron.ValidationError` now retains a caller-safe raw-cronsd validation
+  message; both adapters translate it into `tools.ErrCronJobValidation`; the
+  public facade renders that sentinel as `400 validation_error` while retaining
+  not-found, conflict, and dependency mappings. Explicit zero/negative POST
+  timeouts are rejected before any adapter/store write, while omission still
+  receives the existing 30-second default.
+- Regression: red-first compile tests exposed the missing typed seam, then an
+  HTTP regression observed the pre-fix 500. Focused normal/race coverage proves
+  remote and embedded create/update validation, no invalid persistence, and
+  404/409/5xx preservation. Rebasing on #1190's merged transport fix allowed
+  canonical-temp full regression to pass normal, race, coverage, and
+  coveragegate at 85.5% total coverage with zero uncovered functions.
+# 2026-08-05 (Issue #1194 porcelain blame parsing)
+
+- Cause: `parsePorcelainBlame` accepted arbitrary non-indented long lines with
+  three or more fields as headers. Porcelain `previous <hash> <path>` metadata
+  therefore overwrote the actual commit identity and coerced the path to line
+  zero; nonzero `git show` diagnostics could also populate a commit subject.
+- Fix: recognize only exact three/four-field records with a 40/64-hex object
+  ID and positive decimal line/group positions. Optional enrichment now accepts
+  only a zero-exit, non-timeout command result.
+- Regression: literal 40/64-header plus `previous`/long metadata test, a real
+  two-commit rewrite tool test, and failed/timed-out enrichment tests preserve
+  actual commit identity and never render `fatal` output.
+
+# 2026-08-05 (Issue #1195 git diff-range summary count)
+
+- Cause: `parseStatSummary` tested the second token of a summary clause for
+  `changed`. Git uses `1 file changed` and `N files changed`, so the marker is
+  the third token and public `files_changed` was always zero while the stat
+  string and insertion/deletion values were correct.
+- Fix: accept a checked leading integer plus the exact `file/files changed`
+  clause before assigning the aggregate. Insertion/deletion parsing, no-diff
+  zero behavior, `stat_only`, command execution, and the result schema remain
+  unchanged.
+- Regression: red-first literal singular/plural/files-only/no-diff parser
+  cases and a controlled two-commit tool fixture cover normal and `stat_only`
+  output; real fake-provider API/SSE evidence records the corrected structured
+  output and a same-conversation second user turn in
+  `/private/tmp/gocode-1195-api-artifacts/ACCEPTANCE.md`.
+
+# 2026-08-05 (Issue #1198 isolated harnessd skills directory)
+
+- Cause: harnessd advertised `HARNESS_SKILLS_DIR` in `create_skill` errors but
+  independently derived `$HARNESS_GLOBAL_DIR/skills` for loader, registry,
+  watcher, and workflow skill inputs, so authored skills escaped isolation.
+- Fix: resolve one trimmed absolute override at startup, reject relative input
+  before listener acquisition, preserve unset fallback, and thread that exact
+  path to all global-skill consumers.
+- Regression: red-first catalog, watcher, and invalid-startup tests; a real
+  fake-provider multi-message API/SSE daemon test creates, GETs, verifies, and
+  follows up in one conversation while proving no legacy/default-global write.
+- Verification: canonical-temp `./scripts/test-regression.sh` passed normal,
+  race, and coverage (85.6% total; zero uncovered functions).
+- Review repair: `cmd/harnesscli/tui/loadTUISkills` had retained a parallel
+  `$HARNESS_GLOBAL_DIR/skills` derivation. It now mirrors trimmed
+  absolute-only override resolution, loading no global skills for invalid
+  input; focused normal/race tests prove override visibility and fail-closed
+  local-catalog behavior before final amended regression.
+# 2026-08-07 (Issue #1254 trusted child completion lifetime and policy)
+
+- Cause: the private step-engine origin capability remained sufficient after
+  its parent became terminal when a tool retained a `context.WithoutCancel`
+  copy. Separately, public `RunMetadata.RunID` could select a parent policy
+  for `RunForkedSkill`, allowing direct callers to inherit another run's
+  system prompt, permissions, or profile.
+- Fix: `RunForkedSkill` now trusts a private origin only while that exact
+  runner parent remains non-terminal. Child depth, mandatory `task_complete`,
+  and inherited policy all derive from that same private origin; untrusted or
+  stale contexts use ordinary root defaults.
+- Regression: deterministic coverage proves a cancelled parent plus captured
+  `WithoutCancel` context cannot offer `task_complete`, public metadata cannot
+  inherit privileged policy, and tampered metadata cannot redirect a trusted
+  child away from its origin. Focused normal and race harness suites pass.
+
+# 2026-08-07 (Issue #1231 default-registry filesystem/Git API/SSE acceptance)
+
+- Scope: additive acceptance-only coverage for 15 default-registry local
+  filesystem/Git tools; no production tool, endpoint, scheduler, GUI, or TUI
+  behavior changed.
+- Design: one temporary initialized Git repository and one real fake-provider
+  harnessd conversation execute ordered write, later inspection, edit/patch,
+  and Git verification turns. The test requires live `/v1/tools` availability,
+  raw SSE event IDs, exact started/completed tool identity and arguments,
+  non-error result shape, terminal run/conversation linkage, persisted
+  conversation messages, independent external artifact checks, and fixture
+  cleanup.
+- Red-first evidence: the new acceptance entrypoint initially failed to compile
+  because the driver was undefined; the implemented driver then ran against
+  real harnessd. Early failures were corrected test expectations (write and
+  patch return metadata; a range diff returns changed lines), not product-tool
+  failures. The final focused normal and race acceptance paths pass.
+- Review-evidence repair: the driver now binds selected rows to the canonical
+  hash compiled from the running `/v1/tools` response (while retaining the raw
+  response SHA-256), persists raw SSE/run/store/fixture and independent Git
+  probe artifacts under one digest manifest, requires unique tool-call IDs and
+  ordered start/completion/result events with terminal `run.completed`, and
+  validates the four non-empty persisted assistant replies in order. Tool-call
+  turns legitimately create empty assistant store records, so they are retained
+  but not misrepresented as textual replies.
+- Follow-up evidence repair: artifacts no longer use `t.TempDir`. A unique
+  private child under `HARNESS_ISSUE_1231_ARTIFACT_ROOT` (or the private
+  system-temp default) remains after test return, and the manifest records its
+  path and content digests. The fixture is separately `RemoveAll`ed before
+  manifest finalization with retained absence evidence. Call IDs are scoped to
+  each `(runID, callID)` pair: duplicates within one run fail, while a later
+  run may legitimately reuse an ID; focused regressions cover both cases.
+
+# 2026-08-06 (Issue #1221 ordered fresh-PTY frame evidence repair)
+
+- Cause: the fresh TUI acceptance scenario retained screens after all typed
+  actions completed. Its fixed sleeps did not prove that the first reply,
+  search, Escape, and second reply were individually observed before the next
+  input, so the artifacts could not establish causal conversation ordering.
+- Fix: use a Go-owned fixed-size PTY master instead of `script`, whose regular
+  output could remain unobservable until teardown. One collector is its sole reader and seals each
+  semantic milestone before the sequencer writes the next input. Each seal is
+  immutable: VT screen, `[start,end)` prefix offsets, action/input digest,
+  prefix/render digest, and durable conversation/run identities. Shutdown
+  closes stdin, waits for `script`, drains the file, then seals the final frame.
+- Regression: focused collector/launcher tests, full normal `ptyrunner`, the
+  real fresh TUI conversation, and full race `ptyrunner` pass. Repository-wide
+  regression and post-rebase verification remain required before merge.
+
+# 2026-08-06 (Issue #1228 exact-width PTY frame repair)
+
+- Cause: the VT buffer eagerly wrapped after a printable occupied column 100,
+  then processed CRLF as a second advance; live `FIRST_REPLY` bytes were
+  therefore absent from the interpreted frame. The collector also omitted its
+  own deadline while waiting for a future update.
+- Fix: DEC wrap-pending semantics retain the last-column cursor until the next
+  printable; CRLF clears pending wrap. Collector waits now select their action
+  deadline, without raw fallback or timeout expansion.
+- Regression: exact-width, retained-failure-shape, action-deadline, helper
+  coverage, repeated real fresh PTY, normal/race package, and serialized full
+  regression pass (85.0% total coverage; zero uncovered functions).
+
+# 2026-08-06 (Issue #1229 selective VT wrap-pending transitions)
+
+- Cause: the #1228 exact-width state survived transitions whose terminal
+  semantics reset it, while J3/TAB/SGR/combining and alternate-buffer modes
+  require selective preservation rather than a blanket clear.
+- Fix: cursor/visible erase/BS reset pending wrap; J3, TAB, SGR and combining
+  preserve it. `1049` uses cleared alternate state and restores primary; `47`
+  switches independent alternate state without global clearing.
+- Regression: table-driven transition matrix covers cursor, erase, J3, BS/TAB,
+  SGR/combining, and 1049/47 state; package normal/race passed before full gate.
+
+# 2026-08-05 (Issue #1205 native acceptance owner design)
+
+- Cause: the #1089 handoff validated caller-supplied native proof claims and could fetch a caller URL or execute a symlinked driver before ownership was established.
+- Design decision before code: `harnessd` has an injected listener only in tests; an inherited-FD production contract is too broad here. The owner will reserve `127.0.0.1:0` only to select a port, release it immediately before spawn, then fail closed unless the recorded child PID owns the exact endpoint. This is not attach/reuse behavior.
+- Guardrails: preflight failures have zero spawn/HTTP; every child/root/probe is private and attested; cleanup addresses recorded owned handles only; sentinel app/daemon PID and health must survive all injected failures.
+
+# 2026-08-05 (Issue #1205 public native acceptance ownership)
+
+- Cause: the public command and shell launcher still accepted caller-selected
+  daemon URLs, drivers, manifests, and artifact roots, bypassing the owner
+  foundation.
+- Fix: the only public switch is `-foreground-opt-in`. The owner creates its
+  private root, builds a fixed `harnessd` probe, launches a fake-provider
+  daemon and an app connected only to that endpoint, and cleans up only those
+  recorded children. The shell launcher forwards no caller-controlled runtime
+  input.
+- Regression: the exact red was an undefined `runLifecycle` selector; green
+  coverage rejects `-harness-url` before lifecycle selection and accepts the
+  opt-in route. Focused Go and full Swift tests pass. No actual app launch,
+  AX/OCR interaction, or TCC proof was run or claimed.
+# 2026-08-07 (Issue #1270 TUI replay-boundary fixture causality)
+
+- Cause: `TestResumedConversationReplayBoundarySnapshotIncludesQueuedFuture`
+  sent its post-boundary live event immediately after flushing the replay
+  marker. Under `-race`, the test driver could receive that live event before
+  the model had reduced the marker snapshot, leaving the intended
+  snapshot-then-live contract dependent on scheduler timing.
+- Fix: the local SSE fixture now waits for a one-shot release that is closed
+  only after the rendered model visibly contains both snapshot entries. It
+  then sends the same live assistant/terminal frames through the existing
+  reducer. The wait also selects on request cancellation, so an earlier failed
+  assertion cannot strand `httptest` cleanup. The six-second timeout and all
+  exact-once/live assertions remain unchanged; a failed run logs the last
+  causal fixture stage.
+- Scope: test-only. Harness/API/TUI product source, persistence, protocol,
+  configuration, and user-visible behavior are unchanged.
+# 2026-08-07 (Issue #1273 native GUI proof root canonicalization)
+
+- Cause: `SealArtifacts` passed lexical `ArtifactRoot` to containment then
+  compared it with canonical artifact paths. A safe parent alias (`/var` versus
+  `/private/var`) therefore made an owned regular file appear outside root.
+- Fix: validate/canonicalize the directory root once at seal time, persist the
+  canonical root, and use it for artifact containment and relative paths.
+  `canonicalDirectory` still lstat-rejects a final root symlink; artifact
+  symlink and regular-file protections remain unchanged.
+- Regression: a portable symlinked-parent positive case was red first; focused
+  nativegui normal and race suites are green alongside all existing negative
+  proof cases.
+# 2026-08-07 (Issue #1275 replay-boundary live proof)
+
+- Cause: the acceptance stop predicate used simultaneous historic, queued, and
+  live content in `View`, but auto-scroll correctly removes historic content
+  in a short viewport. The test could call a correct reducer path a loss.
+- Fix: gate fixture release on exact-once snapshot entries in `Transcript`,
+  then stop only when decoded `live:3` assistant SSE has passed `Update` and
+  rendered live content. Failure diagnostics expose snapshot/decode/reduction
+  stages; the 6-second deadline and product source are unchanged.
+- Regression: short viewport red captured before the repair; focused normal
+  and race repeat evidence is green.
+# 2026-08-07 (Issue #1272 fetched bootstrap source provenance)
+
+- Cause: `scripts/init.sh` only fetched/resolved a base for new worktrees and
+  used mutable `FETCH_HEAD`; reused task worktrees could therefore rebuild an
+  old revision without any current-source record.
+- Fix: resolve unqualified and `origin/` refs through freshly fetched
+  `refs/remotes/origin/<branch>` commit IDs, validate exact SHA and explicit
+  local refs, verify only fresh `git worktree add -b` creation, and write both
+  source and actual HEAD revisions to `dev.env`. Reuse deliberately preserves
+  task commits rather than resetting them.
+- Regression: deterministic stale-local/newer-origin fixture covers reuse
+  provenance plus explicit remote, SHA, and local ref source forms; focused
+  package test is green before the full gate.
+
+# 2026-08-08 (Issue #1281 API acceptance mapping contract)
+
+- A live fake-provider daemon exposed 67 API tools at inventory hash
+  `5230df4123f5c860c4849f5b44ab90f502b2212dec9dd8d1fce5fe2e78fcf1fa`.
+  The checked-in manifest binds all 67 to exact ID, owner, resolver condition,
+  and a future execution cohort. It is intentionally not an execution record.
+- Validation now fails before reporting when any API item lacks a mapping or
+  when its owner/condition drifts. The empty `cases` array remains deliberately
+  red: the live command reports `mapped=67`, `planned=0`, `missing=67`, then
+  exits non-zero. Future scenario cohorts cannot inherit a mapping as proof.
+
+# 2026-08-08 (Issue #1281 daemon provenance binding repair)
+
+- Cause: a hash-bound inventory manifest could still be pointed at an
+  arbitrary listener, so it recorded operator intent rather than the actual
+  lifecycle-owned daemon source.
+- Fix: the manifest now pins `daemon_source_sha`; the API CLI requires the
+  existing lifecycle `provenance.json`, validates source SHA, listener address,
+  command path, and command SHA-256 before loading/reporting live inventory,
+  and serializes accepted daemon identity in the report.
+- Regression: a mismatched source SHA fails before mapping/inventory reporting;
+  the CLI fixture proves decoding the lifecycle artifact envelope.
+
+# 2026-08-08 (Issue #1281 executable provenance revalidation repair)
+
+- Cause: the first provenance consumer trusted the stored command path and
+  SHA-256, so a later artifact edit, symlink path, missing executable, or
+  altered binary could evade the lifecycle's launch-time identity check.
+- Fix: consumption now rejects relative or noncanonical command paths,
+  canonicalizes the absolute path again, reads the canonical executable, and
+  requires a freshly recomputed SHA-256 to equal the artifact before inventory
+  or a coverage report is reached.
+- Regression: explicit relative, symlink/noncanonical, missing-path, and
+  digest-mismatch artifacts fail closed; a real file/digest fixture still
+  reaches the API inventory gap report.
+# 2026-08-08 — Issue #1282 stateful PTY evidence repair
+
+- A manual `script(1)` probe persisted `LANE_B_FIRST_REPLY` but typed later commands before a collector-sealed reply frame, so its absent terminal text cannot diagnose product rendering. The repair is acceptance-only: reuse the existing Go-owned PTY collector and make every action causally wait for a rendered frame.
+
+# 2026-08-08 (Issue #1280 shared same-daemon acceptance lifecycle)
+
+- Cause: API/SSE inventory acceptance and PTY acceptance each owned a separate
+  fake daemon, so a future scheduled-continuation proof could not establish a
+  shared process and conversation identity.
+- Fix: an internal lifecycle validates source SHA before spawn, reserves a TCP
+  listener and transfers it as `HARNESS_LISTEN_FD=3`, provisions contained
+  workspace/store paths, writes provenance, and derives API/SSE/PTY identity
+  from one base URL. Close signals only its recorded child process group.
+- Regression: a helper daemon proves health/SSE and matching PTY identity;
+  mismatch launches nothing and an occupied unrelated listener stays healthy.
+  This is tooling only: no runtime cron/callback or client behavior changes.
+
+# 2026-08-08 (Issue #1280 independent-review repair)
+
+- Cause: the initial lifecycle used a single-value completion channel. When
+  readiness consumed an early child exit, cleanup could wait for its timeout.
+  It also inherited parent `HARNESS_*`/`CRONSD_*` resource settings and bound
+  provenance only to source SHA, not the executable actually launched.
+- Fix: record child completion under a mutex then close a broadcast channel;
+  remove inherited harness/cronsd settings and reserve lifecycle resource keys
+  against caller override; resolve/canonicalize/hash the daemon command and
+  serialize its identity with source/config provenance.
+- Regression: direct owned-child termination proves two observers and Close do
+  not block; `/usr/bin/true` proves bounded pre-ready exit; child environment
+  proves parent resource values cannot leak; distinct executable artifacts have
+  distinct provenance identities. Product behavior remains unchanged.
+
+# 2026-08-08 (Issue #1280 P1 close/reap repair)
+
+- Cause: Close sent SIGTERM before observing the broadcast completion state,
+  which could signal a reaped and reused process group. After SIGKILL it read
+  a possibly stale wait result and closed the daemon log without confirming
+  the child had been reaped.
+- Fix: Close first performs a nonblocking completion check; only a live child
+  is signaled. Escalation waits a bounded second time for the closed completion
+  channel and inspects wait state/closes the log only after confirmed reaping.
+- Regression: a pre-reaped child records zero post-exit signals; a TERM-ignoring
+  helper requires SIGKILL and proves Close returns only after `done` is closed.

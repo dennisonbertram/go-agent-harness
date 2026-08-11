@@ -121,7 +121,7 @@ func main() {
 |---|---|---|
 | Global workflows | `~/.go-harness/workflows` | `HARNESS_GLOBAL_DIR` |
 | Workspace workflows | `<workspace>/.go-harness/workflows` | — |
-| Global skills | `~/.go-harness/skills` | `HARNESS_GLOBAL_DIR` |
+| Global skills | `~/.go-harness/skills` | `HARNESS_SKILLS_DIR` (absolute override) or `HARNESS_GLOBAL_DIR` fallback |
 | Workspace skills | `<workspace>/.go-harness/skills` | — |
 
 Skill-scoped bundles live at `<skillRoot>/<skillName>/workflows/<workflowName>/`.

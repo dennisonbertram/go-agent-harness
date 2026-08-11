@@ -95,6 +95,18 @@ type ProfilePermissions struct {
 	allowNetAccessSet bool `toml:"-"`
 }
 
+// BashSpecified reports whether allow_bash was explicitly present in the
+// profile file (including an explicit false). Callers that enforce a profile
+// must distinguish an absent field, which inherits request defaults, from a
+// deliberate capability denial.
+func (p ProfilePermissions) BashSpecified() bool { return p.allowBashSet }
+
+// FileWriteSpecified reports whether allow_file_write was explicitly present.
+func (p ProfilePermissions) FileWriteSpecified() bool { return p.allowFileWriteSet }
+
+// NetAccessSpecified reports whether allow_net_access was explicitly present.
+func (p ProfilePermissions) NetAccessSpecified() bool { return p.allowNetAccessSet }
+
 // ProfileTools holds tool configuration for the profile.
 type ProfileTools struct {
 	// Allow is the list of tool names permitted for this profile.

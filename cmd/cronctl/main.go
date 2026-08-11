@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"go-agent-harness/internal/cron"
@@ -35,7 +36,12 @@ func run(args []string) int {
 	if baseURL == "" {
 		baseURL = "http://localhost:9090"
 	}
-	client := cron.NewClient(baseURL)
+	apiKey := strings.TrimSpace(os.Getenv("CRONSD_API_KEY"))
+	if requiresCronAPIKey(args[0]) && apiKey == "" {
+		fmt.Fprintln(stderr, "CRONSD_API_KEY is required for cron management commands")
+		return 1
+	}
+	client := cron.NewClient(baseURL, cron.WithAPIKey(apiKey))
 	ctx := context.Background()
 
 	switch args[0] {
@@ -58,6 +64,15 @@ func run(args []string) int {
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", args[0])
 		return 1
+	}
+}
+
+func requiresCronAPIKey(command string) bool {
+	switch command {
+	case "create", "list", "get", "delete", "history", "pause", "resume", "health":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -256,5 +271,5 @@ func getBaseURL() string {
 
 // newClientFromEnv is a convenience for testing override.
 var newClientFromEnv = func() *cron.Client {
-	return cron.NewClient(getBaseURL())
+	return cron.NewClient(getBaseURL(), cron.WithAPIKey(strings.TrimSpace(os.Getenv("CRONSD_API_KEY"))))
 }

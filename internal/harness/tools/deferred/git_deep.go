@@ -462,21 +462,12 @@ func GitBlameContextTool(opts tools.BuildOptions) tools.Tool {
 				continue // uncommitted lines
 			}
 			showArgs := []string{"-C", absRoot, "show", "--format=%s\x1F%b", "--no-patch", hash}
-			showOut, _, _, showErr := tools.RunCommand(ctx, 10*time.Second, "git", showArgs...)
-			if showErr == nil {
-				parts := strings.SplitN(strings.TrimSpace(showOut), "\x1F", 2)
-				subject := ""
-				body := ""
-				if len(parts) >= 1 {
-					subject = strings.TrimSpace(parts[0])
-				}
-				if len(parts) >= 2 {
-					body = strings.TrimSpace(parts[1])
-					if len(body) > 500 {
-						body = body[:500] + "..."
-					}
-				}
-				commitInfo[hash] = struct{ subject, body string }{subject, body}
+			showOut, showExitCode, showTimedOut, showErr := tools.RunCommand(ctx, 10*time.Second, "git", showArgs...)
+			// Enrichment is best effort, but Git sends diagnostics on the same
+			// stream as normal output. Never render a failed or timed-out command's
+			// diagnostic as commit subject/body.
+			if info, ok := parseBlameCommitEnrichment(showOut, showExitCode, showTimedOut, showErr); ok {
+				commitInfo[hash] = info
 			}
 		}
 
@@ -498,6 +489,24 @@ func GitBlameContextTool(opts tools.BuildOptions) tools.Tool {
 	}
 
 	return tools.Tool{Definition: def, Handler: handler}
+}
+
+func parseBlameCommitEnrichment(output string, exitCode int, timedOut bool, err error) (struct{ subject, body string }, bool) {
+	if err != nil || exitCode != 0 || timedOut {
+		return struct{ subject, body string }{}, false
+	}
+	parts := strings.SplitN(strings.TrimSpace(output), "\x1F", 2)
+	info := struct{ subject, body string }{}
+	if len(parts) >= 1 {
+		info.subject = strings.TrimSpace(parts[0])
+	}
+	if len(parts) >= 2 {
+		info.body = strings.TrimSpace(parts[1])
+		if len(info.body) > 500 {
+			info.body = info.body[:500] + "..."
+		}
+	}
+	return info, true
 }
 
 // parsePorcelainBlame parses the output of `git blame --porcelain`.
@@ -535,18 +544,15 @@ func parsePorcelainBlame(output string) ([]blameLineRecord, map[string]bool) {
 	for scanner.Scan() {
 		text := scanner.Text()
 
-		// Header line: <40-char-hash> <orig_line> <final_line> [<num_lines>]
-		if len(text) >= 40 && !strings.HasPrefix(text, "\t") && !strings.Contains(text[:1], " ") {
-			parts := strings.Fields(text)
-			if len(parts) >= 3 {
-				hash := parts[0]
-				finalLine, _ := strconv.Atoi(parts[2])
-				currentHash = hash
-				currentFinalLine = finalLine
-				uniqueHashes[hash] = true
-				if knownCommits[hash] == nil {
-					knownCommits[hash] = &commitMeta{}
-				}
+		// Header line: <40|64-hex-hash> <positive-orig-line>
+		// <positive-final-line> [<positive-group-count>]. Metadata such as
+		// "previous <hash> <path>" must not acquire record ownership.
+		if hash, finalLine, ok := parsePorcelainBlameHeader(text); ok {
+			currentHash = hash
+			currentFinalLine = finalLine
+			uniqueHashes[hash] = true
+			if knownCommits[hash] == nil {
+				knownCommits[hash] = &commitMeta{}
 			}
 			continue
 		}
@@ -595,6 +601,49 @@ func parsePorcelainBlame(output string) ([]blameLineRecord, map[string]bool) {
 	}
 
 	return lines, uniqueHashes
+}
+
+func parsePorcelainBlameHeader(text string) (hash string, finalLine int, ok bool) {
+	if strings.HasPrefix(text, "\t") {
+		return "", 0, false
+	}
+	parts := strings.Fields(text)
+	if len(parts) != 3 && len(parts) != 4 {
+		return "", 0, false
+	}
+	if !isGitObjectID(parts[0]) {
+		return "", 0, false
+	}
+	if _, ok := parsePositiveDecimal(parts[1]); !ok {
+		return "", 0, false
+	}
+	parsedFinalLine, ok := parsePositiveDecimal(parts[2])
+	if !ok {
+		return "", 0, false
+	}
+	if len(parts) == 4 {
+		if _, ok := parsePositiveDecimal(parts[3]); !ok {
+			return "", 0, false
+		}
+	}
+	return parts[0], parsedFinalLine, true
+}
+
+func isGitObjectID(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func parsePositiveDecimal(value string) (int, bool) {
+	parsed, err := strconv.Atoi(value)
+	return parsed, err == nil && parsed > 0
 }
 
 // GitDiffRangeTool returns a deferred tool that shows the diff between two
@@ -727,9 +776,12 @@ func parseStatSummary(stat string) (filesChanged, insertions, deletions int) {
 				part = strings.TrimSpace(part)
 				fields := strings.Fields(part)
 				if len(fields) >= 2 {
-					n, _ := strconv.Atoi(fields[0])
+					n, err := strconv.Atoi(fields[0])
+					if err != nil {
+						continue
+					}
 					switch {
-					case strings.Contains(fields[1], "changed"):
+					case len(fields) == 3 && (fields[1] == "file" || fields[1] == "files") && fields[2] == "changed":
 						filesChanged = n
 					case strings.Contains(fields[1], "insertion"):
 						insertions = n

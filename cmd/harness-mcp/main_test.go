@@ -144,7 +144,7 @@ func TestRunWithIO(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		err := runWithIO(ctx, in, pw, srv.URL)
+		err := runWithIO(ctx, in, pw, srv.URL, "")
 		pw.Close()
 		done <- err
 	}()

@@ -184,6 +184,8 @@ func (r *Runner) emitToConversation(convID, originRunID string, eventType EventT
 	if convID == "" {
 		return
 	}
+	unlockSequence := r.lockConversationSequence(convID)
+	defer unlockSequence()
 	r.conversationEventMu.Lock()
 	defer r.conversationEventMu.Unlock()
 

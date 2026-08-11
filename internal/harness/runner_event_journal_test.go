@@ -2,10 +2,19 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"go-agent-harness/internal/store"
 )
+
+type failingOrdinaryEventStore struct {
+	*store.MemoryStore
+}
+
+func (s *failingOrdinaryEventStore) AppendEvent(context.Context, *store.Event) error {
+	return errors.New("ordinary event persistence unavailable")
+}
 
 type terminalOrderingStore struct {
 	*store.MemoryStore
@@ -163,5 +172,25 @@ func TestEventJournalDispatch_NonTerminalStoreAppendPrecedesSubscriberNotificati
 	close(st.releaseAppend)
 	if event := <-delivered; event.Type != EventRunStarted {
 		t.Fatalf("subscriber event type = %q, want %q", event.Type, EventRunStarted)
+	}
+}
+
+func TestEventJournalDispatch_OrdinaryEventRemainsVisibleWhenStoreAppendFails(t *testing.T) {
+	t.Parallel()
+
+	runner := NewRunner(&stubProvider{}, NewRegistry(), RunnerConfig{
+		DefaultModel: "test-model",
+		Store:        &failingOrdinaryEventStore{MemoryStore: store.NewMemoryStore()},
+	})
+	const runID = "run_ordinary_append_failure"
+	runner.runs[runID] = &runState{
+		run: Run{ID: runID, ConversationID: "conv_ordinary_append_failure", Status: RunStatusRunning},
+	}
+
+	runner.emit(runID, EventToolCallStarted, map[string]any{"tool": "read"})
+
+	events := runner.getEvents(runID)
+	if len(events) != 1 || events[0].Type != EventToolCallStarted {
+		t.Fatalf("ordinary event was removed after non-fatal store failure: %+v", events)
 	}
 }

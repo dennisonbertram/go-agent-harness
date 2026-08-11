@@ -2,7 +2,12 @@ package cron
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +16,104 @@ import (
 	"github.com/google/uuid"
 	robfigcron "github.com/robfig/cron/v3"
 )
+
+// TestScheduler_ReconcileDeletedJobTerminalizesAfterDurableLeaseRestorationRegression
+// directly covers the definitive deleted-job recovery path. A recovered scope
+// must remain unavailable while its unavailable terminal row is being written,
+// then become admissible only after that write succeeds. A soft-deleted job
+// has no mutable row left, so it must never receive TouchJobRun.
+func TestScheduler_ReconcileDeletedJobTerminalizesAfterDurableLeaseRestorationRegression(t *testing.T) {
+	for _, notFound := range []struct {
+		name string
+		err  error
+	}{
+		{name: "cron ErrJobNotFound", err: ErrJobNotFound},
+		{name: "sql ErrNoRows", err: sql.ErrNoRows},
+	} {
+		t.Run(notFound.name, func(t *testing.T) {
+			job := testJob("deleted-recovery-" + notFound.name)
+			job.TenantID, job.AgentID, job.ConversationID = "tenant", "agent", "conversation"
+			started := time.Date(2026, time.August, 3, 0, 0, 0, 0, time.UTC)
+			exec := Execution{ID: "deleted-exec", JobID: job.ID, StartedAt: started, Status: ExecStatusRunning, RunID: "durable-run-id"}
+			clock := newMockClock(started.Add(7 * time.Second))
+			var scheduler *Scheduler
+			var updates []Execution
+			var touches atomic.Int32
+			store := &mockStore{
+				ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{exec}, nil },
+				GetJobFunc:               func(context.Context, string) (Job, error) { return Job{}, notFound.err },
+				UpdateExecutionFunc: func(_ context.Context, got Execution) error {
+					updates = append(updates, got)
+					// The terminal record is not durable yet, so the recovered
+					// no-overlap lease must still deny a same-scope admission.
+					if _, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "during-persist", JobID: job.ID, StartedAt: clock.Now(), Status: ExecStatusQueued}); err != nil || admitted {
+						t.Fatalf("admission during unavailable persistence = admitted=%t err=%v, want denied", admitted, err)
+					}
+					return nil
+				},
+				TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error {
+					touches.Add(1)
+					return nil
+				},
+			}
+			scheduler = NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
+
+			if err := scheduler.reconcileExecutionRows(context.Background(), []Job{job}, false); err != nil {
+				t.Fatalf("restore recovered lease: %v", err)
+			}
+			if err := scheduler.reconcileExecutionRows(context.Background(), nil, false); err != nil {
+				t.Fatalf("reconcile deleted job: %v", err)
+			}
+			if len(updates) != 1 {
+				t.Fatalf("UpdateExecution calls = %d, want 1", len(updates))
+			}
+			got := updates[0]
+			if got.Status != ExecStatusFailed || got.RunID != exec.RunID || !got.FinishedAt.Equal(clock.Now()) || got.DurationMs != 7000 || got.Error != "cron execution cannot be reconciled: job unavailable" {
+				t.Fatalf("unavailable terminal execution = %#v", got)
+			}
+			if gotTouches := touches.Load(); gotTouches != 0 {
+				t.Fatalf("TouchJobRun calls for deleted job = %d, want 0", gotTouches)
+			}
+			if _, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "after-persist", JobID: job.ID, StartedAt: clock.Now(), Status: ExecStatusQueued}); err != nil || !admitted {
+				t.Fatalf("admission after durable unavailable terminal = admitted=%t err=%v, want admitted", admitted, err)
+			}
+		})
+	}
+}
+
+// TestScheduler_ReconcileDeletedJobPersistenceFailureRetainsRecoveredLeaseRegression
+// proves the converse: the deleted-job path must not release a recovered lease
+// until its terminal row is durable, and it must never touch the deleted job.
+func TestScheduler_ReconcileDeletedJobPersistenceFailureRetainsRecoveredLeaseRegression(t *testing.T) {
+	job := testJob("deleted-recovery-persistence-failure")
+	job.TenantID, job.AgentID, job.ConversationID = "tenant", "agent", "conversation"
+	exec := Execution{ID: "deleted-failure-exec", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "linked-run"}
+	persistErr := errors.New("sqlite write failed")
+	var touches atomic.Int32
+	scheduler := NewScheduler(&mockStore{
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{exec}, nil },
+		GetJobFunc:               func(context.Context, string) (Job, error) { return Job{}, ErrJobNotFound },
+		UpdateExecutionFunc:      func(context.Context, Execution) error { return persistErr },
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error {
+			touches.Add(1)
+			return nil
+		},
+	}, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+
+	if err := scheduler.reconcileExecutionRows(context.Background(), []Job{job}, false); err != nil {
+		t.Fatalf("restore recovered lease: %v", err)
+	}
+	err := scheduler.reconcileExecutionRows(context.Background(), nil, false)
+	if !errors.Is(err, persistErr) {
+		t.Fatalf("reconcile deleted job error = %v, want persistence error", err)
+	}
+	if got := touches.Load(); got != 0 {
+		t.Fatalf("TouchJobRun calls after unavailable persistence failure = %d, want 0", got)
+	}
+	if _, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate-after-failed-persist", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued}); err != nil || admitted {
+		t.Fatalf("admission after unavailable persistence failure = admitted=%t err=%v, want denied", admitted, err)
+	}
+}
 
 func TestNewScheduler_DefaultMaxConcurrent(t *testing.T) {
 	s := NewScheduler(&mockStore{}, &mockExecutor{}, RealClock{}, SchedulerConfig{})
@@ -99,6 +202,23 @@ func TestUpdateJobSchedule(t *testing.T) {
 
 	if oldEntry == newEntry {
 		t.Fatal("expected new entry ID after UpdateJobSchedule")
+	}
+}
+
+// A scheduler entry is a live robfig registration, not merely the entry kept
+// in Scheduler.entries. Re-adding an active job must replace the old live
+// registration instead of leaking a second future fire.
+func TestSchedulerAddJob_ReplacesExistingLiveEntry(t *testing.T) {
+	s := NewScheduler(&mockStore{}, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+	job := testJob("replace-live-entry")
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("first AddJob: %v", err)
+	}
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("second AddJob: %v", err)
+	}
+	if got := len(s.cron.Entries()); got != 1 {
+		t.Fatalf("live cron entries = %d, want 1", got)
 	}
 }
 
@@ -203,6 +323,1290 @@ func TestFireJob_CreatesExecution(t *testing.T) {
 	}
 }
 
+// structuredOutcomeExecutor deliberately returns a display string that does
+// not contain its run ID. The scheduler must consume the typed outcome, never
+// scrape prose intended for users/operators.
+type structuredOutcomeExecutor struct {
+	started chan struct{}
+}
+
+func (e *structuredOutcomeExecutor) Execute(context.Context, Job) (string, error) {
+	return "accepted by a friendly message with no machine identifier", nil
+}
+
+type observedOutcomeExecutor struct {
+	structuredOutcomeExecutor
+	observation RunObservation
+}
+
+// liveObservationExecutor separates accepted dispatch from terminal
+// observation so shutdown tests exercise the same path as a real harness run.
+type liveObservationExecutor struct {
+	started  chan struct{}
+	canceled chan struct{}
+	release  chan struct{}
+	result   RunObservation
+	err      error
+	observed bool
+}
+
+func (e *liveObservationExecutor) Execute(context.Context, Job) (string, error) { return "", nil }
+func (e *liveObservationExecutor) ExecuteOutcomeWithID(context.Context, Job, string) (ExecutionOutcome, error) {
+	return ExecutionOutcome{RunID: "run-live-observation", OutputSummary: "accepted"}, nil
+}
+func (e *liveObservationExecutor) ObserveExecution(ctx context.Context, _ Job, _ ExecutionOutcome) (RunObservation, bool, error) {
+	select {
+	case e.started <- struct{}{}:
+	default:
+	}
+	if e.err != nil {
+		return RunObservation{}, true, e.err
+	}
+	if e.release == nil {
+		return e.result, e.observed, nil
+	}
+	select {
+	case <-ctx.Done():
+		select {
+		case e.canceled <- struct{}{}:
+		default:
+		}
+		<-e.release
+		return RunObservation{}, false, ctx.Err()
+	case <-e.release:
+		return e.result, true, nil
+	}
+}
+
+func TestScheduler_StopCancelsAndJoinsLiveObservationWithoutTerminalizingRegression(t *testing.T) {
+	job := testJob("live-observation-stop")
+	job.ExecType, job.TenantID, job.AgentID, job.ConversationID = ExecTypeHarness, "tenant", "agent", "conversation"
+	var updates atomic.Int32
+	var persistedMu sync.Mutex
+	var persisted []Execution
+	store := &mockStore{
+		GetJobFunc:          func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) { return exec, nil },
+		UpdateExecutionFunc: func(_ context.Context, got Execution) error {
+			updates.Add(1)
+			persistedMu.Lock()
+			persisted = append(persisted, got)
+			persistedMu.Unlock()
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error {
+			t.Fatal("shutdown must not touch job")
+			return nil
+		},
+	}
+	exec := &liveObservationExecutor{started: make(chan struct{}, 1), canceled: make(chan struct{}, 1), release: make(chan struct{}), result: RunObservation{Succeeded: true}}
+	s := NewScheduler(store, exec, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+	s.fireJob(job, 0)
+	select {
+	case <-exec.started:
+	case <-time.After(time.Second):
+		t.Fatal("live observer did not start")
+	}
+	stopped := make(chan struct{})
+	go func() { s.Stop(); close(stopped) }()
+	select {
+	case <-exec.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not cancel live observer")
+	}
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before live observer joined")
+	default:
+	}
+	// The retained active scope still rejects a duplicate conversation run.
+	if _, admitted, _, err := s.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate", JobID: job.ID, StartedAt: time.Now(), Status: ExecStatusPending}); err != nil || admitted {
+		t.Fatalf("duplicate admitted=%v err=%v, want denied", admitted, err)
+	}
+	close(exec.release)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not join live observer")
+	}
+	if got := updates.Load(); got != 2 {
+		t.Fatalf("updates=%d, want starting and run link only", got)
+	}
+	persistedMu.Lock()
+	defer persistedMu.Unlock()
+	if len(persisted) != 2 || persisted[1].Status != ExecStatusRunning || persisted[1].RunID != "run-live-observation" || persisted[1].FinishedAt != (time.Time{}) || persisted[1].Error != "" {
+		t.Fatalf("persisted execution after Stop = %#v, want linked active run only", persisted)
+	}
+}
+
+func TestScheduler_LiveObserverErrorPreservesActiveExecutionRegression(t *testing.T) {
+	job := testJob("live-observation-error")
+	job.ExecType, job.TenantID, job.AgentID, job.ConversationID = ExecTypeHarness, "tenant", "agent", "conversation"
+	var updates atomic.Int32
+	store := &mockStore{
+		GetJobFunc:          func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) { return exec, nil },
+		UpdateExecutionFunc: func(context.Context, Execution) error { updates.Add(1); return nil },
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error {
+			t.Fatal("observer error must not touch job")
+			return nil
+		},
+	}
+	s := NewScheduler(store, &liveObservationExecutor{started: make(chan struct{}, 1), err: errors.New("remote 503")}, RealClock{}, SchedulerConfig{})
+	s.fireJob(job, 0)
+	s.wg.Wait()
+	s.observationWG.Wait()
+	if got := updates.Load(); got != 2 {
+		t.Fatalf("updates=%d, want starting and run link only", got)
+	}
+	if _, admitted, _, err := s.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate", JobID: job.ID, StartedAt: time.Now(), Status: ExecStatusPending}); err != nil || admitted {
+		t.Fatalf("duplicate admitted=%v err=%v, want denied", admitted, err)
+	}
+}
+
+func TestScheduler_LiveObservedFalsePreservesActiveExecutionRegression(t *testing.T) {
+	job := testJob("live-observation-unavailable")
+	job.ExecType, job.TenantID, job.AgentID, job.ConversationID = ExecTypeHarness, "tenant", "agent", "conversation"
+	var updates atomic.Int32
+	store := &mockStore{GetJobFunc: func(context.Context, string) (Job, error) { return job, nil }, CreateExecutionFunc: func(_ context.Context, e Execution) (Execution, error) { return e, nil }, UpdateExecutionFunc: func(context.Context, Execution) error { updates.Add(1); return nil }, TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error {
+		t.Fatal("unobserved run must not touch job")
+		return nil
+	}}
+	s := NewScheduler(store, &liveObservationExecutor{started: make(chan struct{}, 1), observed: false}, RealClock{}, SchedulerConfig{})
+	s.fireJob(job, 0)
+	s.wg.Wait()
+	s.observationWG.Wait()
+	if got := updates.Load(); got != 2 {
+		t.Fatalf("updates=%d, want starting and run link only", got)
+	}
+}
+
+func TestScheduler_StopCancelsLiveRemoteObservationRegression(t *testing.T) {
+	job := testJob("live-remote-stop")
+	job.ExecType, job.TenantID, job.AgentID, job.ConversationID = ExecTypeHarness, "tenant", "agent", "conversation"
+	job.ExecConfig = `{"prompt":"continue"}`
+	requested, canceled := make(chan struct{}, 1), make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/cron/runs":
+			_, _ = w.Write([]byte(`{"run_id":"remote-live"}`))
+		case "/v1/runs/remote-live":
+			select {
+			case requested <- struct{}{}:
+			default:
+			}
+			<-r.Context().Done()
+			select {
+			case canceled <- struct{}{}:
+			default:
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	var updates atomic.Int32
+	store := &mockStore{GetJobFunc: func(context.Context, string) (Job, error) { return job, nil }, CreateExecutionFunc: func(_ context.Context, e Execution) (Execution, error) { return e, nil }, UpdateExecutionFunc: func(context.Context, Execution) error { updates.Add(1); return nil }, TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error {
+		t.Fatal("stop must not touch remote live run")
+		return nil
+	}}
+	remote := NewRemoteRunStarter(RemoteRunStarterConfig{BaseURL: server.URL, APIKey: "key", RequestTimeout: 10 * time.Second})
+	s := NewScheduler(store, &HarnessExecutor{Starter: remote, Observer: remote}, RealClock{}, SchedulerConfig{})
+	go s.fireJob(job, 0)
+	select {
+	case <-requested:
+	case <-time.After(time.Second):
+		t.Fatal("remote poll did not start")
+	}
+	stopped := make(chan struct{})
+	go func() { s.Stop(); close(stopped) }()
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not cancel live remote poll")
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not join live remote poll")
+	}
+	if got := updates.Load(); got != 2 {
+		t.Fatalf("updates=%d want 2", got)
+	}
+}
+
+func TestScheduler_LiveTerminalUpdateFailurePreservesLeaseNoTouchRegression(t *testing.T) {
+	job := testJob("live-terminal-update-failure")
+	job.ExecType, job.TenantID, job.AgentID, job.ConversationID = ExecTypeHarness, "tenant", "agent", "conversation"
+	var calls, touches atomic.Int32
+	store := &mockStore{GetJobFunc: func(context.Context, string) (Job, error) { return job, nil }, CreateExecutionFunc: func(_ context.Context, e Execution) (Execution, error) { return e, nil }, UpdateExecutionFunc: func(_ context.Context, e Execution) error {
+		if calls.Add(1) >= 3 {
+			return errors.New("sqlite write failed")
+		}
+		return nil
+	}, TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { touches.Add(1); return nil }}
+	s := NewScheduler(store, &liveObservationExecutor{started: make(chan struct{}, 1), result: RunObservation{Succeeded: true}, observed: true}, RealClock{}, SchedulerConfig{})
+	s.fireJob(job, 0)
+	s.wg.Wait()
+	s.observationWG.Wait()
+	if got := touches.Load(); got != 0 {
+		t.Fatalf("touches=%d, want 0 after terminal persistence failure", got)
+	}
+	if _, admitted, _, err := s.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate", JobID: job.ID, StartedAt: time.Now(), Status: ExecStatusPending}); err != nil || admitted {
+		t.Fatalf("duplicate admitted=%v err=%v, want denied", admitted, err)
+	}
+}
+
+func TestScheduler_LiveTerminalPersistenceCommitWinsStopRegression(t *testing.T) {
+	job := testJob("live-terminal-commit-wins")
+	job.ExecType, job.TenantID, job.AgentID, job.ConversationID = ExecTypeHarness, "tenant", "agent", "conversation"
+	updateStarted, releaseUpdate := make(chan struct{}), make(chan struct{})
+	var calls, touches atomic.Int32
+	store := &mockStore{GetJobFunc: func(context.Context, string) (Job, error) { return job, nil }, CreateExecutionFunc: func(_ context.Context, e Execution) (Execution, error) { return e, nil }, UpdateExecutionFunc: func(_ context.Context, e Execution) error {
+		if calls.Add(1) == 3 {
+			close(updateStarted)
+			<-releaseUpdate
+		}
+		return nil
+	}, TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { touches.Add(1); return nil }}
+	s := NewScheduler(store, &liveObservationExecutor{started: make(chan struct{}, 1), result: RunObservation{Succeeded: true}, observed: true}, RealClock{}, SchedulerConfig{})
+	s.fireJob(job, 0)
+	select {
+	case <-updateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("terminal update did not start")
+	}
+	stopped := make(chan struct{})
+	go func() { s.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned during terminal commit")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseUpdate)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return after terminal commit")
+	}
+	if got := touches.Load(); got != 1 {
+		t.Fatalf("touches=%d want 1", got)
+	}
+}
+
+// This is the live stop-wins ordering: Stop seals/cancels before a blocked
+// observer can return a terminal result, so the linked active row is retained.
+func TestScheduler_LiveTerminalPersistenceStopWinsRegression(t *testing.T) {
+	TestScheduler_StopCancelsAndJoinsLiveObservationWithoutTerminalizingRegression(t)
+}
+
+func TestScheduler_StopDrainsInflightShellExecutionRegression(t *testing.T) {
+	job := testJob("live-shell-drain")
+	job.ExecType = ExecTypeShell
+	started, release := make(chan struct{}, 1), make(chan struct{})
+	store := &mockStore{GetJobFunc: func(context.Context, string) (Job, error) { return job, nil }, CreateExecutionFunc: func(_ context.Context, e Execution) (Execution, error) { return e, nil }, UpdateExecutionFunc: func(context.Context, Execution) error { return nil }, TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil }}
+	exec := &mockExecutor{ExecuteFunc: func(context.Context, Job) (string, error) { started <- struct{}{}; <-release; return "done", nil }}
+	s := NewScheduler(store, exec, RealClock{}, SchedulerConfig{})
+	s.fireJob(job, 0)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("shell dispatch did not start")
+	}
+	stopped := make(chan struct{})
+	go func() { s.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+		t.Fatal("Stop cancelled/drained shell before dispatch completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not drain shell execution")
+	}
+}
+
+func (e *observedOutcomeExecutor) ObserveExecution(context.Context, Job, ExecutionOutcome) (RunObservation, bool, error) {
+	return e.observation, true, nil
+}
+
+func (e *structuredOutcomeExecutor) ExecuteOutcomeWithID(context.Context, Job, string) (ExecutionOutcome, error) {
+	close(e.started)
+	return ExecutionOutcome{RunID: "run-typed-123", OutputSummary: "started scheduled conversation"}, nil
+}
+
+func TestScheduler_PersistsStructuredHarnessRunIDImmediately(t *testing.T) {
+	job := testJob("structured-run-id")
+	job.ExecType = ExecTypeHarness
+	var updates []Execution
+	var mu sync.Mutex
+	store := &mockStore{
+		GetJobFunc:          func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) { return exec, nil },
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			mu.Lock()
+			updates = append(updates, exec)
+			mu.Unlock()
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	executor := &structuredOutcomeExecutor{started: make(chan struct{})}
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+
+	scheduler.fireJob(job, 0)
+	scheduler.wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	var linked *Execution
+	for i := range updates {
+		if updates[i].RunID == "run-typed-123" {
+			linked = &updates[i]
+			break
+		}
+	}
+	if linked == nil {
+		t.Fatalf("updates %#v never persisted the typed run ID", updates)
+	}
+	if linked.Status != ExecStatusRunning {
+		t.Fatalf("run link status = %q, want %q before terminal finalization", linked.Status, ExecStatusRunning)
+	}
+}
+
+func TestScheduler_RetriesRunLinkBeforeObservingOrFinalizing(t *testing.T) {
+	job := testJob("retry-run-link")
+	job.ExecType = ExecTypeHarness
+	var updateCalls atomic.Int32
+	var updates []Execution
+	store := &mockStore{
+		GetJobFunc:          func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) { return exec, nil },
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			if exec.RunID == "run-typed-123" && updateCalls.Add(1) == 1 {
+				return errors.New("transient sqlite write failure")
+			}
+			updates = append(updates, exec)
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	executor := &observedOutcomeExecutor{
+		structuredOutcomeExecutor: structuredOutcomeExecutor{started: make(chan struct{})},
+		observation:               RunObservation{Succeeded: true, OutputSummary: "terminal"},
+	}
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+	scheduler.fireJob(job, 0)
+	scheduler.wg.Wait()
+	scheduler.observationWG.Wait()
+	if updateCalls.Load() < 2 {
+		t.Fatalf("run link writes = %d, want retry after first persistence failure", updateCalls.Load())
+	}
+	if len(updates) == 0 || updates[len(updates)-1].Status != ExecStatusSucceeded || updates[len(updates)-1].RunID != "run-typed-123" {
+		t.Fatalf("terminal write occurred without a durable run link: %#v", updates)
+	}
+}
+
+func TestScheduler_SkipsSameConversationWhileEarlierCronExecutionIsActive(t *testing.T) {
+	job := testJob("scope-overlap-first")
+	job.TenantID = "tenant-a"
+	job.AgentID = "agent-a"
+	job.ConversationID = "conversation-a"
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var creates []Execution
+	var calls atomic.Int32
+	var mu sync.Mutex
+	store := &mockStore{
+		GetJobFunc: func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) {
+			mu.Lock()
+			creates = append(creates, exec)
+			mu.Unlock()
+			return exec, nil
+		},
+		UpdateExecutionFunc: func(context.Context, Execution) error { return nil },
+		TouchJobRunFunc:     func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	executor := &mockExecutor{ExecuteFunc: func(context.Context, Job) (string, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return "done", nil
+	}}
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 2})
+
+	scheduler.fireJob(job, 0)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first execution did not start")
+	}
+	scheduler.fireJob(job, 0)
+	close(release)
+	scheduler.wg.Wait()
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("same scoped conversation executor calls = %d, want one", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var skipped *Execution
+	for i := range creates {
+		if creates[i].Status == ExecStatusSkipped {
+			skipped = &creates[i]
+		}
+	}
+	if skipped == nil || skipped.Error != ErrExecutionSkippedOverlap.Error() {
+		t.Fatalf("execution records %#v missing machine-readable overlap skip", creates)
+	}
+}
+
+func TestScheduler_AllowsDifferentConversationsToRunConcurrently(t *testing.T) {
+	first := testJob("scope-concurrency-first")
+	first.TenantID, first.AgentID, first.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	second := first
+	second.ID, second.ConversationID = "scope-concurrency-second", "conversation-b"
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	store := &mockStore{
+		GetJobFunc: func(_ context.Context, id string) (Job, error) {
+			if id == second.ID {
+				return second, nil
+			}
+			return first, nil
+		},
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) { return exec, nil },
+		UpdateExecutionFunc: func(context.Context, Execution) error { return nil },
+		TouchJobRunFunc:     func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	executor := &mockExecutor{ExecuteFunc: func(context.Context, Job) (string, error) {
+		started <- struct{}{}
+		<-release
+		return "done", nil
+	}}
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 2})
+	scheduler.fireJob(first, 0)
+	scheduler.fireJob(second, 0)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatalf("only %d scoped executions started; different conversations must not serialize", i)
+		}
+	}
+	close(release)
+	scheduler.wg.Wait()
+}
+
+func TestScheduler_ObservedHarnessRunFinalizesFromTerminalObservation(t *testing.T) {
+	job := testJob("observed-terminal")
+	job.ExecType = ExecTypeHarness
+	var updates []Execution
+	var mu sync.Mutex
+	store := &mockStore{
+		GetJobFunc:          func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) { return exec, nil },
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			mu.Lock()
+			updates = append(updates, exec)
+			mu.Unlock()
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	executor := &observedOutcomeExecutor{
+		structuredOutcomeExecutor: structuredOutcomeExecutor{started: make(chan struct{})},
+		observation:               RunObservation{Succeeded: false, Error: "provider rejected continuation"},
+	}
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+	scheduler.fireJob(job, 0)
+	scheduler.wg.Wait()
+	scheduler.observationWG.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(updates) < 3 {
+		t.Fatalf("updates %#v, want starting, linked-running, terminal", updates)
+	}
+	final := updates[len(updates)-1]
+	if final.Status != ExecStatusFailed || final.RunID != "run-typed-123" || !strings.Contains(final.Error, "provider rejected continuation") {
+		t.Fatalf("terminal execution = %#v, want failed linked observation", final)
+	}
+}
+
+func TestScheduler_ReconcileLinkedExecutionFinalizesWithoutStartingAnotherRun(t *testing.T) {
+	job := testJob("restart-linked-run")
+	job.ExecType = ExecTypeHarness
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	startedAt := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)
+	active := Execution{ID: "execution-before-restart", JobID: job.ID, StartedAt: startedAt, Status: ExecStatusRunning, RunID: "run-before-restart"}
+	var updates []Execution
+	var touches atomic.Int32
+	store := &mockStore{
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{active}, nil },
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			updates = append(updates, exec)
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error {
+			touches.Add(1)
+			return nil
+		},
+	}
+	executor := &observedOutcomeExecutor{
+		structuredOutcomeExecutor: structuredOutcomeExecutor{started: make(chan struct{})},
+		observation:               RunObservation{Succeeded: true, OutputSummary: "reconciled terminal reply"},
+	}
+	scheduler := NewScheduler(store, executor, newMockClock(startedAt.Add(time.Minute)), SchedulerConfig{MaxConcurrent: 1})
+	if err := scheduler.reconcileExecutions(context.Background(), []Job{job}); err != nil {
+		t.Fatalf("reconcileExecutions: %v", err)
+	}
+	if len(updates) != 1 || updates[0].ID != active.ID || updates[0].Status != ExecStatusSucceeded || updates[0].RunID != active.RunID {
+		t.Fatalf("reconciled updates = %#v", updates)
+	}
+	if touches.Load() != 1 {
+		t.Fatalf("run tracking updates = %d, want one", touches.Load())
+	}
+	select {
+	case <-executor.started:
+		t.Fatal("reconciliation started a second harness run")
+	default:
+	}
+}
+
+func TestScheduler_ReconcileUnlinkedExecutionRetainsFailClosedScopeLease(t *testing.T) {
+	job := testJob("restart-unobserved-run")
+	job.ExecType = ExecTypeHarness
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	active := []Execution{
+		{ID: "pre-start", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusStarting},
+		{ID: "linked-unobserved", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-still-live"},
+	}
+	var updates []Execution
+	var creates []Execution
+	var calls atomic.Int32
+	store := &mockStore{
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return active, nil },
+		GetJobFunc:               func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) {
+			creates = append(creates, exec)
+			return exec, nil
+		},
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			updates = append(updates, exec)
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	// Override legacy Execute too: any call after reconciliation means the
+	// retained scope lease was lost.
+	legacy := &mockExecutor{ExecuteFunc: func(context.Context, Job) (string, error) { calls.Add(1); return "unexpected", nil }}
+	scheduler := NewScheduler(store, legacy, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+	if err := scheduler.reconcileExecutions(context.Background(), []Job{job}); err != nil {
+		t.Fatalf("reconcileExecutions: %v", err)
+	}
+	scheduler.fireJob(job, 0)
+	scheduler.wg.Wait()
+	if calls.Load() != 0 {
+		t.Fatalf("restart admitted duplicate execution calls=%d", calls.Load())
+	}
+	if len(updates) != 0 {
+		t.Fatalf("unlinked execution was terminalized despite an ambiguous StartRun persistence window: %#v", updates)
+	}
+	if len(creates) != 1 || creates[0].Status != ExecStatusSkipped || creates[0].Error != ErrExecutionSkippedOverlap.Error() {
+		t.Fatalf("duplicate fire did not create overlap skip: %#v", creates)
+	}
+}
+
+func TestScheduler_ReconcileCountsPreexistingDuplicateScopeLeases(t *testing.T) {
+	job := testJob("restart-duplicate-scope")
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	active := []Execution{
+		{ID: "old-a", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-a"},
+		{ID: "old-b", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-b"},
+	}
+	store := &mockStore{ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return active, nil }}
+	scheduler := NewScheduler(store, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+	if err := scheduler.reconcileExecutions(context.Background(), []Job{job}); err != nil {
+		t.Fatalf("reconcileExecutions: %v", err)
+	}
+	key := scopeKey(job)
+	scheduler.mu.Lock()
+	got := scheduler.activeScopes[key]
+	scheduler.mu.Unlock()
+	if got != 2 {
+		t.Fatalf("reconciled scope lease count = %d, want 2", got)
+	}
+	scheduler.releaseScope(key)
+	scheduler.mu.Lock()
+	got = scheduler.activeScopes[key]
+	scheduler.mu.Unlock()
+	if got != 1 {
+		t.Fatalf("after one terminal completion scope lease count = %d, want 1", got)
+	}
+}
+
+// TestScheduler_PostBindReconciliationFinalizesRestartedExecution verifies the
+// harnessd ordering where Scheduler.Start reloads a linked execution before
+// its runner bridge exists. Binding the bridge must asynchronously reconcile
+// the persisted execution, release exactly its restart lease, and allow the
+// next same-conversation admission without starting a duplicate run.
+func TestScheduler_PostBindReconciliationFinalizesRestartedExecution(t *testing.T) {
+	job := testJob("post-bind-reconcile")
+	job.ExecType = ExecTypeHarness
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	startedAt := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)
+	active := Execution{ID: "restart-linked", JobID: job.ID, StartedAt: startedAt, Status: ExecStatusRunning, RunID: "run-restart"}
+
+	var activeMu sync.Mutex
+	stillActive := true
+	terminalized := make(chan Execution, 1)
+	terminalStoreEntered := make(chan struct{})
+	releaseTerminalStore := make(chan struct{})
+	store := &mockStore{
+		ListJobsFunc: func(context.Context) ([]Job, error) { return []Job{job}, nil },
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) {
+			activeMu.Lock()
+			defer activeMu.Unlock()
+			if stillActive {
+				return []Execution{active}, nil
+			}
+			return nil, nil
+		},
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			if exec.ID == active.ID && exec.Status == ExecStatusSucceeded {
+				close(terminalStoreEntered)
+				<-releaseTerminalStore
+				activeMu.Lock()
+				stillActive = false
+				activeMu.Unlock()
+				terminalized <- exec
+			}
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	executor := &lateBoundObserverExecutor{}
+	scheduler := NewScheduler(store, executor, newMockClock(startedAt.Add(time.Minute)), SchedulerConfig{MaxConcurrent: 1})
+	if err := scheduler.reconcileExecutions(context.Background(), []Job{job}); err != nil {
+		t.Fatalf("pre-bind reconciliation: %v", err)
+	}
+	key := scopeKey(job)
+	scheduler.mu.Lock()
+	if got := scheduler.activeScopes[key]; got != 1 {
+		scheduler.mu.Unlock()
+		t.Fatalf("pre-bind scope leases = %d, want 1", got)
+	}
+	scheduler.mu.Unlock()
+
+	executor.bindTerminal(RunObservation{Succeeded: true, OutputSummary: "completed after bind"})
+	// Repeated readiness/bind notifications must coalesce through the durable
+	// execution ID rather than double-observing or double-releasing its scope.
+	scheduler.ReconcileAfterExecutorBound(context.Background())
+	scheduler.ReconcileAfterExecutorBound(context.Background())
+	select {
+	case <-terminalStoreEntered:
+	case <-time.After(time.Second):
+		t.Fatal("post-bind reconciliation did not begin terminal persistence")
+	}
+	// The terminal row has entered the durable store boundary but has not
+	// returned. The restored no-overlap lease must still reject a duplicate.
+	if _, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "during-terminal-persist", JobID: job.ID, StartedAt: startedAt.Add(2 * time.Minute), Status: ExecStatusQueued}); err != nil || admitted {
+		t.Fatalf("same-scope admission before terminal persistence returned = admitted=%t err=%v, want denied", admitted, err)
+	}
+	close(releaseTerminalStore)
+	// reconciliation owns releaseReconciledScope. Its WaitGroup is the causal
+	// boundary; receiving an arbitrary fixture signal is not sufficient proof
+	// that the release has completed.
+	scheduler.reconcileWG.Wait()
+	select {
+	case got := <-terminalized:
+		if got.RunID != active.RunID {
+			t.Fatalf("terminalized run ID = %q, want %q", got.RunID, active.RunID)
+		}
+	default:
+		t.Fatal("post-bind reconciliation did not persist a terminal execution")
+	}
+	scheduler.mu.Lock()
+	activeScopeCount := scheduler.activeScopes[key]
+	_, retainedLease := scheduler.reconciledLeases[active.ID]
+	scheduler.mu.Unlock()
+	if activeScopeCount != 0 || retainedLease {
+		t.Fatalf("post-bind terminal left scope=%d retainedLease=%t, want both clear", activeScopeCount, retainedLease)
+	}
+
+	created, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "next-same-scope", JobID: job.ID, StartedAt: startedAt.Add(2 * time.Minute), Status: ExecStatusQueued})
+	if err != nil || !admitted {
+		t.Fatalf("next same-scope admission = (%#v, %t, %v), want admitted", created, admitted, err)
+	}
+}
+
+// TestScheduler_StartRecoversRemoteRunAsynchronouslyRegression covers cronsd
+// restart with a remote harness run that is still live. Startup/readiness must
+// not wait for polling, the durable and local no-overlap leases must remain,
+// and the eventual authenticated terminal response must release exactly once.
+func TestScheduler_StartRecoversRemoteRunAsynchronouslyRegression(t *testing.T) {
+	job := testJob("remote-restart-async")
+	job.ExecType = ExecTypeHarness
+	job.ExecConfig = `{"prompt":"continue after restart"}`
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	active := Execution{ID: "remote-restart-exec", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "remote-run"}
+
+	observedRequest := make(chan struct{}, 1)
+	releaseRemoteTerminal := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/runs/remote-run" || r.Header.Get("Authorization") != "Bearer cron-read-token" {
+			t.Errorf("remote observation request = %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		select {
+		case observedRequest <- struct{}{}:
+		default:
+		}
+		// Keep the asynchronous recovery observer live until the test has proven
+		// that startup's recovered lease rejects a duplicate. This avoids racing
+		// an unsequenced state change with the remote handler's response.
+		<-releaseRemoteTerminal
+		_, _ = fmt.Fprint(w, `{"status":"completed","output":"remote terminal"}`)
+	}))
+	defer server.Close()
+
+	var activeMu sync.Mutex
+	stillActive := true
+	terminalStoreEntered := make(chan struct{})
+	releaseTerminalStore := make(chan struct{})
+	store := &mockStore{
+		ListJobsFunc: func(context.Context) ([]Job, error) { return []Job{job}, nil },
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) {
+			activeMu.Lock()
+			defer activeMu.Unlock()
+			if stillActive {
+				return []Execution{active}, nil
+			}
+			return nil, nil
+		},
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			if exec.ID == active.ID && exec.Status == ExecStatusSucceeded {
+				close(terminalStoreEntered)
+				<-releaseTerminalStore
+				activeMu.Lock()
+				stillActive = false
+				activeMu.Unlock()
+			}
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	remote := NewRemoteRunStarter(RemoteRunStarterConfig{BaseURL: server.URL, APIKey: "cron-read-token", RequestTimeout: time.Second})
+	executor := &HarnessExecutor{Starter: remote, Observer: remote}
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+	t.Cleanup(scheduler.Stop)
+
+	started := time.Now()
+	if err := scheduler.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("Start blocked for recovered remote observation: %s", elapsed)
+	}
+	select {
+	case <-observedRequest:
+	case <-time.After(time.Second):
+		t.Fatal("remote observation did not begin asynchronously")
+	}
+	_, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate-before-terminal", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued})
+	if err != nil || admitted {
+		t.Fatalf("nonterminal restart admitted duplicate: admitted=%t err=%v", admitted, err)
+	}
+
+	close(releaseRemoteTerminal)
+	select {
+	case <-terminalStoreEntered:
+	case <-time.After(time.Second):
+		t.Fatal("remote terminal did not enter persistence after startup")
+	}
+	// The terminal row is not yet durable. A recovered run must continue to
+	// hold its exact same-conversation lease until UpdateExecution returns.
+	if _, admitted, _, err = scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate-during-terminal-persist", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued}); err != nil || admitted {
+		t.Fatalf("terminal persistence admitted duplicate: admitted=%t err=%v, want denied", admitted, err)
+	}
+	close(releaseTerminalStore)
+	scheduler.reconcileWG.Wait()
+	key := scopeKey(job)
+	scheduler.mu.Lock()
+	activeScopeCount := scheduler.activeScopes[key]
+	_, retainedLease := scheduler.reconciledLeases[active.ID]
+	scheduler.mu.Unlock()
+	if activeScopeCount != 0 || retainedLease {
+		t.Fatalf("remote terminal left scope=%d retainedLease=%t, want both clear", activeScopeCount, retainedLease)
+	}
+	_, admitted, _, err = scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "next-after-terminal", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued})
+	if err != nil || !admitted {
+		t.Fatalf("terminal remote run did not release scope: admitted=%t err=%v", admitted, err)
+	}
+}
+
+// TestScheduler_StopCancelsAndJoinsPostBindObserverRegression proves that a
+// late-bound observer is scheduler-owned work. Stop must cancel it, wait for
+// its exit, and not manufacture a terminal row from context cancellation.
+func TestScheduler_StopCancelsAndJoinsPostBindObserverRegression(t *testing.T) {
+	job := testJob("stop-post-bind-observer")
+	job.ExecType = ExecTypeHarness
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	active := Execution{ID: "stop-post-bind-exec", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-still-live"}
+
+	var updates atomic.Int32
+	var touches atomic.Int32
+	store := &mockStore{
+		ListJobsFunc:             func(context.Context) ([]Job, error) { return []Job{job}, nil },
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{active}, nil },
+		UpdateExecutionFunc: func(context.Context, Execution) error {
+			updates.Add(1)
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error {
+			touches.Add(1)
+			return nil
+		},
+	}
+	executor := newStopBlockingObserverExecutor()
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+	if err := scheduler.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	select {
+	case <-executor.started:
+	case <-time.After(time.Second):
+		t.Fatal("reconciliation observer did not start")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		scheduler.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-executor.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not cancel scheduler-owned observer")
+	}
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before observer acknowledged exit")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(executor.release)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not join observer")
+	}
+	if got := updates.Load(); got != 0 {
+		t.Fatalf("UpdateExecution calls after cancellation = %d, want 0", got)
+	}
+	if got := touches.Load(); got != 0 {
+		t.Fatalf("TouchJobRun calls after cancellation = %d, want 0", got)
+	}
+}
+
+func TestScheduler_ReconcileAfterExecutorBoundAfterStopIsNoop(t *testing.T) {
+	var listJobs atomic.Int32
+	scheduler := NewScheduler(&mockStore{
+		ListJobsFunc: func(context.Context) ([]Job, error) {
+			listJobs.Add(1)
+			return nil, nil
+		},
+	}, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+	scheduler.Stop()
+	scheduler.ReconcileAfterExecutorBound(context.Background())
+	time.Sleep(25 * time.Millisecond)
+	if got := listJobs.Load(); got != 0 {
+		t.Fatalf("post-stop bind reconciliation loaded jobs %d times, want 0", got)
+	}
+}
+
+// TestScheduler_StopCancelsRecoveredRemoteObservationRegression exercises the
+// real RemoteRunStarter polling path. A recovered remote run may be live, but
+// shutdown must promptly cancel its HTTP request and retain the active row.
+func TestScheduler_StopCancelsRecoveredRemoteObservationRegression(t *testing.T) {
+	job := testJob("stop-remote-observer")
+	job.ExecType = ExecTypeHarness
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	active := Execution{ID: "stop-remote-exec", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "remote-live"}
+	requested := make(chan struct{}, 1)
+	canceled := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/runs/remote-live" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		select {
+		case requested <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+		select {
+		case canceled <- struct{}{}:
+		default:
+		}
+	}))
+	defer server.Close()
+
+	var updates atomic.Int32
+	var touches atomic.Int32
+	store := &mockStore{
+		ListJobsFunc:             func(context.Context) ([]Job, error) { return []Job{job}, nil },
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{active}, nil },
+		UpdateExecutionFunc:      func(context.Context, Execution) error { updates.Add(1); return nil },
+		TouchJobRunFunc:          func(context.Context, string, time.Time, time.Time, time.Time) error { touches.Add(1); return nil },
+	}
+	remote := NewRemoteRunStarter(RemoteRunStarterConfig{BaseURL: server.URL, APIKey: "cron-read-token", RequestTimeout: 10 * time.Second})
+	scheduler := NewScheduler(store, &HarnessExecutor{Starter: remote, Observer: remote}, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+	if err := scheduler.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	select {
+	case <-requested:
+	case <-time.After(time.Second):
+		t.Fatal("remote polling request did not start")
+	}
+	scheduler.Stop()
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not cancel remote poll promptly")
+	}
+	if got := updates.Load(); got != 0 {
+		t.Fatalf("UpdateExecution calls = %d, want 0", got)
+	}
+	if got := touches.Load(); got != 0 {
+		t.Fatalf("TouchJobRun calls = %d, want 0", got)
+	}
+}
+
+// TestScheduler_ReconcileTerminalPersistenceCancelWinsRegression fixes the
+// shutdown linearization point: once Stop has sealed the lifecycle, a terminal
+// observation that was already returned must not write a synthetic terminal
+// row or release the recovered conversation lease.
+func TestScheduler_ReconcileTerminalPersistenceCancelWinsRegression(t *testing.T) {
+	job := testJob("terminal-cancel-wins")
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	exec := Execution{ID: "terminal-cancel-wins-exec", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-live"}
+	var updates atomic.Int32
+	var touches atomic.Int32
+	scheduler := NewScheduler(&mockStore{
+		UpdateExecutionFunc: func(context.Context, Execution) error { updates.Add(1); return nil },
+		TouchJobRunFunc:     func(context.Context, string, time.Time, time.Time, time.Time) error { touches.Add(1); return nil },
+	}, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+	key := scheduler.acquireReconciledScope(exec.ID, scopeKey(job))
+	scheduler.Stop()
+
+	if err := scheduler.finishObservedExecution(context.Background(), job, exec, key, RunObservation{Succeeded: true, OutputSummary: "late terminal"}, nil); err != nil {
+		t.Fatalf("finishObservedExecution: %v", err)
+	}
+	if got := updates.Load(); got != 0 {
+		t.Fatalf("UpdateExecution calls after Stop won = %d, want 0", got)
+	}
+	if got := touches.Load(); got != 0 {
+		t.Fatalf("TouchJobRun calls after Stop won = %d, want 0", got)
+	}
+	scheduler.mu.Lock()
+	_, retained := scheduler.reconciledLeases[exec.ID]
+	scheduler.mu.Unlock()
+	if !retained {
+		t.Fatal("Stop-winning terminal observation released recovered scope lease")
+	}
+}
+
+// TestScheduler_ReconcileTerminalPersistenceCommitWinsRegression proves the
+// other side of the lifecycle gate. Once terminal persistence has entered the
+// gate, Stop must wait for the whole durable transition (including the local
+// lease release and job run touch), rather than racing it after UpdateExecution.
+func TestScheduler_ReconcileTerminalPersistenceCommitWinsRegression(t *testing.T) {
+	job := testJob("terminal-commit-wins")
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	exec := Execution{ID: "terminal-commit-wins-exec", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-finished"}
+	updateStarted := make(chan struct{})
+	releaseUpdate := make(chan struct{})
+	var touches atomic.Int32
+	scheduler := NewScheduler(&mockStore{
+		UpdateExecutionFunc: func(context.Context, Execution) error {
+			close(updateStarted)
+			<-releaseUpdate
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { touches.Add(1); return nil },
+	}, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+	key := scheduler.acquireReconciledScope(exec.ID, scopeKey(job))
+	finished := make(chan error, 1)
+	go func() {
+		finished <- scheduler.finishObservedExecution(context.Background(), job, exec, key, RunObservation{Succeeded: true, OutputSummary: "done"}, nil)
+	}()
+	select {
+	case <-updateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("terminal persistence did not reach UpdateExecution")
+	}
+	stopped := make(chan struct{})
+	go func() { scheduler.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while terminal persistence was committed but incomplete")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseUpdate)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("finishObservedExecution: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal persistence did not finish")
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return after committed terminal persistence")
+	}
+	if got := touches.Load(); got != 1 {
+		t.Fatalf("TouchJobRun calls = %d, want 1", got)
+	}
+}
+
+func TestScheduler_ReconcileCanceledJobLookupRetainsActiveExecutionRegression(t *testing.T) {
+	jobID := "canceled-job-lookup"
+	exec := Execution{ID: "canceled-job-lookup-exec", JobID: jobID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-live"}
+	var updates atomic.Int32
+	store := &mockStore{
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{exec}, nil },
+		GetJobFunc:               func(ctx context.Context, _ string) (Job, error) { return Job{}, ctx.Err() },
+		UpdateExecutionFunc:      func(context.Context, Execution) error { updates.Add(1); return nil },
+	}
+	scheduler := NewScheduler(store, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := scheduler.reconcileExecutionRows(ctx, nil, false); err != nil {
+		t.Fatalf("reconcileExecutionRows canceled lookup: %v", err)
+	}
+	if got := updates.Load(); got != 0 {
+		t.Fatalf("canceled job lookup terminalized execution %d times, want 0", got)
+	}
+}
+
+func TestScheduler_ReconcileTransientJobLookupRetainsActiveExecutionRegression(t *testing.T) {
+	jobID := "transient-job-lookup"
+	exec := Execution{ID: "transient-job-lookup-exec", JobID: jobID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-live"}
+	transient := errors.New("sqlite temporarily unavailable")
+	var updates atomic.Int32
+	store := &mockStore{
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{exec}, nil },
+		GetJobFunc:               func(context.Context, string) (Job, error) { return Job{}, transient },
+		UpdateExecutionFunc:      func(context.Context, Execution) error { updates.Add(1); return nil },
+	}
+	scheduler := NewScheduler(store, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+	err := scheduler.reconcileExecutionRows(context.Background(), nil, false)
+	if !errors.Is(err, transient) {
+		t.Fatalf("reconcileExecutionRows error = %v, want transient lookup error", err)
+	}
+	if got := updates.Load(); got != 0 {
+		t.Fatalf("transient job lookup terminalized execution %d times, want 0", got)
+	}
+}
+
+// recoveryObservationExecutor gives recovery tests an exact terminal-observer
+// result per durable harness run. In particular, an observer transport error
+// is distinct from an observed terminal failure: only the latter may finish a
+// recovered execution and release its no-overlap lease.
+type recoveryObservationExecutor struct {
+	results map[string]recoveryObservationResult
+}
+
+type recoveryObservationResult struct {
+	observation RunObservation
+	observed    bool
+	err         error
+}
+
+func (e *recoveryObservationExecutor) Execute(context.Context, Job) (string, error) { return "", nil }
+
+func (e *recoveryObservationExecutor) ObserveExecution(_ context.Context, _ Job, outcome ExecutionOutcome) (RunObservation, bool, error) {
+	result, ok := e.results[outcome.RunID]
+	if !ok {
+		return RunObservation{}, false, nil
+	}
+	return result.observation, result.observed, result.err
+}
+
+func TestScheduler_ReconcileObserverErrorsRetainRecoveredExecutionRegression(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "http 503", err: errors.New("remote 503")},
+		{name: "stream closed", err: errors.New("SSE stream closed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			job := testJob("recovery-observer-" + strings.ReplaceAll(tc.name, " ", "-"))
+			job.TenantID, job.AgentID, job.ConversationID = "tenant", "agent", "conversation"
+			exec := Execution{ID: "exec-" + tc.name, JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-" + tc.name}
+			var updates atomic.Int32
+			var touches atomic.Int32
+			store := &mockStore{
+				ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{exec}, nil },
+				UpdateExecutionFunc:      func(context.Context, Execution) error { updates.Add(1); return nil },
+				TouchJobRunFunc:          func(context.Context, string, time.Time, time.Time, time.Time) error { touches.Add(1); return nil },
+			}
+			scheduler := NewScheduler(store, &recoveryObservationExecutor{results: map[string]recoveryObservationResult{
+				exec.RunID: {observed: true, err: tc.err},
+			}}, RealClock{}, SchedulerConfig{})
+			if err := scheduler.reconcileExecutionRows(context.Background(), []Job{job}, true); err != nil {
+				t.Fatalf("reconcileExecutionRows: %v", err)
+			}
+			if got := updates.Load(); got != 0 {
+				t.Fatalf("observer error terminalized recovered execution %d times, want 0", got)
+			}
+			if got := touches.Load(); got != 0 {
+				t.Fatalf("observer error touched job %d times, want 0", got)
+			}
+			if _, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate-" + tc.name, JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued}); err != nil || admitted {
+				t.Fatalf("observer error released recovered lease: admitted=%t err=%v", admitted, err)
+			}
+		})
+	}
+}
+
+func TestScheduler_ReconcileMixedObserverErrorDoesNotStarveLaterTerminalRowsRegression(t *testing.T) {
+	job := testJob("recovery-mixed-observer-results")
+	job.TenantID, job.AgentID, job.ConversationID = "tenant", "agent", "conversation"
+	startedAt := time.Now().UTC()
+	errorExec := Execution{ID: "recovery-error", JobID: job.ID, StartedAt: startedAt, Status: ExecStatusRunning, RunID: "run-error"}
+	successExec := Execution{ID: "recovery-success", JobID: job.ID, StartedAt: startedAt, Status: ExecStatusRunning, RunID: "run-success"}
+	var updated []Execution
+	var updatesMu sync.Mutex
+	var touches atomic.Int32
+	store := &mockStore{
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{errorExec, successExec}, nil },
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			updatesMu.Lock()
+			updated = append(updated, exec)
+			updatesMu.Unlock()
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { touches.Add(1); return nil },
+	}
+	scheduler := NewScheduler(store, &recoveryObservationExecutor{results: map[string]recoveryObservationResult{
+		errorExec.RunID:   {observed: true, err: errors.New("remote 503")},
+		successExec.RunID: {observation: RunObservation{Succeeded: true, OutputSummary: "finished"}, observed: true},
+	}}, RealClock{}, SchedulerConfig{})
+	if err := scheduler.reconcileExecutionRows(context.Background(), []Job{job}, true); err != nil {
+		t.Fatalf("reconcileExecutionRows: %v", err)
+	}
+	updatesMu.Lock()
+	defer updatesMu.Unlock()
+	if len(updated) != 1 || updated[0].ID != successExec.ID || updated[0].Status != ExecStatusSucceeded {
+		t.Fatalf("terminal updates = %#v, want only later successful execution", updated)
+	}
+	if got := touches.Load(); got != 1 {
+		t.Fatalf("TouchJobRun calls = %d, want 1 for later terminal row", got)
+	}
+	if _, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate-after-mixed", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued}); err != nil || admitted {
+		t.Fatalf("error row released recovered lease: admitted=%t err=%v", admitted, err)
+	}
+}
+
+func TestScheduler_ReconcileUnobservedRetainsAndObservedFailureTerminalizesRegression(t *testing.T) {
+	job := testJob("recovery-observed-contract")
+	job.TenantID, job.AgentID, job.ConversationID = "tenant", "agent", "conversation"
+	for _, tc := range []struct {
+		name         string
+		result       recoveryObservationResult
+		wantUpdates  int
+		wantStatus   string
+		wantAdmitted bool
+	}{
+		{name: "unobserved", result: recoveryObservationResult{observed: false}, wantUpdates: 0, wantAdmitted: false},
+		{name: "terminal failure", result: recoveryObservationResult{observed: true, observation: RunObservation{Succeeded: false, Error: "agent failed"}}, wantUpdates: 1, wantStatus: ExecStatusFailed, wantAdmitted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := Execution{ID: "exec-" + tc.name, JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-" + tc.name}
+			var updated []Execution
+			store := &mockStore{
+				ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{exec}, nil },
+				UpdateExecutionFunc:      func(_ context.Context, got Execution) error { updated = append(updated, got); return nil },
+				TouchJobRunFunc:          func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+			}
+			scheduler := NewScheduler(store, &recoveryObservationExecutor{results: map[string]recoveryObservationResult{exec.RunID: tc.result}}, RealClock{}, SchedulerConfig{})
+			if err := scheduler.reconcileExecutionRows(context.Background(), []Job{job}, true); err != nil {
+				t.Fatalf("reconcileExecutionRows: %v", err)
+			}
+			if len(updated) != tc.wantUpdates {
+				t.Fatalf("UpdateExecution calls = %d, want %d", len(updated), tc.wantUpdates)
+			}
+			if tc.wantUpdates == 1 && updated[0].Status != tc.wantStatus {
+				t.Fatalf("terminal status = %s, want %s", updated[0].Status, tc.wantStatus)
+			}
+			if _, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate-" + tc.name, JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued}); err != nil || admitted != tc.wantAdmitted {
+				t.Fatalf("duplicate admitted=%t err=%v, want admitted=%t", admitted, err, tc.wantAdmitted)
+			}
+		})
+	}
+}
+
+type stopBlockingObserverExecutor struct {
+	started  chan struct{}
+	canceled chan struct{}
+	release  chan struct{}
+}
+
+func newStopBlockingObserverExecutor() *stopBlockingObserverExecutor {
+	return &stopBlockingObserverExecutor{started: make(chan struct{}, 1), canceled: make(chan struct{}, 1), release: make(chan struct{})}
+}
+
+func (e *stopBlockingObserverExecutor) Execute(context.Context, Job) (string, error) { return "", nil }
+
+func (e *stopBlockingObserverExecutor) ObserveExecution(ctx context.Context, _ Job, _ ExecutionOutcome) (RunObservation, bool, error) {
+	select {
+	case e.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	select {
+	case e.canceled <- struct{}{}:
+	default:
+	}
+	<-e.release
+	return RunObservation{}, false, ctx.Err()
+}
+
+type lateBoundObserverExecutor struct {
+	mu          sync.Mutex
+	bound       bool
+	observation RunObservation
+}
+
+func (e *lateBoundObserverExecutor) Execute(context.Context, Job) (string, error) { return "", nil }
+
+func (e *lateBoundObserverExecutor) ObserveExecution(context.Context, Job, ExecutionOutcome) (RunObservation, bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.bound {
+		return RunObservation{}, false, nil
+	}
+	return e.observation, true, nil
+}
+
+func (e *lateBoundObserverExecutor) bindTerminal(observation RunObservation) {
+	e.mu.Lock()
+	e.bound = true
+	e.observation = observation
+	e.mu.Unlock()
+}
+
 func TestFireJob_ExecutorError(t *testing.T) {
 	var updatedExecs []Execution
 	var mu sync.Mutex
@@ -296,6 +1700,41 @@ func TestFireJob_TimeoutError(t *testing.T) {
 	lastExec := updatedExecs[len(updatedExecs)-1]
 	if lastExec.Status != ExecStatusTimeout {
 		t.Fatalf("expected status %s, got %s", ExecStatusTimeout, lastExec.Status)
+	}
+}
+
+func TestFireJob_RemoteDeadlinePersistsTimedOut(t *testing.T) {
+	var updatedExecs []Execution
+	var mu sync.Mutex
+
+	job := testJob("remote-timeout-test")
+	store := &mockStore{
+		GetJobFunc:          func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) { return exec, nil },
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			mu.Lock()
+			updatedExecs = append(updatedExecs, exec)
+			mu.Unlock()
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+
+	executor := &mockExecutor{ExecuteFunc: func(context.Context, Job) (string, error) {
+		return "", &RemoteRunError{Code: "timeout", Retryable: true, Err: context.DeadlineExceeded}
+	}}
+	s := NewScheduler(store, executor, newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)), SchedulerConfig{MaxConcurrent: 1})
+
+	s.fireJob(job, 0)
+	s.wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(updatedExecs) < 2 {
+		t.Fatalf("expected running and terminal execution updates, got %d", len(updatedExecs))
+	}
+	if got := updatedExecs[len(updatedExecs)-1].Status; got != ExecStatusTimeout {
+		t.Fatalf("remote deadline status = %s, want %s", got, ExecStatusTimeout)
 	}
 }
 
@@ -1022,6 +2461,145 @@ func TestFireJob_SkipsExecutionWhenJobPausedInStore(t *testing.T) {
 	if executed {
 		t.Fatal("expected fireJob to skip execution for a job that is now paused in the store, but the executor ran (paused job was resurrected)")
 	}
+}
+
+func TestPreparedReplacementSuppressesCandidateAndStaleCallbacks(t *testing.T) {
+	old := testJob("prepared-replacement")
+	updated := old
+	updated.Schedule = "0 * * * *"
+	var calls int
+	store := &mockStore{
+		GetJobFunc:          func(context.Context, string) (Job, error) { return updated, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) { return exec, nil },
+		UpdateExecutionFunc: func(context.Context, Execution) error { return nil },
+		TouchJobRunFunc:     func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	executor := &mockExecutor{ExecuteFunc: func(context.Context, Job) (string, error) { calls++; return "ok", nil }}
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	s := NewScheduler(store, executor, clock, SchedulerConfig{MaxConcurrent: 1, Jitter: JitterConfig{Enabled: false}})
+	s.sleepFn = func(time.Duration) {}
+	if err := s.AddJob(old); err != nil {
+		t.Fatalf("add old: %v", err)
+	}
+	prepared, err := s.PrepareJob(updated)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	// The prepared candidate is registered with robfig but must be inert until
+	// commit, even if a tick reaches its callback immediately.
+	s.fireJobIfCurrent(updated, 0, prepared.generation)
+	s.wg.Wait()
+	if calls != 0 {
+		t.Fatalf("prepared callback executed %d times before commit", calls)
+	}
+	s.CommitJob(prepared)
+	// An old callback queued immediately before commit must not execute the
+	// replacement configuration on the old schedule.
+	s.fireJobIfCurrent(old, 0, 1)
+	s.fireJobIfCurrent(updated, 0, prepared.generation)
+	s.wg.Wait()
+	if calls != 1 {
+		t.Fatalf("callbacks after commit executed %d times, want only current replacement", calls)
+	}
+}
+
+func TestScheduler_BlockedJitterOldGenerationCannotRunAfterSameSchedulePauseResume(t *testing.T) {
+	job := testJob("pause-resume-same-schedule")
+	var mu sync.Mutex
+	current := job
+	var executions int
+	store := &mockStore{
+		GetJobFunc: func(context.Context, string) (Job, error) { mu.Lock(); defer mu.Unlock(); return current, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) {
+			mu.Lock()
+			executions++
+			mu.Unlock()
+			return exec, nil
+		},
+		UpdateExecutionFunc: func(context.Context, Execution) error { return nil },
+		TouchJobRunFunc:     func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	s := NewScheduler(store, &mockExecutor{}, newMockClock(time.Now().UTC()), SchedulerConfig{MaxConcurrent: 1, Jitter: JitterConfig{Enabled: false}})
+	started, release := make(chan struct{}), make(chan struct{})
+	s.sleepFn = func(time.Duration) { close(started); <-release }
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("add old: %v", err)
+	}
+	s.mu.Lock()
+	oldGeneration := s.generations[job.ID]
+	s.mu.Unlock()
+	done := make(chan struct{})
+	go func() { s.fireJobIfCurrent(job, time.Minute, oldGeneration); close(done) }()
+	<-started
+	// The durable row resumes active with the identical schedule. Only a
+	// non-reusable registration identity plus a final post-jitter guard can
+	// distinguish the queued old tick from the new registration.
+	s.RemoveJob(job.ID)
+	mu.Lock()
+	current.Status = StatusPaused
+	current.Status = StatusActive
+	mu.Unlock()
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("resume add: %v", err)
+	}
+	close(release)
+	<-done
+	s.wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if executions != 0 {
+		t.Fatalf("queued pre-pause callback created %d executions after resume", executions)
+	}
+}
+
+func TestScheduler_RemoveWaitsForCurrentCallbackExecutionAdmission(t *testing.T) {
+	job := testJob("linearized-execution-admission")
+	createEntered := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	store := &mockStore{
+		GetJobFunc: func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) {
+			close(createEntered)
+			<-releaseCreate
+			return exec, nil
+		},
+		UpdateExecutionFunc: func(context.Context, Execution) error { return nil },
+		TouchJobRunFunc:     func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	s := NewScheduler(store, &mockExecutor{}, newMockClock(time.Now().UTC()), SchedulerConfig{MaxConcurrent: 1, Jitter: JitterConfig{Enabled: false}})
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	s.mu.Lock()
+	generation := s.generations[job.ID]
+	s.mu.Unlock()
+	fireDone := make(chan struct{})
+	go func() {
+		s.fireJobIfCurrent(job, 0, generation)
+		s.wg.Wait()
+		close(fireDone)
+	}()
+	<-createEntered
+	removeStarted := make(chan struct{})
+	removeDone := make(chan struct{})
+	go func() {
+		close(removeStarted)
+		s.RemoveJob(job.ID)
+		close(removeDone)
+	}()
+	<-removeStarted
+	select {
+	case <-removeDone:
+		close(releaseCreate)
+		<-fireDone
+		t.Fatal("RemoveJob completed while the current callback was still admitting its execution")
+	case <-time.After(100 * time.Millisecond):
+		// Expected: RemoveJob shares the admission critical section and cannot
+		// linearize before CreateExecution returns.
+	}
+	close(releaseCreate)
+	<-fireDone
+	<-removeDone
 }
 
 // TestFireJob_DoesNotWriteBackStaleFullSnapshot (BT-003, P1) reproduces the

@@ -1,11 +1,430 @@
 # Plans Index
 
+- `2026-08-08-issue-1285-attached-pty-plan.md` — Issue #1285 attached,
+  lifecycle-owned 100x30 PTY acceptance runner plan.
+- `2026-08-08-issue-1285-attached-pty-impact-map.md` — attachment ownership,
+  no-second-daemon boundary, and unchanged product-surface map.
+
+- `2026-08-07-issue-1273-nativegui-canonical-root-plan.md` — Issue #1273
+  portable native GUI proof artifact-root canonicalization plan.
+- `2026-08-07-issue-1273-nativegui-canonical-root-impact-map.md` —
+  containment, symlink-rejection, and unchanged-client impact map.
+- `2026-08-07-issue-1275-tui-live-proof-plan.md` — Issue #1275 viewport-safe
+  replay-boundary live SSE proof plan.
+- `2026-08-07-issue-1275-tui-live-proof-impact-map.md` — test-only transcript,
+  reducer, fixture-lifecycle, and unchanged-product map.
+- `2026-08-07-issue-1272-init-fetched-base-plan.md` — Issue #1272 stable
+  fetched-source bootstrap and reusable-worktree provenance plan.
+- `2026-08-07-issue-1272-init-fetched-base-impact-map.md` — cross-surface map
+  for immutable Git source resolution and additive bootstrap provenance.
+
+- `2026-08-07-issue-1270-tui-replay-boundary-snapshot-plan.md` — Issue #1270
+  deterministic replay-boundary fixture hand-off plan.
+- `2026-08-07-issue-1270-tui-replay-boundary-snapshot-impact-map.md` —
+  test-only snapshot/live ordering, diagnostics, and unchanged-product map.
+
+- `2026-08-07-issue-1268-pty-eof-drain-plan.md` — Issue #1268 acceptance
+  runner PTY EOF-drain-before-cleanup plan.
+- `2026-08-07-issue-1268-pty-eof-drain-impact-map.md` — successful PTY
+  lifecycle, artifact-tail integrity, and unchanged-product impact map.
+
+- `2026-08-07-issue-1264-runner-test-deadlock-plan.md` — Issue #1264
+  test-only single-lock Runner child snapshot repair plan.
+- `2026-08-07-issue-1264-runner-test-deadlock-impact-map.md` — Runner test
+  ownership, queued-writer deadlock, and unchanged product-surface map.
+
+- `2026-08-07-issue-1260-tui-resume-live-reply-plan.md` — Issue #1260 TUI
+  dual-SSE reconciliation plan.
+- `2026-08-07-issue-1260-tui-resume-live-reply-impact-map.md` — affected TUI
+  ownership and unchanged harness/API surfaces.
+- `2026-08-07-issue-1261-resume-conversation-identity-plan.md` — Issue #1261
+  additive continuation conversation identity and safe TUI legacy-resolution plan.
+- `2026-08-07-issue-1261-resume-conversation-identity-impact-map.md` —
+  Cross-surface map for continuation API/TUI identity, mixed-version safety,
+  and real PTY lifecycle proof.
+
+- `2026-08-07-issue-1254-task-complete-plan.md` — Issue #1254 child-only
+  deferred completion activation and terminal-sentinel plan.
+- `2026-08-07-issue-1254-task-complete-impact-map.md` — Runner/filter,
+  lifecycle, compatibility, and acceptance evidence map.
+- `2026-08-07-issue-1257-profile-source-tier-plan.md` — Issue #1257 shared
+  resolver plan for exact profile source-tier provenance.
+- `2026-08-07-issue-1257-profile-source-tier-impact-map.md` — profile-layer
+  ownership, consumer parity, no-cache, and regression evidence map.
+- `2026-08-07-issue-1256-rewind-workspace-plan.md` — Issue #1256 trusted
+  configured-workspace persistence before mutating rewind capture.
+- `2026-08-07-issue-1256-rewind-workspace-impact-map.md` — Runner/store trust
+  boundary, fork inheritance, strict 404, and PTY evidence map.
+
+- `2026-08-07-issue-1252-cron-explicit-mode-plan.md` — Issue #1252
+  fail-closed model-facing cron execution-mode plan.
+- `2026-08-07-issue-1252-cron-explicit-mode-impact-map.md` — deferred-tool
+  contract, preserved operator/persistence surfaces, and continuation evidence map.
+
+- `2026-08-07-issue-1249-history-sse-replay-plan.md` — Issue #1249 additive
+  selected-conversation snapshot/SSE replay-boundary plan.
+- `2026-08-07-issue-1249-history-sse-replay-impact-map.md` — server/TUI
+  ordering, compatibility, scheduled-continuation, and regression map.
+
+- `2026-08-07-issue-1247-cron-core-registry-plan.md` — Issue #1247
+  documentation/default-registry regression for all eight direct core cron
+  tools.
+- `2026-08-07-issue-1247-cron-core-registry-impact-map.md` — default registry,
+  public documentation, unchanged authorization/execution, and regression map.
+
+- `2026-08-07-issue-1243-api-sse-framing-plan.md` — Issue #1243 test-only
+  raw-SSE header-to-JSON identity proof plan, stacked on #1232.
+- `2026-08-07-issue-1243-api-sse-framing-impact-map.md` — Frame provenance,
+  concurrent-lifecycle preservation, and unchanged-product map.
+
+- `2026-08-07-issue-1241-api-sse-order-plan.md` — Issue #1241 test-only
+  per-tool raw-SSE lifecycle validator plan, stacked on #1232.
+- `2026-08-07-issue-1241-api-sse-order-impact-map.md` — Run-scoped matcher,
+  concurrent-interleave, retained-evidence, and unchanged-product map.
+
+- `2026-08-07-issue-1237-workflow-sse-terminal-plan.md` — Issue #1237
+  terminal workflow-history SSE completion plan.
+- `2026-08-07-issue-1237-workflow-sse-terminal-impact-map.md` — Cross-surface
+  map for server-owned terminal replay completion with unchanged live streams.
+
+- `2026-08-07-issue-1236-workflows-subscribe-plan.md` — Issue #1236
+  lossless plural-workflow history/live subscription handoff plan.
+- `2026-08-07-issue-1236-workflows-subscribe-impact-map.md` — ownership,
+  watermark, pending-buffer, cancellation, and excluded-#1237 map.
+
+- `2026-08-07-issue-1231-api-filesystem-git-plan.md` — Issue #1231
+  default-registry real-daemon filesystem/Git API/SSE acceptance plan.
+- `2026-08-07-issue-1231-api-filesystem-git-impact-map.md` — API/SSE,
+  default-registry, fixture Git state, persistence, and cleanup map.
+
+- `2026-08-06-issue-1224-script-descendant-cleanup-plan.md` — Issue #1224
+  test-only deterministic descendant cleanup fixture plan.
+- `2026-08-06-issue-1224-script-descendant-cleanup-impact-map.md` —
+  cancellation/readiness ownership map with unchanged runtime semantics.
+- `2026-08-06-issue-1222-working-memory-json-plan.md` — Issue #1222
+  core-tool adapter plan for semantic working-memory get/list results.
+- `2026-08-06-issue-1222-working-memory-json-impact-map.md` — Cross-surface
+  map for storage-preserving JSON adaptation and API/SSE continuation proof.
+- `2026-08-06-issue-1221-pty-fresh-plan.md` — Issue #1221 official,
+  geometry-aware fresh multi-turn PTY evidence plan.
+- `2026-08-06-issue-1221-pty-fresh-impact-map.md` — PTY launcher, VT screen,
+  HTTP/SSE/store, lifecycle, and unchanged-product impact map.
+- `2026-08-06-issue-1229-vt-wrap-state-plan.md` — Selective VT wrap-pending
+  transition repair plan for the fresh PTY evidence seam.
+- `2026-08-06-issue-1229-vt-wrap-state-impact-map.md` — Parser-local impact
+  map for cursor, erase, and alternate-buffer wrap state.
+
+- `2026-08-06-issue-1220-native-rendered-driver-plan.md` — Issue #1220
+  owner-created, TCC-fail-closed native rendered-driver foundation plan.
+- `2026-08-06-issue-1220-native-rendered-driver-impact-map.md` — Cross-surface
+  map for attested PID control, correlated retained artifacts, and bounded cleanup.
+
+- `2026-08-06-issue-1215-harnessd-fixtures-plan.md` — Issue #1215 test-only
+  cleaner lifecycle and invalid-catalog daemon fixture stabilization plan.
+- `2026-08-06-issue-1215-harnessd-fixtures-impact-map.md` — Test-only causal
+  listener/lifecycle boundary map with unchanged runtime ownership.
+
+- `2026-08-06-issue-1216-script-timeout-plan.md` — Issue #1216 real
+  process-tree timeout and inherited-stdio cleanup repair.
+- `2026-08-06-issue-1216-script-timeout-impact-map.md` — Cross-surface map
+  for handler-owned cancellation, pipe-drain bounds, and unchanged tool contract.
+
+- `2026-08-06-issue-1214-workflow-protocol-handshake-plan.md` — Issue #1214
+  deterministic source-workflow invalid-protocol fixture handshake plan.
+- `2026-08-06-issue-1214-workflow-protocol-handshake-impact-map.md` —
+  Test-only handshake ownership and cross-surface impact map.
+
+- `2026-08-06-issue-1212-live-provider-optin-plan.md` — Issue #1212 explicit
+  opt-in boundary for credentialed real-provider fetch smoke tests.
+- `2026-08-06-issue-1212-live-provider-optin-impact-map.md` — Test-only
+  provider-network gate, compatibility, and offline regression impact map.
+
+- `2026-08-06-issue-1210-terminal-sse-settlement-plan.md` — Issue #1210
+  server-owned terminal SSE/status settlement plan.
+- `2026-08-06-issue-1210-terminal-sse-settlement-impact-map.md` — terminal
+  replay, matching read-model state, and Last-Event-ID impact map.
+
+- `2026-08-05-issue-1205-native-owner-plan.md` — Issue #1205 zero-effect,
+  owner-attested native acceptance lifecycle foundation.
+- `2026-08-05-issue-1205-native-owner-impact-map.md` — private-root process,
+  provenance, cleanup, and sentinel-survival impact map.
+
+- `2026-08-05-issue-1204-pty-driver-plan.md` — Issue #1204/#1207 real PTY
+  `/resume`/`/continue` continuation-evidence and `script(1)` portability plan.
+- `2026-08-05-issue-1204-pty-driver-impact-map.md` — Cross-surface map for
+  fake-only deltas, correlated artifacts, cleanup, and terminal fixture guards.
+- `2026-08-05-issue-1199-skill-lifecycle-plan.md` — synchronous durable authored-skill lifecycle plan.
+- `2026-08-05-issue-1199-skill-lifecycle-impact-map.md` — lifecycle ownership and compatibility map.
+- `2026-08-05-issue-1087-api-sse-intent-runner-plan.md` — Issue #1201
+  registry-derived real-daemon API/SSE evidence-runner foundation plan (parent #1087).
+- `2026-08-05-issue-1087-api-sse-intent-runner-impact-map.md` — Cross-surface
+  map for #1201 foundation evidence, safe fixtures, and cleanup (parent #1087).
+- `2026-08-05-issue-1089-native-rendered-matrix-plan.md` — Issue #1089
+  fail-closed installed/rendered native proof-runner plan.
+- `2026-08-05-issue-1089-native-rendered-matrix-impact-map.md` — Native
+  AX/OCR/SSE/API-store evidence, isolation, and terminal-command N/A map.
+
+- `2026-08-05-issue-1195-diff-count-plan.md` — Issue #1195 red-first repair for accurate `git_diff_range` summary counts.
+- `2026-08-05-issue-1195-diff-count-impact-map.md` — Cross-surface impact map for Issue #1195 parser-only aggregate correction.
+
+- `2026-08-05-issue-1194-blame-parser-plan.md` — Issue #1194 strict porcelain
+  blame-header and safe best-effort enrichment plan.
+- `2026-08-05-issue-1194-blame-parser-impact-map.md` — Cross-surface map for
+  parser identity, optional Git enrichment, and transcript output.
+
+- `2026-08-05-issue-1187-profile-crud-plan.md` — Issue #1187 isolated
+  harnessd profile CRUD plan.
+- `2026-08-05-issue-1187-profile-crud-impact-map.md` — Cross-surface map for
+  absolute profile-directory resolution and registry/runner/server wiring.
+
+- `2026-08-05-issue-1190-mcp-owned-transport-plan.md` — Issue #1190
+  production HTTP MCP owned-transport and strict-auth reliability plan.
+- `2026-08-05-issue-1190-mcp-owned-transport-impact-map.md` — Cross-surface
+  map for per-connection HTTP pool ownership and global-cleanup isolation.
+- `2026-08-05-issue-1186-cron-validation-plan.md` — Issue #1186 typed
+  validation-error translation plan for public harness cron POST/PATCH.
+- `2026-08-05-issue-1186-cron-validation-impact-map.md` — Cross-surface map
+  for #1186's embedded and remote cron error identity contract.
+
+- `2026-08-05-issue-1188-selected-profile-policy-plan.md` — Issue #1188
+  selected-profile ordinary-run policy plan.
+- `2026-08-05-issue-1188-selected-profile-policy-impact-map.md` — Cross-surface
+  map for safe ordinary-run profile composition.
+
+- `2026-08-05-issue-1174-init-sse-plan.md` — Issue #1174 TUI `/init`
+  real-SSE completion and safe workspace-write plan.
+- `2026-08-05-issue-1174-init-sse-impact-map.md` — Cross-surface map for
+  run identity, terminal lifecycle, and atomic `AGENTS.md` replacement.
+
+- `2026-08-05-issue-1183-replay-sse-fixture-plan.md` — Issue #1183
+  fixture-only durable replay SSE lifecycle plan.
+- `2026-08-05-issue-1183-replay-sse-fixture-impact-map.md` — Cross-surface
+  map for returned-run streaming and unchanged rollout simulation behavior.
+
+- `2026-08-05-issue-1177-race-readiness-plan.md` — Issue #1177 test-only
+  harnessd memory-fixture listener-readiness plan.
+- `2026-08-05-issue-1177-race-readiness-impact-map.md` — Cross-surface map
+  for actual-listener ownership and unchanged memory configuration coverage.
+
+- `2026-08-05-issue-1180-bootstrap-staging-clone-plan.md` — Issue #1180
+  exact-revision staging-clone plan for Go 1.26 linked-worktree buildvcs evidence.
+- `2026-08-05-issue-1180-bootstrap-staging-clone-impact-map.md` — Cross-surface
+  map for strict bootstrap provenance, candidate publication, and cleanup.
+
+- `2026-08-04-issue-1169-bootstrap-vcs-provenance-plan.md` — Issue #1169
+  target-worktree VCS bootstrap plan for clean, verifiable local binaries.
+- `2026-08-04-issue-1169-bootstrap-vcs-provenance-impact-map.md` —
+  Cross-surface map for Git-environment isolation and fail-closed output checks.
+- `2026-08-04-issue-830-anthropic-retry-fixture-plan.md` — Issue #830
+  test-only Anthropic retry-budget fixture stabilization plan.
+- `2026-08-04-issue-830-anthropic-retry-fixture-impact-map.md` — Cross-surface
+  impact map proving the fixture-only boundary and unchanged production retry policy.
+- `2026-08-04-issue-1165-runtime-provenance-plan.md` — Issue #1165
+  fail-closed acceptance executable provenance plan.
+- `2026-08-04-issue-1165-runtime-provenance-impact-map.md` — Cross-surface
+  map for build-info validation before daemon/provider dispatch.
+
+- `2026-08-04-issue-1161-scheduled-routing-plan.md` — Issue #1161 red-first
+  embedded cron, remote cron, and callback routing-preservation plan.
+- `2026-08-04-issue-1161-scheduled-routing-impact-map.md` — Cross-surface map
+  for safe model/provider/fallback propagation and replay identity.
+
+- `2026-08-04-issue-1158-conversation-watermark-plan.md` — Issue #1158
+  Runner-owned conversation messages plus event watermark foundation.
+- `2026-08-04-issue-1158-conversation-watermark-impact-map.md` — Cross-surface
+  impact map for the additive API/TUI cursor contract consumed by #1148.
+
+- `2026-08-04-issue-1156-mcp-http-transport-plan.md` — Issue #1156
+  test-owned MCP HTTP transport isolation plan.
+- `2026-08-04-issue-1156-mcp-http-transport-impact-map.md` — Cross-surface
+  impact map for Issue #1156 parallel `httptest` transport ownership.
+
+- `2026-08-04-issue-1148-idle-tui-stream.md` — Issue #1148 selected-
+   conversation TUI SSE lifecycle repair plan.
+- `2026-08-04-issue-1148-idle-tui-stream-impact-map.md` — Cross-surface
+   impact map for Issue #1148 replay, stream ownership, and terminal ordering.
+- `2026-08-04-issue-1149-cron-executions-api.md` — Issue #1149 canonical
+  authenticated cron execution-history API plan.
+- `2026-08-04-issue-1149-cron-executions-api-impact-map.md` — Cross-surface
+  impact map for Issue #1149 server routing, tenant guard, and adapters.
+- `2026-08-04-issue-1153-cron-dispatch-coverage-plan.md` — Issue #1153
+  deterministic durable cron dispatch polling and cancellation coverage plan.
+- `2026-08-04-issue-1153-cron-dispatch-coverage-impact-map.md` — Cross-surface
+  impact map for Issue #1153 cron lease contention coverage.
+- `2026-08-04-issue-1152-harnessd-race-stability-plan.md` — Issue #1152
+  test-fixture-only harnessd startup/race stability plan.
+- `2026-08-04-issue-1152-harnessd-race-stability-impact-map.md` — Cross-surface
+  impact map for Issue #1152 callback-isolated readiness fixtures.
+
+- `2026-08-04-issue-1147-default-callback-bootstrap.md` — Issue #1147
+  default callback bootstrap run-admission repair plan.
+- `2026-08-04-issue-1147-default-callback-bootstrap-impact-map.md` —
+  Cross-surface impact map for Issue #1147 callback persistence and auth
+  compatibility.
+
+- `2026-08-03-issue-1144-transient-heartbeat-plan.md` — Issue #1144 causal
+  transient callback-heartbeat fixture plan.
+- `2026-08-03-issue-1144-transient-heartbeat-impact-map.md` — Cross-surface
+  impact map for the Issue #1144 test-only lease-renewal proof.
+
+- `2026-08-03-issue-1140-matrix-listener-plan.md` — Issue #1140
+  deterministic harnessd matrix listener-identity plan.
+- `2026-08-03-issue-1140-matrix-listener-impact-map.md` — Cross-surface
+  impact map for Issue #1140 test-harness listener injection.
+
+- `2026-08-03-issue-1141-callback-deadline-fixture-plan.md` — Issue #1141
+  test-only deterministic callback deadline-release fixture plan.
+- `2026-08-03-issue-1141-callback-deadline-fixture-impact-map.md` —
+  Cross-surface impact map for the Issue #1141 fixture-only reliability repair.
+
+- `2026-08-03-issue-1135-cron-fixture-plan.md` — Issue #1135 deterministic
+  recovered-cron terminal-persistence and scope-release fixture plan.
+- `2026-08-03-issue-1135-cron-fixture-impact-map.md` — Cross-surface impact
+  map for the Issue #1135 test-only scheduler recovery repair.
+
+- `2026-08-03-issue-1132-compaction-fixture-plan.md` — Issue #1132
+  deterministic public-event synchronization for the compaction-after-wait
+  regression fixture.
+- `2026-08-03-issue-1132-compaction-fixture-impact-map.md` — Cross-surface
+  impact map for the Issue #1132 test-only repair.
+
+- `2026-08-03-issue-1124-retry-wait-fixture-plan.md` — Issue #1124
+  deterministic callback retry-wait recovery fixture plan.
+- `2026-08-03-issue-1124-retry-wait-fixture-impact-map.md` — Cross-surface
+  impact map for the Issue #1124 test-only repair.
+- `2026-08-03-issue-1136-timeout-authority-plan.md` — Issue #1136 immutable
+  A-handle timeout cancellation authority across B/C selection.
+- `2026-08-03-issue-1136-timeout-authority-impact-map.md` — Cross-surface map
+  for #1136 owner-token/generation capability and stream detachment.
+
+- `2026-08-03-issue-1133-passive-outcome-plan.md` — Issue #1133 passive
+  A-outcome observation after scheduled B displacement.
+- `2026-08-03-issue-1133-passive-outcome-impact-map.md` — Cross-surface map
+  for #1133 submission-local outcome versus selected-run authority.
+
+- `2026-08-03-issue-1130-submission-outcomes-plan.md` — Issue #1130
+  submission-local lifecycle and ToolWalk outcome repair.
+- `2026-08-03-issue-1130-submission-outcomes-impact-map.md` — Cross-surface
+  map for #1130 A-local outcomes after scheduled-run displacement.
+
+- `2026-08-03-issue-1128-submission-handle-plan.md` — Issue #1128 immutable
+  composer action and submitted-run ownership for ToolWalk.
+- `2026-08-03-issue-1128-submission-handle-impact-map.md` — Cross-surface map
+  for Issue #1128 A-only native submission evidence.
+
+- `2026-08-03-issue-1125-action-owner-plan.md` — Issue #1125 expected-run
+  fences for native Stop, Composer steer, and ToolWalk timeout.
+- `2026-08-03-issue-1125-action-owner-impact-map.md` — Cross-surface map for
+  Issue #1125 native action ownership.
+
+- `2026-08-03-issue-1122-interactive-state-plan.md` — Stacked native
+  interactive-affordance ownership repair for #1122.
+- `2026-08-03-issue-1122-interactive-state-impact-map.md` — Cross-surface
+  map for #1122's run-scoped pending state and guarded actions.
+
+- `2026-08-03-issue-1007-external-run-controls-plan.md` — Issue #1007 macOS
+  external cron/callback control-ownership rebase repair.
+- `2026-08-03-issue-1007-external-run-controls-impact-map.md` — Cross-surface
+  impact map for #1007 external scheduled-run visibility and controls.
+
+- `2026-08-03-issue-1120-heartbeat-fixture-plan.md` — Issue #1120 test-only
+  blocked-heartbeat callback fixture, stacked on #1119.
+- `2026-08-03-issue-1120-heartbeat-fixture-impact-map.md` — Cross-surface
+  impact map for the Issue #1120 fixture-only repair.
+- `2026-08-03-issue-1117-callback-fixture-plan.md` — Issue #1117 test-only
+  deterministic duplicate-manager and transient-claim callback fixture plan
+  (stacked on unmerged #1106).
+- `2026-08-03-issue-1117-callback-fixture-impact-map.md` — Cross-surface
+  impact map for the Issue #1117 fixture-only repair.
+
+- `2026-08-03-issue-1112-cron-assembly-auth-cost-plan.md` — Issue #1112 test-only isolation of production bcrypt cost from the authenticated cron assembly timing contract (merged through PR #1113 as `62becd39`).
+- `2026-08-03-issue-1112-cron-assembly-auth-cost-impact-map.md` — Cross-surface impact map for Issue #1112.
+
+- `2026-08-03-issue-1110-notify-parent-activation-test-plan.md` — Issue #1110
+  test-only repair proving notify-parent activation at the first provider
+  request and terminal cleanup after release.
+- `2026-08-03-issue-1110-notify-parent-activation-test-impact-map.md` —
+  Cross-surface impact map for the Issue #1110 fixture synchronization.
+
+- `2026-08-03-issue-1108-native-durable-reconcile-barrier-plan.md` — Issue #1108 test-only plan for application-level native durable-message reconciliation barriers.
+- `2026-08-03-issue-1108-native-durable-reconcile-barrier-impact-map.md` — Cross-surface impact map for Issue #1108's native callback replay fixture repair.
+- `2026-08-03-issue-1106-callback-claim-plan.md` — Issue #1106 durable callback claim ownership and transient SQLite lease recovery plan.
+- `2026-08-03-issue-1106-callback-claim-impact-map.md` — Cross-surface impact map for Issue #1106 pooled SQLite claim/lease repair.
+
+- `2026-08-03-issue-1102-runner-wait-plan.md` — Issue #1102 plan for deterministic AskUser wait-state test observation.
+- `2026-08-03-issue-1102-runner-wait-impact-map.md` — Cross-surface impact map for Issue #1102's test-only synchronization repair.
+
+- `2026-08-03-issue-1006-callback-retry-plan.md` — Issue #1006 durable callback retry, idempotency, and started-run linkage plan.
+- `2026-08-03-issue-1006-callback-retry-impact-map.md` — Cross-surface impact map for Issue #1006 callback dispatch state-machine work.
+
+- `2026-08-03-issue-1098-cron-deleted-reconcile-plan.md` — Issue #1098 direct deleted-job cron reconciliation coverage and release-order plan.
+- `2026-08-03-issue-1098-cron-deleted-reconcile-impact-map.md` — Cross-surface impact map for Issue #1098's test-only scheduler recovery coverage repair.
+
+- `2026-08-02-issue-1004-cron-lifecycle-plan.md` — Issue #1004 durable cron lifecycle and asynchronous restart observation.
+- `2026-08-02-issue-1004-cron-lifecycle-impact-map.md` — Cross-surface map for Issue #1004 persistence and remote/embedded restart safety.
+
+- `2026-08-02-issue-1093-cleaner-shutdown-plan.md` — Issue #1093 deterministic harnessd conversation-cleaner shutdown plan.
+- `2026-08-02-issue-1093-cleaner-shutdown-impact-map.md` — Cross-surface lifecycle and persistence impact map for Issue #1093.
+
+- `2026-08-01-issue-1086-inventory-schema-plan.md` — Issue #1086 registry-derived tool/TUI inventory, registry-owned provenance, fail-closed resolver boundary, invocation/suite/native-applicability completeness, and proof-oriented v2 evidence schema (implemented; final-v2 full regression verified).
+- `2026-08-01-issue-1086-inventory-schema-impact-map.md` — Cross-surface impact map for Issue #1086 inventory infrastructure.
+- `2026-08-03-issue-1096-keychain-gate-plan.md` — Issue #1096 deterministic Keychain regression-gate plan.
+- `2026-08-03-issue-1096-keychain-gate-impact-map.md` — Cross-surface impact map for deterministic fake coverage and host-live opt-in Keychain proof.
+
+- `2026-08-03-issue-1005-durable-callbacks-plan.md` — Issue #1005 SQLite durability and restart recovery plan.
+- `2026-08-03-issue-1005-durable-callbacks-impact-map.md` — Cross-surface map for Issue #1005 callback persistence.
+- `2026-08-03-issue-1038-native-live-usage-plan.md` — Issue #1038 native terminal usage reconciliation plan.
+- `2026-08-03-issue-1038-native-live-usage-impact-map.md` — Cross-surface impact map for Issue #1038's live transcript accounting repair.
+- `2026-08-03-issue-994-run-control-ack-plan.md` — Issue #994 acknowledged native run-control repair plan.
+- `2026-08-03-issue-994-run-control-ack-impact-map.md` — Cross-surface impact map for Issue #994 macOS control acknowledgement.
+
+- `2026-08-03-issue-1115-workflow-subscriber-plan.md` — Issue #1115 deterministic full-buffer workflow subscriber terminal-close regression plan.
+- `2026-08-03-issue-1115-workflow-subscriber-impact-map.md` — Cross-surface impact map for Issue #1115's test-only subscription scheduling repair.
+
+- `2026-08-04-issue-1009-macapp-task-lifecycle-plan.md` — Issue #1009 plan for additive scheduled-task lifecycle visibility and controls in the macOS app.
+- `2026-08-04-issue-1009-macapp-task-lifecycle-impact-map.md` — Cross-surface impact map for #1009 server task projection and macOS reconciliation.
+- `2026-08-01-issue-1083-approval-publication-race-plan.md` — Issue #1083 plan for making approval-required publication an immediate-resolution readiness guarantee.
+- `2026-08-01-issue-1083-approval-publication-race-impact-map.md` — Cross-surface impact map for Issue #1083 broker registration ordering.
+
+- `2026-08-01-issue-1081-keychain-parser-coverage-plan.md` — Issue #1081 portable Keychain reference parser coverage and Ubuntu gate repair plan.
+- `2026-08-01-issue-1081-keychain-parser-coverage-impact-map.md` — Cross-surface impact map for Issue #1081's test-only coverage repair.
+- `2026-07-31-issue-1056-terminal-assistant-message-plan.md` — Issue #1056 TUI terminal assistant-message reconciliation plan.
+- `2026-07-31-issue-1056-terminal-assistant-message-impact-map.md` — Cross-surface impact map for Issue #1056.
+
+- `2026-07-31-issue-1002-conversational-cron-crud-plan.md` — Issue #1002 ID-only, ownership-scoped conversational cron CRUD/history and scheduler consistency repair.
+- `2026-07-31-issue-1002-conversational-cron-crud-impact-map.md` — Cross-surface map for Issue #1002 tools, HTTP, SQLite migration, scheduler lifecycle, and compatibility.
+- `2026-07-31-issue-1077-d0-logo-plan.md` — Issue #1077 D0 macOS app logo geometry, shared SwiftUI source, and verification status.
+- `2026-07-31-issue-1077-d0-logo-impact-map.md` — Cross-surface impact map for Issue #1077.
+- `2026-07-31-issue-1076-workflow-initial-write-exit-plan.md` — Issue #1076 plan for preserving child exit diagnostics across the initial workflow write.
+- `2026-07-31-issue-1076-workflow-initial-write-exit-impact-map.md` — Cross-surface impact map for Issue #1076 lifecycle and error arbitration.
+- `2026-07-31-issue-1068-dispatcher-shutdown-isolation-plan.md` — Issue #1068 plan for deterministic instance-scoped Runner dispatcher shutdown verification.
+- `2026-07-31-issue-1068-dispatcher-shutdown-isolation-impact-map.md` — Cross-surface impact map for Issue #1068 lifecycle isolation.
+- `2026-07-31-issue-1067-terminal-status-event-atomicity-plan.md` — Issue #1067 plan for linearizable terminal publication, safe durability-aware pruning, and bounded degraded admission.
+- `2026-07-31-issue-1067-terminal-status-event-atomicity-impact-map.md` — Cross-surface impact map for Issue #1067 Runner lifecycle, persistence, retention, and 503 recovery behavior.
+- `2026-07-31-issue-1062-provider-key-matrix-health-wait-plan.md` — Issue #1062 plan for a contention-tolerant provider API-key matrix startup wait.
+- `2026-07-31-issue-1062-provider-key-matrix-health-wait-impact-map.md` — Cross-surface impact map for Issue #1062.
+- `2026-07-31-issue-1064-workflow-exit-precedence-plan.md` — Issue #1064 deterministic source-workflow process-exit diagnostic precedence repair.
+- `2026-07-31-issue-1064-workflow-exit-precedence-impact-map.md` — Cross-surface impact map for Issue #1064.
+- `2026-07-30-issue-1052-provider-key-capture-sync-plan.md` — Issue #1052 direct provider-factory synchronization for the API-key capture regression.
+- `2026-07-30-issue-1052-provider-key-capture-sync-impact-map.md` — Cross-surface impact map for Issue #1052.
+- `2026-07-30-issue-1054-waiting-pending-order-plan.md` — Issue #1054 post-registration waiting-for-user status/event publication.
+- `2026-07-30-issue-1054-waiting-pending-order-impact-map.md` — Cross-surface impact map for Issue #1054.
+- `2026-07-31-issue-1003-remote-cronsd-plan.md` — Issue #1003 authenticated, fresh-store-ready, restart-replay-safe remote cronsd harness dispatch plan.
+- `2026-07-31-issue-1003-remote-cronsd-impact-map.md` — Cross-surface impact map for Issue #1003 durable remote-start and API-key bootstrap boundary.
 - `2026-07-31-issue-1058-tui-waiting-overlay-plan.md` — Issue #1058 test-first repair for the TUI losing top-level SSE run identity before AskUserQuestion rendering.
 - `2026-07-31-issue-1058-tui-waiting-overlay-impact-map.md` — Cross-surface impact map for Issue #1058's bridge/model/input lifecycle.
 - `2026-07-30-issue-1049-workflow-failure-timeout-plan.md` — Issue #1049 planned contention-tolerant workflow failure-event regression wait.
 - `2026-07-30-issue-1049-workflow-failure-timeout-impact-map.md` — Cross-surface impact map for Issue #1049.
 - `2026-07-30-issue-1044-ask-status-race-plan.md` — Issue #1044 planned synchronization of the AskUserQuestion status regression fixture.
 - `2026-07-30-issue-1044-ask-status-race-impact-map.md` — Cross-surface impact map for Issue #1044.
+- `2026-07-30-issue-1039-worktree-containment-ci-plan.md` — Issue #1039 planned synchronization of live worktree containment assertions with terminal cleanup.
+- `2026-07-30-issue-1039-worktree-containment-ci-impact-map.md` — Cross-surface impact map for Issue #1039.
+- `2026-07-30-issue-1042-default-registry-repeat-plan.md` — Issue #1042 planned repeatable top-level workspace registry contract test.
+- `2026-07-30-issue-1042-default-registry-repeat-impact-map.md` — Cross-surface impact map for Issue #1042.
+- `2026-07-30-issue-1048-pinned-retention-quota-plan.md` — Issue #1048 planned exclusion of subscriber-pinned runs from the drainable terminal retention quota.
+- `2026-07-30-issue-1048-pinned-retention-quota-impact-map.md` — Cross-surface impact map for Issue #1048.
+- `2026-07-30-issue-1046-swarm-activation-control-plan.md` — Issue #1046 planned live unrestricted control for the swarm activation regression.
+- `2026-07-30-issue-1046-swarm-activation-control-impact-map.md` — Cross-surface impact map for Issue #1046.
 - `2026-07-30-issue-1035-workflow-subscription-cancel-plan.md` — Issue #1035 planned deterministic workflow subscription-cancellation regression repair.
 - `2026-07-30-issue-1035-workflow-subscription-cancel-impact-map.md` — Cross-surface impact map for Issue #1035.
 - `2026-07-30-issue-1026-feedback-direct-publish-plan.md` — Issue #1026 attached-image, publish-by-default GitHub feedback intake (implemented and verified; promotion pending).
@@ -116,3 +535,30 @@
 # 2026-07-19 — Installable plugin bundles and marketplace — Epic #748
 
 Plan for user-installable plugin bundles, trust gating, marketplace management, and TUI browsing.
+
+- `2026-08-04-issue-1162-fake-provider-routing-plan.md`: Issue #1162 plan for authoritative fake-provider execution without losing catalog metadata.
+- `2026-08-04-issue-1162-fake-provider-routing-impact-map.md`: Cross-surface map for #1162 fake-mode routing, catalog retention, and egress prevention.
+- `2026-08-05-issue-1173-durable-run-replay-plan.md`: Issue #1173 plan for durable run-ID replay.
+- `2026-08-05-issue-1173-durable-run-replay-impact-map.md`: Cross-surface map for #1173 durable replay API and TUI dispatch.
+- `2026-08-05-issue-1175-bootstrap-path-plan.md`: Issue #1175 plan for macOS bootstrap fixture path identity.
+- `2026-08-05-issue-1175-bootstrap-path-impact-map.md`: Cross-surface map for #1175 fixture-only canonicalization.
+- `2026-08-05-issue-1198-skills-dir-plan.md`: Issue #1198 plan for isolated harnessd skill-directory wiring.
+- `2026-08-05-issue-1198-skills-dir-impact-map.md`: Cross-surface map for #1198 loader, registry, watcher, and workflow skill-root consistency.
+- `2026-08-06-issue-1208-native-scenarios-plan.md` — Issue #1208 deterministic owned native fake-provider scenario contracts (in implementation).
+- `2026-08-06-issue-1208-native-scenarios-impact-map.md` — Cross-surface impact map for Issue #1208.
+# Issue #1230 non-mutating causal TUI PTY evidence
+
+# Issue #1280 shared same-daemon acceptance lifecycle
+
+- `2026-08-08-issue-1280-same-daemon-lifecycle-plan.md`: TDD plan for one owned daemon identity shared by API/SSE and PTY acceptance clients.
+- `2026-08-08-issue-1280-same-daemon-lifecycle-impact-map.md`: Cross-surface safety map for inherited listener ownership and isolated artifacts.
+
+- `2026-08-07-issue-1230-nonmutating-pty-plan.md`: Bounded real-terminal
+  command batch plan for informational commands, search/Escape, and continuation alias proof.
+- `2026-08-07-issue-1230-nonmutating-pty-impact-map.md`: Cross-surface map for
+  the acceptance-only runner extension.
+# 2026-08-07 — [Issue #1246 selected-session rehydration](2026-08-07-issue-1246-tui-session-rehydrate-plan.md): TDD plan for restoring the existing selected-session history flow.
+# 2026-08-07 — [Issue #1246 impact map](2026-08-07-issue-1246-tui-session-rehydrate-impact-map.md): cross-surface evidence for safely routing sessions-overlay Enter.
+# 2026-08-08 — Issue #1282 stateful PTY barrier plan and impact map: acceptance-only proof that seals the first assistant reply before stateful command frames.
+- `2026-08-08-issue-1281-api-manifest-plan.md`: Issue #1281 hash-bound API execution-plan and daemon-provenance contract.
+- `2026-08-08-issue-1281-api-manifest-impact-map.md`: Cross-surface map for #1281 mapping and lifecycle-provenance validation.

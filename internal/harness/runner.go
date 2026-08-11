@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"unicode/utf8"
 
+	"go-agent-harness/internal/checkpoints"
 	"go-agent-harness/internal/forensics/audittrail"
 	"go-agent-harness/internal/forensics/contextwindow"
 	"go-agent-harness/internal/forensics/errorchain"
@@ -35,6 +36,8 @@ import (
 
 type runState struct {
 	run                Run
+	allowFallback      bool
+	fallbackProviders  []string
 	planMode           PlanModeState
 	planFile           string
 	staticSystemPrompt string
@@ -63,6 +66,15 @@ type runState struct {
 	// Denied tools are never offered (filteredToolsForRun) and never executed
 	// (step-engine call gate), even when activated or allowed.
 	deniedTools []string
+	// profileDeniedActions blocks registered tool capabilities (not names) for
+	// an explicitly selected profile. It protects both offered definitions and
+	// direct model calls to deferred tools.
+	profileDeniedActions map[htools.Action]struct{}
+	// profileAllowedTools is the selected profile's immutable non-empty tool
+	// upper bound. allowedTools may be narrower for a particular run.
+	profileAllowedTools    []string
+	profileToolsRestricted bool
+	profileToolsDenyAll    bool
 	// permissions is the effective two-axis permission configuration for this run.
 	permissions PermissionConfig
 	// permissionWorkspaceRoot is the workspace used to resolve path rules.
@@ -96,16 +108,33 @@ type runState struct {
 	// continued is set to true once ContinueRun has been called on this run,
 	// preventing a second continuation without mutating the run's terminal Status.
 	continued bool
+	// continuationReservations protects a validated completed source from every
+	// completed-run prune path while ContinueRun performs unlocked durability
+	// recovery and its later single-winner mutation. It is guarded by Runner.mu.
+	continuationReservations int
 	// snapshotBuilder collects a rolling window of tool calls and messages for
 	// error context snapshots. Non-nil only when ErrorChainEnabled is set in
 	// RunnerConfig.
 	snapshotBuilder *errorchain.SnapshotBuilder
-	// terminated is set to true once the terminal event (run.completed or
-	// run.failed) has been emitted. Any subsequent emit() call returns
-	// immediately to prevent post-terminal streaming callbacks from appending
-	// events after the forensic record is closed.
-	terminated             bool
-	terminalEventPersisted bool
+	// terminated is set to true once a terminal event (run.completed,
+	// run.failed, or run.cancelled) has been emitted. Any subsequent emit() call
+	// returns immediately to prevent post-terminal streaming callbacks from
+	// appending events after the forensic record is closed.
+	terminated              bool
+	terminalEventPersisted  bool
+	terminalEventSuppressed bool
+	terminalStatusPersisted bool
+	// statusChanged is closed and replaced after each committed status snapshot.
+	// It lets API consumers wait for the public read model without polling while
+	// terminal event replay is already available.
+	statusChanged chan struct{}
+	// terminalMu serializes the complete terminal-helper lifecycle so only the
+	// event winner may run terminal audit/profile/cleanup side effects.
+	terminalMu sync.Mutex
+	// statusMu serializes every status snapshot/persist/commit sequence with the
+	// terminal transition. A delayed waiting/running write therefore cannot
+	// overwrite a terminal result.
+	statusMu contextMutex
 	// compactMu serializes auto-compact and manual CompactRun calls.
 	compactMu sync.RWMutex
 	// resetIndex increments each time the agent calls reset_context.
@@ -150,7 +179,64 @@ type runState struct {
 	// forkDepth is the recursive nesting depth for this run. 0 = root agent,
 	// 1 = first child spawned by spawn_agent, etc. Used to gate task_complete
 	// visibility and inject step-budget pressure messages for subagents.
-	forkDepth int
+	forkDepth                  int
+	mandatoryChildTaskComplete bool
+}
+
+// trustedForkOrigin is a private, runner-owned capability installed only on a
+// tool context constructed by the step engine. A caller-controlled fork depth
+// or RunMetadata value is not sufficient to mint child lifecycle authority.
+type trustedForkOrigin struct {
+	runner      *Runner
+	parentRunID string
+}
+
+type trustedForkOriginKey struct{}
+
+// contextMutex is a zero-value, context-aware mutex. Status persistence uses
+// one per run so an older write can never land after a newer terminal write,
+// while a deadline-bound pending notifier can still stop waiting promptly.
+type contextMutex struct {
+	once  sync.Once
+	token chan struct{}
+}
+
+func (m *contextMutex) lock(ctx context.Context) error {
+	m.once.Do(func() {
+		m.token = make(chan struct{}, 1)
+		m.token <- struct{}{}
+	})
+	select {
+	case <-m.token:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *contextMutex) unlock() {
+	m.token <- struct{}{}
+}
+
+func (m *contextMutex) Lock() {
+	_ = m.lock(context.Background())
+}
+
+func (m *contextMutex) Unlock() {
+	m.unlock()
+}
+
+func (m *contextMutex) TryLock() bool {
+	m.once.Do(func() {
+		m.token = make(chan struct{}, 1)
+		m.token <- struct{}{}
+	})
+	select {
+	case <-m.token:
+		return true
+	default:
+		return false
+	}
 }
 
 // Runner concurrency/lifecycle invariants
@@ -162,6 +248,9 @@ type runState struct {
 //     mirror that must drain exactly that ledger before a terminal emit returns.
 //  3. state.terminated is armed before terminal redaction/fanout so no
 //     post-terminal goroutine can append to the sealed forensic record.
+//  4. For terminal events retained by redaction policy, status is published
+//     only after the winning event reaches replay/store/recorder history;
+//     GetRun therefore cannot expose terminal state ahead of replay.
 //
 // Message lifecycle:
 //  1. state.messages is the only source of truth for run context.
@@ -211,7 +300,31 @@ var (
 	// ErrRunnerClosed is returned by StartRun and ContinueRun when Shutdown
 	// has already been called on the runner.
 	ErrRunnerClosed = errors.New("runner is closed")
+	// ErrRunPersistence is returned only by reserved-ID starts when their
+	// initial durable run record cannot be committed before dispatch.
+	ErrRunPersistence = errors.New("run persistence failed")
+	// ErrReservedRunIdentityConflict means a durable dispatcher tried to reuse
+	// a reserved ID for a different prompt or conversation scope.
+	ErrReservedRunIdentityConflict = errors.New("reserved run identity conflict")
 )
+
+// TerminalDurabilityBackpressureError is returned by StartRun and ContinueRun
+// when terminal runs whose event or final status has not been durably
+// acknowledged reach MaxCompletedRetention. New admissions fail closed so
+// already-admitted runs can finish without allowing an unbounded in-memory
+// durability backlog.
+type TerminalDurabilityBackpressureError struct {
+	Pending int
+	Limit   int
+}
+
+func (e *TerminalDurabilityBackpressureError) Error() string {
+	return fmt.Sprintf(
+		"terminal durability backlog reached retention limit: %d pending, limit %d",
+		e.Pending,
+		e.Limit,
+	)
+}
 
 // steeringBufferSize is the capacity of the per-run steering message channel.
 const steeringBufferSize = 10
@@ -232,7 +345,10 @@ const recorderDrainTimeout = 30 * time.Second
 // the model returns 0 completion_tokens with empty content.
 const maxEmptyRetries = 3
 
-const terminalEventStoreTimeout = 5 * time.Second
+const (
+	terminalEventStoreTimeout              = 5 * time.Second
+	terminalDurabilityAdmissionMaxDuration = 250 * time.Millisecond
+)
 
 const (
 	defaultMaxCompletedRetention    = 32
@@ -300,6 +416,11 @@ type Runner struct {
 	// It deliberately mirrors r.conversations only; durable retention is owned
 	// by ConversationStore implementations.
 	conversationTouched map[string]time.Time
+	// conversationMessageWatermarks pairs each completed in-memory message
+	// snapshot with the newest durable conversation event that existed when the
+	// snapshot was published. Guarded by mu. A present empty value is a known
+	// safe full-replay boundary (for example no durable event reader).
+	conversationMessageWatermarks map[string]string
 	// conversationOwners maps conversation_id -> owner (tenantID + agentID).
 	// It is populated when a run completes and its conversation is saved to the
 	// in-memory conversations map. Used to validate caller-supplied conversation IDs.
@@ -320,6 +441,12 @@ type Runner struct {
 	// boundary with no event prepared before registration and persisted after
 	// the snapshot.
 	conversationEventMu sync.Mutex
+	// conversationSequenceMu guards the per-conversation publication locks.
+	// A terminal transition may release conversationEventMu around status-store
+	// I/O while retaining its conversation lock, so unrelated conversations can
+	// progress without allowing same-conversation replay/live delivery to pass it.
+	conversationSequenceMu sync.Mutex
+	conversationSequence   map[string]*conversationSequenceLock
 	// conversationEvents is the bounded no-run-store replay fallback. Built-in
 	// stores provide durable replay; third-party/no-store configurations retain
 	// this process-local window instead.
@@ -339,6 +466,25 @@ type Runner struct {
 	// poolDispatchHook is a test seam invoked after a queued item acquires a
 	// worker token and before execute() is launched.
 	poolDispatchHook func(queuedRun)
+	// poolDispatcherExitHook is a test seam invoked by the dispatcher goroutine
+	// immediately before it marks dispatcherWG done. It lets lifecycle tests
+	// identify one Runner without scanning process-global goroutine stacks.
+	poolDispatcherExitHook func()
+	// terminalTransitionHook is a test seam invoked at the publication boundary
+	// between terminal lifecycle preparation and terminal event emission.
+	terminalTransitionHook func(string, RunStatus, EventType)
+	// terminalBeforeDispatchHook is a test seam invoked after terminal replay
+	// persistence and before recorder/status/subscriber publication.
+	terminalBeforeDispatchHook func(string, EventType)
+	// statusBeforeCommitHook is a test seam invoked after a non-terminal status
+	// snapshot is prepared and before it is committed.
+	statusBeforeCommitHook func(string, RunStatus)
+	// continuationAfterValidationHook is a test seam invoked after ContinueRun
+	// validates its source and releases Runner.mu, before durability recovery.
+	continuationAfterValidationHook func(string)
+	// terminalStoreTimeout overrides the bounded terminal store timeout in
+	// deterministic tests. Zero uses terminalEventStoreTimeout.
+	terminalStoreTimeout time.Duration
 	// runQueue is a FIFO channel of pending (runID, req) pairs waiting for a
 	// worker slot. It is only used when workerSem is non-nil.
 	runQueue chan queuedRun
@@ -435,22 +581,23 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 	}
 
 	r := &Runner{
-		provider:            provider,
-		tools:               tools,
-		config:              config,
-		providerRegistry:    config.ProviderRegistry,
-		activations:         activations,
-		skillConstraints:    skillConstraints,
-		envInfo:             envInfo,
-		runs:                make(map[string]*runState),
-		conversations:       make(map[string][]Message),
-		closedSubscribers:   make(map[chan Event]struct{}),
-		conversationTouched: make(map[string]time.Time),
-		conversationOwners:  make(map[string]conversationOwner),
-		convSubscribers:     make(map[string]map[chan Event]struct{}),
-		conversationEvents:  make(map[string][]Event),
-		auditBuckets:        make(map[string]*auditBucket),
-		done:                make(chan struct{}),
+		provider:                      provider,
+		tools:                         tools,
+		config:                        config,
+		providerRegistry:              config.ProviderRegistry,
+		activations:                   activations,
+		skillConstraints:              skillConstraints,
+		envInfo:                       envInfo,
+		runs:                          make(map[string]*runState),
+		conversations:                 make(map[string][]Message),
+		closedSubscribers:             make(map[chan Event]struct{}),
+		conversationTouched:           make(map[string]time.Time),
+		conversationMessageWatermarks: make(map[string]string),
+		conversationOwners:            make(map[string]conversationOwner),
+		convSubscribers:               make(map[string]map[chan Event]struct{}),
+		conversationEvents:            make(map[string][]Event),
+		auditBuckets:                  make(map[string]*auditBucket),
+		done:                          make(chan struct{}),
 	}
 	if config.WorkerPoolSize > 0 {
 		// Bounded pool: workerSem acts as a counting semaphore.
@@ -511,38 +658,146 @@ type retainedRunCandidate struct {
 	updatedAt time.Time
 }
 
+type terminalStatusRetry struct {
+	run Run
+}
+
+func completedRetentionLimit(rc RunnerConfig) int {
+	if rc.MaxCompletedRetention > 0 {
+		return rc.MaxCompletedRetention
+	}
+	return defaultMaxCompletedRetention
+}
+
+func runStateHasPersistentStore(state *runState, fallback RunnerConfig) bool {
+	if state != nil && state.config != nil {
+		return state.config.Store != nil
+	}
+	return fallback.Store != nil
+}
+
+func terminalEventDurabilityResolved(state *runState) bool {
+	return state != nil && (state.terminalEventPersisted || state.terminalEventSuppressed)
+}
+
+func terminalDurabilityComplete(state *runState) bool {
+	return terminalEventDurabilityResolved(state) && state.terminalStatusPersisted
+}
+
+// terminalDurabilityBacklog snapshots the number of store-backed terminal runs
+// which cannot yet be safely evicted. Status-only gaps are safe to retry with
+// the same terminal Run snapshot because UpdateRun is an idempotent overwrite.
+// Unacknowledged event appends are counted for backpressure but are not retried:
+// a third-party store may have applied an append before returning an error, so
+// retrying could duplicate the forensic event.
+func (r *Runner) terminalDurabilityBacklog(rc RunnerConfig) (int, []terminalStatusRetry) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	pending := 0
+	retries := make([]terminalStatusRetry, 0)
+	for _, state := range r.runs {
+		if state == nil || !isTerminalRunStatus(state.run.Status) || !runStateHasPersistentStore(state, rc) {
+			continue
+		}
+		if terminalDurabilityComplete(state) {
+			continue
+		}
+		pending++
+		if terminalEventDurabilityResolved(state) && !state.terminalStatusPersisted {
+			retries = append(retries, terminalStatusRetry{run: state.run})
+		}
+	}
+	return pending, retries
+}
+
+// ensureTerminalDurabilityCapacity retries recoverable status-only gaps under
+// one small total deadline, then rejects admission if the unresolved backlog
+// still reaches the retention cap. Store I/O occurs after terminalDurabilityBacklog
+// releases Runner.mu and without status, conversation, or journal locks.
+func (r *Runner) ensureTerminalDurabilityCapacity(preserveRunID string) error {
+	rc := r.snapshotConfig()
+	if rc.Store == nil {
+		return nil
+	}
+	limit := completedRetentionLimit(rc)
+	pending, retries := r.terminalDurabilityBacklog(rc)
+	if pending < limit {
+		return nil
+	}
+
+	recovered := false
+	if len(retries) > 0 {
+		timeout := r.terminalStoreTimeoutDuration()
+		if timeout > terminalDurabilityAdmissionMaxDuration {
+			timeout = terminalDurabilityAdmissionMaxDuration
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		for _, retry := range retries {
+			if ctx.Err() != nil {
+				break
+			}
+			if r.storeUpdateRunSnapshotContext(ctx, retry.run) {
+				r.markTerminalStatusPersisted(retry.run)
+				recovered = true
+			}
+		}
+		cancel()
+	}
+	if recovered {
+		// Recovery turns protected terminal states into safe durable candidates.
+		// Restore the retention window immediately, without store I/O under the
+		// lock. ContinueRun preserves its source while still counting it toward
+		// the quota so the source survives long enough for the revalidated handoff.
+		r.pruneCompletedRunsPreserving(preserveRunID)
+	}
+
+	pending, _ = r.terminalDurabilityBacklog(rc)
+	if pending >= limit {
+		return &TerminalDurabilityBackpressureError{Pending: pending, Limit: limit}
+	}
+	return nil
+}
+
 func (r *Runner) pruneCompletedRuns() {
+	r.pruneCompletedRunsPreserving("")
+}
+
+func (r *Runner) pruneCompletedRunsPreserving(preserveRunID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.pruneCompletedRunsLocked()
+	r.pruneCompletedRunsLockedPreserving(preserveRunID)
 }
 
 func (r *Runner) pruneCompletedRunsLocked() {
+	r.pruneCompletedRunsLockedPreserving("")
+}
+
+func (r *Runner) pruneCompletedRunsLockedPreserving(preserveRunID string) {
 	rc := r.snapshotConfig()
 	if rc.Store == nil {
 		return
 	}
 
-	limit := rc.MaxCompletedRetention
-	if limit <= 0 {
-		limit = defaultMaxCompletedRetention
-	}
+	limit := completedRetentionLimit(rc)
 
-	terminalCount := 0
 	candidates := make([]retainedRunCandidate, 0)
 	for runID, state := range r.runs {
-		if state == nil || !isTerminalRunStatus(state.run.Status) || !state.terminalEventPersisted {
+		if state == nil || !isTerminalRunStatus(state.run.Status) ||
+			!runStateHasPersistentStore(state, rc) || !terminalDurabilityComplete(state) {
 			continue
 		}
-		terminalCount++
-		if len(state.subscribers) == 0 {
+		if len(state.subscribers) == 0 && state.continuationReservations == 0 {
 			candidates = append(candidates, retainedRunCandidate{
 				id:        runID,
 				updatedAt: state.run.UpdatedAt,
 			})
 		}
 	}
-	if terminalCount <= limit || len(candidates) == 0 {
+	// Subscriber-pinned terminal runs are protected exceptions until their
+	// subscribers drain; they must not consume the quota for runs that are
+	// actually eligible for pruning.
+	if len(candidates) <= limit {
 		return
 	}
 
@@ -553,12 +808,16 @@ func (r *Runner) pruneCompletedRunsLocked() {
 		return candidates[i].updatedAt.Before(candidates[j].updatedAt)
 	})
 
-	toDelete := terminalCount - limit
-	if toDelete > len(candidates) {
-		toDelete = len(candidates)
-	}
-	for i := 0; i < toDelete; i++ {
-		delete(r.runs, candidates[i].id)
+	toDelete := len(candidates) - limit
+	for _, candidate := range candidates {
+		if toDelete == 0 {
+			break
+		}
+		if candidate.id == preserveRunID {
+			continue
+		}
+		delete(r.runs, candidate.id)
+		toDelete--
 	}
 }
 
@@ -604,6 +863,7 @@ func (r *Runner) pruneConversationMirrorLocked() {
 		delete(r.conversations, convID)
 		delete(r.conversationOwners, convID)
 		delete(r.conversationTouched, convID)
+		delete(r.conversationMessageWatermarks, convID)
 	}
 }
 
@@ -653,7 +913,12 @@ func (r *Runner) toolsForRun(runID string) *Registry {
 // r.inflight.Add(1) called by dispatchRun before enqueue, so we must call
 // r.inflight.Done() once per drained item to allow Shutdown's Wait to complete.
 func (r *Runner) poolDispatcher() {
-	defer r.dispatcherWG.Done()
+	defer func() {
+		if r.poolDispatcherExitHook != nil {
+			r.poolDispatcherExitHook()
+		}
+		r.dispatcherWG.Done()
+	}()
 	for {
 		if !r.poolDispatcherStep() {
 			return
@@ -816,10 +1081,150 @@ func (r *Runner) dispatchRun(runID string, req RunRequest) error {
 }
 
 func (r *Runner) StartRun(req RunRequest) (Run, error) {
+	return r.startRun(context.Background(), req, "", false)
+}
+
+// StartRunWithID starts a run with a server-reserved run ID. It exists for
+// durable idempotency boundaries that must commit the identity before dispatch;
+// ordinary callers should use StartRun.
+func (r *Runner) StartRunWithID(req RunRequest, reservedRunID string) (Run, error) {
+	return r.StartRunWithIDContext(context.Background(), req, reservedRunID)
+}
+
+// StartRunWithIDContext is StartRunWithID with cancellation for pre-admission
+// work. Durable dispatchers use it so a lost dispatch lease cannot allow a
+// blocked preflight to dispatch after another owner has taken over.
+func (r *Runner) StartRunWithIDContext(ctx context.Context, req RunRequest, reservedRunID string) (Run, error) {
+	reservedRunID = strings.TrimSpace(reservedRunID)
+	if !strings.HasPrefix(reservedRunID, "run_") {
+		return Run{}, fmt.Errorf("reserved run ID must start with run_")
+	}
+	return r.startRun(ctx, req, reservedRunID, false)
+}
+
+// EnsureRunWithIDContext is the durable idempotent admission boundary for
+// dispatchers that have already persisted a reserved run identity. It returns
+// an admitted local run, resumes a durable queued run, or returns the durable
+// identity when a prior owner has already started it; it never allocates a
+// second run for reservedRunID.
+func (r *Runner) EnsureRunWithIDContext(ctx context.Context, req RunRequest, reservedRunID string) (Run, error) {
+	reservedRunID = strings.TrimSpace(reservedRunID)
+	if !strings.HasPrefix(reservedRunID, "run_") {
+		return Run{}, fmt.Errorf("reserved run ID must start with run_")
+	}
+	if existing, ok := r.GetRun(reservedRunID); ok {
+		if err := callbackReservedRunMatches(existing, req, reservedRunID); err != nil {
+			return Run{}, err
+		}
+		return existing, nil
+	}
+	rc := r.snapshotConfig()
+	if rc.Store != nil {
+		persisted, err := rc.Store.GetRun(ctx, reservedRunID)
+		if err == nil {
+			existing := storeRunToRun(persisted)
+			if err := callbackReservedRunMatches(existing, req, reservedRunID); err != nil {
+				return Run{}, err
+			}
+			if persisted.Status == store.RunStatusQueued {
+				return r.resumeReservedOrExisting(ctx, req, reservedRunID)
+			}
+			return existing, nil
+		}
+		if !store.IsNotFound(err) {
+			return Run{}, fmt.Errorf("load reserved run %q: %w", reservedRunID, err)
+		}
+	}
+	started, startErr := r.StartRunWithIDContext(ctx, req, reservedRunID)
+	if startErr == nil || rc.Store == nil || ctx.Err() != nil {
+		return started, startErr
+	}
+	// Another dispatcher can create the reserved row between our initial Get
+	// and CreateRun. Re-read that durable winner and reconcile it immediately
+	// instead of surfacing a retryable duplicate-create error.
+	persisted, loadErr := rc.Store.GetRun(ctx, reservedRunID)
+	if loadErr != nil {
+		return Run{}, startErr
+	}
+	existing := storeRunToRun(persisted)
+	if err := callbackReservedRunMatches(existing, req, reservedRunID); err != nil {
+		return Run{}, err
+	}
+	if persisted.Status == store.RunStatusQueued {
+		return r.resumeReservedOrExisting(ctx, req, reservedRunID)
+	}
+	return existing, nil
+}
+
+func (r *Runner) resumeReservedOrExisting(ctx context.Context, req RunRequest, reservedRunID string) (Run, error) {
+	resumed, err := r.ResumeRunWithIDContext(ctx, req, reservedRunID)
+	if err == nil || ctx.Err() != nil {
+		return resumed, err
+	}
+	if local, ok := r.GetRun(reservedRunID); ok {
+		if matchErr := callbackReservedRunMatches(local, req, reservedRunID); matchErr != nil {
+			return Run{}, matchErr
+		}
+		return local, nil
+	}
+	return Run{}, err
+}
+
+func storeRunToRun(persisted *store.Run) Run {
+	return Run{ID: persisted.ID, Prompt: persisted.Prompt, ConversationID: persisted.ConversationID, TenantID: persisted.TenantID, AgentID: persisted.AgentID, Model: persisted.Model, ProviderName: persisted.ProviderName, Status: RunStatus(persisted.Status), CreatedAt: persisted.CreatedAt, UpdatedAt: persisted.UpdatedAt, Output: persisted.Output, Error: persisted.Error}
+}
+
+func callbackReservedRunMatches(existing Run, req RunRequest, reservedRunID string) error {
+	tenantID := strings.TrimSpace(req.TenantID)
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID == "" {
+		agentID = "default"
+	}
+	conversationID := strings.TrimSpace(req.ConversationID)
+	if conversationID == "" {
+		conversationID = reservedRunID
+	}
+	if existing.ID != reservedRunID || existing.Prompt != req.Prompt || existing.ConversationID != conversationID || existing.TenantID != tenantID || existing.AgentID != agentID {
+		return fmt.Errorf("%w: reserved run %q does not match request identity", ErrReservedRunIdentityConflict, reservedRunID)
+	}
+	return nil
+}
+
+// ResumeRunWithID dispatches a previously persisted queued reserved run after
+// a prior process lost the shutdown race between persistence and dispatch.
+func (r *Runner) ResumeRunWithID(req RunRequest, reservedRunID string) (Run, error) {
+	return r.ResumeRunWithIDContext(context.Background(), req, reservedRunID)
+}
+
+// ResumeRunWithIDContext is ResumeRunWithID with cancellation for preflight
+// and admission work.
+func (r *Runner) ResumeRunWithIDContext(ctx context.Context, req RunRequest, reservedRunID string) (Run, error) {
+	reservedRunID = strings.TrimSpace(reservedRunID)
+	if !strings.HasPrefix(reservedRunID, "run_") {
+		return Run{}, fmt.Errorf("reserved run ID must start with run_")
+	}
+	return r.startRun(ctx, req, reservedRunID, true)
+}
+
+func (r *Runner) startRun(ctx context.Context, req RunRequest, reservedRunID string, resumePersisted bool) (Run, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Run{}, err
+	}
 	// rc is the config snapshot for the new run: it is stored on the run
 	// state at creation and read by all run-scoped code for the run's whole
 	// lifetime, so a later ApplyConfig never disturbs this run.
 	rc := r.snapshotConfig()
+	// An ordinary interactive/API run can name a capability profile. Compose it
+	// before validation, model resolution, prompt construction, persistence, or
+	// state publication so every downstream surface sees one effective policy.
+	// Startup/subagent profile paths retain their own established composition.
+	req = applySelectedProfilePolicy(req, rc.ProfilesDir)
 
 	// Fast path: reject immediately if the runner has been shut down.
 	select {
@@ -905,6 +1310,26 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		req.AgentIntent = "subagent"
 	}
 
+	// A replay must use the model persisted with the queued identity. Load it
+	// before any model-dependent preflight (attachment modality or prompt
+	// resolution), rather than resolving against a replacement default first.
+	var resumedPersisted *store.Run
+	if reservedRunID != "" && resumePersisted {
+		if rc.Store == nil {
+			return Run{}, fmt.Errorf("%w: durable store is required for reserved run IDs", ErrRunPersistence)
+		}
+		persisted, err := rc.Store.GetRun(ctx, reservedRunID)
+		if err != nil {
+			return Run{}, fmt.Errorf("%w: load queued reserved run %q: %v", ErrRunPersistence, reservedRunID, err)
+		}
+		if persisted.Status != store.RunStatusQueued {
+			return Run{}, fmt.Errorf("%w: queued reserved run %q is not queued", ErrRunPersistence, reservedRunID)
+		}
+		resumedPersisted = persisted
+		req.Model = persisted.Model
+		req.ProviderName = persisted.ProviderName
+	}
+
 	model := req.Model
 	if model == "" {
 		model = rc.DefaultModel
@@ -939,10 +1364,21 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	if agentID == "" {
 		agentID = "default"
 	}
+	runID := reservedRunID
+	if runID == "" {
+		runID = r.nextID("run")
+	}
+	r.mu.RLock()
+	_, runIDExists := r.runs[runID]
+	r.mu.RUnlock()
+	if runIDExists {
+		return Run{}, fmt.Errorf("run %q already exists", runID)
+	}
 	run := Run{
-		ID:                   r.nextID("run"),
+		ID:                   runID,
 		Prompt:               req.Prompt,
 		Model:                model,
+		ProviderName:         strings.TrimSpace(req.ProviderName),
 		Status:               RunStatusQueued,
 		UsageTotals:          &RunUsageTotals{},
 		CostTotals:           &RunCostTotals{CostStatus: CostStatusPending},
@@ -973,6 +1409,82 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	// opposed to the auto-assigned case where run.ConversationID == run.ID).
 	if strings.TrimSpace(req.ConversationID) != "" {
 		if err := r.checkConversationOwnership(run.ConversationID, tenantID, agentID); err != nil {
+			return Run{}, err
+		}
+	}
+
+	// A terminal persistence outage must not turn the retention exceptions into
+	// unbounded memory growth. This check runs after request validation and
+	// ownership checks but before recorder creation or run-state admission.
+	if err := r.ensureTerminalDurabilityCapacity(""); err != nil {
+		return Run{}, err
+	}
+
+	// Built-in stores atomically claim conversation ownership with CreateRun.
+	// Perform the configured store call before local state or dispatch becomes
+	// visible so both reserved and ordinary starts can propagate an ownership
+	// conflict synchronously. Reserved identities additionally require this
+	// persistence to succeed; ordinary starts preserve the historical behavior
+	// of logging and tolerating unrelated persistence failures.
+	if reservedRunID != "" {
+		if rc.Store == nil {
+			r.activations.Cleanup(run.ID)
+			return Run{}, fmt.Errorf("%w: durable store is required for reserved run IDs", ErrRunPersistence)
+		}
+		if resumePersisted {
+			persisted := resumedPersisted
+			if persisted == nil ||
+				persisted.Prompt != run.Prompt ||
+				persisted.TenantID != run.TenantID ||
+				persisted.AgentID != run.AgentID ||
+				persisted.ConversationID != run.ConversationID {
+				r.activations.Cleanup(run.ID)
+				return Run{}, fmt.Errorf("%w: queued reserved run %q does not match replay request", ErrRunPersistence, run.ID)
+			}
+			run.Model = persisted.Model
+			run.ProviderName = persisted.ProviderName
+			run.CreatedAt = persisted.CreatedAt
+			run.UpdatedAt = persisted.UpdatedAt
+			req.Model = persisted.Model
+			req.ProviderName = persisted.ProviderName
+			if len(req.Attachments) > 0 {
+				if err := r.gateImageAttachmentModality(req.Model, req.ProviderName); err != nil {
+					r.activations.Cleanup(run.ID)
+					return Run{}, err
+				}
+			}
+			systemPrompt, resolvedPrompt, err = r.resolveSystemPrompt(req, req.Model, rc.WorkspaceBaseOptions.RepoPath)
+			if err != nil {
+				r.activations.Cleanup(run.ID)
+				return Run{}, err
+			}
+		} else {
+			if err := rc.Store.CreateRun(ctx, runToStoreRun(run)); err != nil {
+				r.activations.Cleanup(run.ID)
+				if errors.Is(err, store.ErrConversationOwnerConflict) {
+					return Run{}, ErrConversationAccessDenied
+				}
+				return Run{}, fmt.Errorf("%w: create reserved run %q: %v", ErrRunPersistence, run.ID, err)
+			}
+		}
+	} else if rc.Store != nil {
+		if err := rc.Store.CreateRun(ctx, runToStoreRun(run)); err != nil {
+			if errors.Is(err, store.ErrConversationOwnerConflict) {
+				r.activations.Cleanup(run.ID)
+				return Run{}, ErrConversationAccessDenied
+			}
+			if rc.Logger != nil {
+				rc.Logger.Error("store: CreateRun failed", "run_id", run.ID, "error", err)
+			}
+		}
+	}
+	// A reserved durable identity may have been created (or its queued replay
+	// validated) while its dispatcher lost the callback/cron lease. Recheck the
+	// admission context before local publication or execution; the queued row is
+	// intentionally retained for the next owner to resume with the same ID.
+	if reservedRunID != "" {
+		if err := ctx.Err(); err != nil {
+			r.activations.Cleanup(run.ID)
 			return Run{}, err
 		}
 	}
@@ -1020,39 +1532,57 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	mergedRules := mergeDynamicRules(rc.DynamicRules, req.DynamicRules)
 
 	state := &runState{
-		run:                     run,
-		config:                  &rc,
-		planMode:                initialPlanModeState(req.PlanMode),
-		planFile:                normalizedPlanFile(req.PlanFile),
-		staticSystemPrompt:      systemPrompt,
-		promptResolved:          resolvedPrompt,
-		usageTotals:             usageTotalsAccumulator{},
-		costTotals:              RunCostTotals{CostStatus: CostStatusPending},
-		messages:                make([]Message, 0, 16),
-		events:                  make([]Event, 0, 32),
-		subscribers:             make(map[chan Event]struct{}),
-		steeringCh:              make(chan string, steeringBufferSize),
-		maxCostUSD:              req.MaxCostUSD,
-		allowedTools:            req.AllowedTools,
-		deniedTools:             copyStringSlice(req.DeniedTools),
-		permissions:             effectivePerms,
-		permissionWorkspaceRoot: r.defaultPermissionWorkspaceRoot(),
-		snapshotBuilder:         sb,
-		auditWriter:             aw,
-		profileName:             req.ProfileName,
-		dynamicRules:            mergedRules,
-		firedOnceRules:          make(map[string]bool),
-		forkDepth:               req.ForkDepth,
+		run:                        run,
+		allowFallback:              req.AllowFallback,
+		fallbackProviders:          copyStringSlice(req.FallbackProviders),
+		config:                     &rc,
+		planMode:                   initialPlanModeState(req.PlanMode),
+		planFile:                   normalizedPlanFile(req.PlanFile),
+		staticSystemPrompt:         systemPrompt,
+		promptResolved:             resolvedPrompt,
+		usageTotals:                usageTotalsAccumulator{},
+		costTotals:                 RunCostTotals{CostStatus: CostStatusPending},
+		messages:                   make([]Message, 0, 16),
+		events:                     make([]Event, 0, 32),
+		subscribers:                make(map[chan Event]struct{}),
+		steeringCh:                 make(chan string, steeringBufferSize),
+		maxCostUSD:                 req.MaxCostUSD,
+		allowedTools:               req.AllowedTools,
+		deniedTools:                copyStringSlice(req.DeniedTools),
+		profileDeniedActions:       copyProfileDeniedActions(req.profileDeniedActions),
+		profileAllowedTools:        copyStringSlice(req.profileAllowedTools),
+		profileToolsRestricted:     req.profileToolsRestricted,
+		profileToolsDenyAll:        req.profileToolsDenyAll,
+		permissions:                effectivePerms,
+		permissionWorkspaceRoot:    r.defaultPermissionWorkspaceRoot(),
+		snapshotBuilder:            sb,
+		auditWriter:                aw,
+		profileName:                req.ProfileName,
+		dynamicRules:               mergedRules,
+		firedOnceRules:             make(map[string]bool),
+		forkDepth:                  req.ForkDepth,
+		mandatoryChildTaskComplete: req.mandatoryChildTaskComplete,
+	}
+
+	r.mu.Lock()
+	if _, exists := r.runs[run.ID]; exists {
+		r.mu.Unlock()
+		if rec != nil {
+			_ = rec.Close()
+		}
+		r.activations.Cleanup(run.ID)
+		return Run{}, fmt.Errorf("run %q already exists", run.ID)
+	}
+	r.runs[run.ID] = state
+	r.mu.Unlock()
+	if req.mandatoryChildTaskComplete {
+		// A child must always have its deferred completion control under its
+		// own run ID, regardless of the parent-provided allowlist.
+		r.activations.Activate(run.ID, "task_complete")
 	}
 	if rec != nil {
 		startRecorderGoroutine(state, rec)
 	}
-	r.mu.Lock()
-	r.runs[run.ID] = state
-	r.mu.Unlock()
-
-	// Persist the initial run record to the configured store (non-fatal).
-	r.storeCreateRun(run)
 
 	if err := r.dispatchRun(run.ID, req); err != nil {
 		// Runner was shut down between the early check and here.  Remove the
@@ -1080,12 +1610,15 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 // checkConversationOwnership validates that a caller-supplied ConversationID
 // belongs to the requesting tenant + agent before its history is loaded.
 //
-// The check is two-phase:
+// The check is three-phase:
 //  1. In-memory: if r.conversationOwners has an entry for convID, both
 //     tenantID and agentID must match (strict check, both axes enforced).
 //  2. Persistent store: if not found in memory but a ConversationStore is
 //     configured, the store's tenant_id column is checked (agent_id is not
 //     stored in the schema, so only the tenant axis is enforced here).
+//  3. Durable run store: remote cronsd reserves and persists its run before
+//     dispatch, so its conversation-scoped run rows authoritatively retain
+//     both tenant and agent ownership across a harnessd restart.
 //
 // Returns nil if the conversation does not exist yet (new conversation
 // allowed), or if the caller matches the recorded owner.
@@ -1103,9 +1636,15 @@ func (r *Runner) checkConversationOwnership(convID, tenantID, agentID string) er
 		}
 		return t
 	}
+	normAgent := func(a string) string {
+		if strings.TrimSpace(a) == "" {
+			return "default"
+		}
+		return strings.TrimSpace(a)
+	}
 
 	callerTenant := normTenant(tenantID)
-	callerAgent := agentID
+	callerAgent := normAgent(agentID)
 
 	// Phase 1: in-memory map (strongest check — tenant + agent both enforced).
 	r.mu.RLock()
@@ -1113,30 +1652,47 @@ func (r *Runner) checkConversationOwnership(convID, tenantID, agentID string) er
 	r.mu.RUnlock()
 
 	if found {
-		if normTenant(owner.tenantID) != callerTenant || owner.agentID != callerAgent {
+		if normTenant(owner.tenantID) != callerTenant || normAgent(owner.agentID) != callerAgent {
 			return ErrConversationAccessDenied
 		}
 		return nil
 	}
 
-	// Phase 2: persistent store (tenant-only check — schema has no agent_id).
-	if rc.ConversationStore == nil {
-		// No store configured and not in memory — brand-new conversation, allow.
+	// Phase 2: conversation store (tenant-only check — schema has no agent_id).
+	if rc.ConversationStore != nil {
+		conv, err := rc.ConversationStore.GetConversationOwner(context.Background(), convID)
+		if err != nil {
+			// Treat store errors as a hard failure to prevent silent bypass.
+			return fmt.Errorf("conversation ownership check: %w", err)
+		}
+		if conv != nil {
+			// Found in store: check tenant match only (no agent_id column).
+			if normTenant(conv.TenantID) != callerTenant {
+				return ErrConversationAccessDenied
+			}
+		}
+	}
+
+	// ConversationStore intentionally stores only tenant metadata. When the
+	// durable run store is configured, its rows supply the missing agent axis
+	// after a runner restart has discarded conversationOwners. Do not filter by
+	// tenant here: a mismatched persisted tenant is itself an access denial.
+	if rc.Store == nil {
 		return nil
 	}
-	conv, err := rc.ConversationStore.GetConversationOwner(context.Background(), convID)
+	persistedRuns, err := rc.Store.ListRuns(context.Background(), store.RunFilter{ConversationID: convID})
 	if err != nil {
-		// Treat store errors as a hard failure to prevent silent bypass.
-		return fmt.Errorf("conversation ownership check: %w", err)
+		// A durable ownership check that silently ignores a store outage turns
+		// an authorization boundary into an availability-dependent bypass.
+		return fmt.Errorf("conversation ownership run-store check: %w", err)
 	}
-	if conv == nil {
-		// Not found in store either — brand-new conversation, allow.
-		return nil
-	}
-	// Found in store: check tenant match only (no agent_id column in schema).
-	storedTenant := normTenant(conv.TenantID)
-	if storedTenant != callerTenant {
-		return ErrConversationAccessDenied
+	for _, persisted := range persistedRuns {
+		if persisted == nil {
+			continue
+		}
+		if normTenant(persisted.TenantID) != callerTenant || normAgent(persisted.AgentID) != callerAgent {
+			return ErrConversationAccessDenied
+		}
 	}
 	return nil
 }
@@ -1205,7 +1761,7 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 		if profilesDir == "" {
 			profilesDir = defaultProfilesDir()
 		}
-		if p, loadErr := profiles.LoadProfileFromUserDir(req.ProfileName, profilesDir); loadErr == nil && p != nil {
+		if p, loadErr := profiles.LoadProfileWithDirs(req.ProfileName, rc.ProfilesProject, profilesDir); loadErr == nil && p != nil {
 			resolvedProfile = p
 		}
 	}
@@ -1415,7 +1971,7 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 			if profilesDir == "" {
 				profilesDir = defaultProfilesDir()
 			}
-			profileCfg, profileErr := loadProfileMCPServers(profilesDir, req.ProfileName)
+			profileCfg, profileErr := loadProfileMCPServersWithDirs(rc.ProfilesProject, profilesDir, req.ProfileName)
 			if profileErr != nil {
 				// Non-fatal: log and continue without profile servers.
 				if rc.Logger != nil {
@@ -1550,16 +2106,52 @@ func (r *Runner) GetRun(runID string) (Run, bool) {
 	return out, true
 }
 
+// WaitForRunStatus blocks until runID's public read model reaches want or ctx
+// is cancelled. It returns false when the run is absent or reaches a different
+// terminal status. Callers that publish terminal events use it to prevent an
+// event from becoming externally observable ahead of its matching GET state.
+func (r *Runner) WaitForRunStatus(ctx context.Context, runID string, want RunStatus) bool {
+	for {
+		r.mu.Lock()
+		state, ok := r.runs[runID]
+		if !ok {
+			r.mu.Unlock()
+			return false
+		}
+		if state.run.Status == want {
+			r.mu.Unlock()
+			return true
+		}
+		if isTerminalRunStatus(state.run.Status) {
+			r.mu.Unlock()
+			return false
+		}
+		if state.statusChanged == nil {
+			state.statusChanged = make(chan struct{})
+		}
+		changed := state.statusChanged
+		r.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return false
+		case <-changed:
+		}
+	}
+}
+
 // ContinueRun appends a follow-up user message to a completed run and starts a
 // new execution under the same conversation_id. The original run state is kept
 // intact. The new run shares the conversation history so the LLM sees the full
 // transcript.
 //
 // Errors:
-//   - ErrRunNotFound     — the source run does not exist.
-//   - ErrRunNotCompleted — the source run has not reached RunStatusCompleted
+//   - ErrRunNotFound                        — the source run does not exist.
+//   - ErrRunNotCompleted                    — the source run has not reached RunStatusCompleted
 //     (it is still running, queued, waiting for user, or has failed).
-//   - validation error   — message is empty.
+//   - TerminalDurabilityBackpressureError   — unresolved terminal persistence
+//     reached the configured in-memory retention cap.
+//   - validation error                      — message is empty.
 //
 // The method is safe for concurrent use. Only one goroutine can successfully
 // continue a given completed run: the first to acquire the lock transitions
@@ -1593,6 +2185,23 @@ func (r *Runner) ContinueRunWithOptions(runID string, req ContinueRunRequest) (R
 		if err := ValidatePermissionConfig(*req.Permissions); err != nil {
 			return Run{}, fmt.Errorf("invalid permissions: %w", err)
 		}
+	}
+
+	// Preserve source error precedence while degraded and reserve the validated
+	// source before releasing Runner.mu. The reservation is not the continuation
+	// winner decision: concurrent continuations still revalidate and compete on
+	// state.continued under the write lock below. It only prevents every shared
+	// prune path from deleting the source during unlocked durability recovery.
+	if err := r.reserveContinuationSource(runID); err != nil {
+		return Run{}, err
+	}
+	defer r.releaseContinuationSource(runID)
+	if r.continuationAfterValidationHook != nil {
+		r.continuationAfterValidationHook(runID)
+	}
+
+	if err := r.ensureTerminalDurabilityCapacity(runID); err != nil {
+		return Run{}, err
 	}
 
 	// Atomically check that the run exists and is completed, then immediately
@@ -1635,10 +2244,23 @@ func (r *Runner) ContinueRunWithOptions(runID string, req ContinueRunRequest) (R
 	// Snapshot allowedTools so the continuation enforces the same per-run tool
 	// filter as the source run unless explicitly overridden by the caller.
 	srcAllowedTools := copyStringSlice(state.allowedTools)
+	// A selected profile's capability denials are an upper bound, not a
+	// per-turn preference. Keep them (and the profile identity used by
+	// downstream profile-aware execution) for the continuation.
+	srcProfileDeniedActions := copyProfileDeniedActions(state.profileDeniedActions)
+	srcProfileAllowedTools := copyStringSlice(state.profileAllowedTools)
+	srcProfileToolsRestricted := state.profileToolsRestricted
+	srcProfileToolsDenyAll := state.profileToolsDenyAll
+	srcProfileName := state.profileName
 	effectiveAllowedTools := srcAllowedTools
 	if req.AllowedTools != nil {
-		effectiveAllowedTools = copyStringSlice(*req.AllowedTools)
+		effectiveAllowedTools = intersectSelectedProfileTools(srcProfileAllowedTools, *req.AllowedTools)
+		// An empty AllowedTools slice means "unrestricted" to the legacy run
+		// filter. A disjoint continuation override must therefore retain the
+		// source filter rather than accidentally turning a selected profile's
+		// non-empty upper bound into unrestricted access.
 	}
+	effectiveProfileToolsDenyAll := srcProfileToolsDenyAll || (req.AllowedTools != nil && len(srcProfileAllowedTools) > 0 && len(effectiveAllowedTools) == 0)
 	effectivePermissions := srcPermissions
 	if req.Permissions != nil {
 		effectivePermissions = normalizePermissionConfig(*req.Permissions)
@@ -1702,6 +2324,11 @@ func (r *Runner) ContinueRunWithOptions(runID string, req ContinueRunRequest) (R
 		// The denylist always carries over: a continued swarm member stays a
 		// swarm member and must keep its tool exclusions.
 		deniedTools:              copyStringSlice(state.deniedTools),
+		profileDeniedActions:     srcProfileDeniedActions,
+		profileAllowedTools:      srcProfileAllowedTools,
+		profileToolsRestricted:   srcProfileToolsRestricted,
+		profileToolsDenyAll:      effectiveProfileToolsDenyAll,
+		profileName:              srcProfileName,
 		previousRunID:            runID,
 		continuationPolicyNotice: policyNotice,
 		snapshotBuilder:          contSB,
@@ -1734,6 +2361,15 @@ func (r *Runner) ContinueRunWithOptions(runID string, req ContinueRunRequest) (R
 		AgentID:        existingAgentID,
 		RoleModels:     contRoleModels,
 		AllowedTools:   copyStringSlice(effectiveAllowedTools),
+		ProfileName:    srcProfileName,
+		// dispatchRun bypasses StartRun's selected-profile composition because
+		// continuation state was already constructed above. Preserve the action
+		// denial map explicitly so execute and any future state rehydration see
+		// the same non-broadenable policy.
+		profileDeniedActions:   copyProfileDeniedActions(srcProfileDeniedActions),
+		profileAllowedTools:    copyStringSlice(srcProfileAllowedTools),
+		profileToolsRestricted: srcProfileToolsRestricted,
+		profileToolsDenyAll:    effectiveProfileToolsDenyAll,
 	}
 	perms := effectivePermissions
 	runReq.Permissions = &perms
@@ -1772,6 +2408,39 @@ func (r *Runner) ContinueRunWithOptions(runID string, req ContinueRunRequest) (R
 	}
 
 	return newRun, nil
+}
+
+func (r *Runner) reserveContinuationSource(runID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state, ok := r.runs[runID]
+	if !ok {
+		return ErrRunNotFound
+	}
+	if state.run.Status != RunStatusCompleted {
+		return ErrRunNotCompleted
+	}
+	if state.continued {
+		return fmt.Errorf("run %q has already been continued", runID)
+	}
+	state.continuationReservations++
+	return nil
+}
+
+func (r *Runner) releaseContinuationSource(runID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state := r.runs[runID]
+	if state == nil || state.continuationReservations == 0 {
+		return
+	}
+	state.continuationReservations--
+	// A reservation is a temporary pruning exception. Re-run the shared prune
+	// policy immediately on release so success, backpressure, validation races,
+	// and dispatch failure cannot leave the retention window inflated.
+	r.pruneCompletedRunsLocked()
 }
 
 // GetRunSummary computes a telemetry summary for a completed (or failed) run
@@ -1870,7 +2539,7 @@ func (r *Runner) SubmitInput(runID string, answers map[string]string) error {
 		return ErrNoPendingInput
 	}
 	if err := rc.AskUserBroker.Submit(runID, answers); err != nil {
-		if errors.Is(err, ErrNoPendingUserQuestion) {
+		if errors.Is(err, ErrNoPendingUserQuestion) || errors.Is(err, checkpoints.ErrAlreadyResolved) {
 			return ErrNoPendingInput
 		}
 		if errors.Is(err, ErrInvalidUserQuestionInput) {
@@ -1917,6 +2586,13 @@ func (r *Runner) SteerRun(runID, message string) error {
 }
 
 func (r *Runner) Subscribe(runID string) ([]Event, <-chan Event, func(), error) {
+	// Match emit's lock order so replay cannot snapshot a strict event while
+	// its durable append is still in flight. Once this lock is acquired, that
+	// event has either committed and will be in history, or has been discarded
+	// with its sequence rolled back.
+	r.conversationEventMu.Lock()
+	defer r.conversationEventMu.Unlock()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -1984,14 +2660,37 @@ func (r *Runner) SubscribeConversation(convID string) ([]Event, <-chan Event, fu
 func (r *Runner) SubscribeConversationFrom(
 	convID, tenantID, lastEventID string,
 ) ([]Event, <-chan Event, func(), ConversationReplayInfo, error) {
+	_, history, stream, cancel, replay, err := r.subscribeConversationFrom(convID, tenantID, lastEventID, false)
+	return history, stream, cancel, replay, err
+}
+
+// SubscribeConversationSnapshotFrom atomically registers a selected-
+// conversation subscriber, builds its replay, and captures the rendered
+// message snapshot. The returned snapshot is therefore causally bounded by
+// the same conversation-sequence/event critical section as the subscription:
+// no run can publish an event between the snapshot and live delivery. This is
+// specifically for the opt-in SSE replay-boundary protocol; callers must
+// suppress every replay frame before the boundary and render this snapshot at
+// the boundary before routing subsequent live frames normally.
+func (r *Runner) SubscribeConversationSnapshotFrom(
+	convID, tenantID, lastEventID string,
+) (ConversationMessageSnapshot, []Event, <-chan Event, func(), ConversationReplayInfo, error) {
+	return r.subscribeConversationFrom(convID, tenantID, lastEventID, true)
+}
+
+func (r *Runner) subscribeConversationFrom(
+	convID, tenantID, lastEventID string, includeSnapshot bool,
+) (ConversationMessageSnapshot, []Event, <-chan Event, func(), ConversationReplayInfo, error) {
 	convID = strings.TrimSpace(convID)
 	if convID == "" {
-		return nil, nil, nil, ConversationReplayInfo{}, fmt.Errorf("conversation id is required")
+		return ConversationMessageSnapshot{}, nil, nil, nil, ConversationReplayInfo{}, fmt.Errorf("conversation id is required")
 	}
 	if !r.conversationExists(convID) {
-		return nil, nil, nil, ConversationReplayInfo{}, fmt.Errorf("conversation %q not found", convID)
+		return ConversationMessageSnapshot{}, nil, nil, nil, ConversationReplayInfo{}, fmt.Errorf("conversation %q not found", convID)
 	}
 
+	unlockSequence := r.lockConversationSequence(convID)
+	defer unlockSequence()
 	r.conversationEventMu.Lock()
 	defer r.conversationEventMu.Unlock()
 
@@ -2022,7 +2721,51 @@ func (r *Runner) SubscribeConversationFrom(
 	}
 
 	history, replay := r.conversationReplay(convID, tenantID, lastEventID)
-	return history, ch, cancel, replay, nil
+	if !includeSnapshot {
+		return ConversationMessageSnapshot{}, history, ch, cancel, replay, nil
+	}
+	snapshot, ok := r.conversationMessagesSnapshotLocked(convID)
+	if !ok {
+		cancel()
+		return ConversationMessageSnapshot{}, nil, nil, nil, ConversationReplayInfo{}, fmt.Errorf("conversation %q messages not found", convID)
+	}
+	return snapshot, history, ch, cancel, replay, nil
+}
+
+func (r *Runner) lockConversationSequence(convID string) func() {
+	key := strings.TrimSpace(convID)
+	if key == "" {
+		key = "__no_conversation__"
+	}
+	r.conversationSequenceMu.Lock()
+	if r.conversationSequence == nil {
+		r.conversationSequence = make(map[string]*conversationSequenceLock)
+	}
+	sequence := r.conversationSequence[key]
+	if sequence == nil {
+		sequence = &conversationSequenceLock{}
+		r.conversationSequence[key] = sequence
+	}
+	sequence.refs++
+	r.conversationSequenceMu.Unlock()
+	sequence.mu.Lock()
+	var unlockOnce sync.Once
+	return func() {
+		unlockOnce.Do(func() {
+			sequence.mu.Unlock()
+			r.conversationSequenceMu.Lock()
+			sequence.refs--
+			if sequence.refs == 0 && r.conversationSequence[key] == sequence {
+				delete(r.conversationSequence, key)
+			}
+			r.conversationSequenceMu.Unlock()
+		})
+	}
+}
+
+type conversationSequenceLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 func (r *Runner) conversationReplay(
@@ -2283,13 +3026,37 @@ func (r *Runner) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (
 		}
 	}
 
+	// A fork is trusted only when it originated from this Runner's step-engine
+	// tool context and the parent remains live in this Runner. Public context
+	// values (including WithForkDepth and RunMetadata) are advisory only.
+	origin, trusted := ctx.Value(trustedForkOriginKey{}).(trustedForkOrigin)
+	if !trusted || origin.runner != r || origin.parentRunID == "" {
+		trusted = false
+	}
+	parentDepth := 0
+	var parentState *runState
+	if trusted {
+		r.mu.RLock()
+		parent, ok := r.runs[origin.parentRunID]
+		if ok && !isTerminalRunStatus(parent.run.Status) {
+			parentDepth = parent.forkDepth
+			parentState = parent
+		} else {
+			ok = false
+		}
+		r.mu.RUnlock()
+		trusted = ok
+	}
 	// Build the sub-run request, forwarding AllowedTools from the fork config.
-	// Propagate fork depth from context so the child knows its nesting level.
+	// Only a trusted parent derives child depth and control-tool authority.
 	req := RunRequest{
-		Prompt:               config.Prompt,
-		AllowedTools:         config.AllowedTools,
-		ForkDepth:            htools.ForkDepthFromContext(ctx),
-		ParentContextHandoff: requestHandoff,
+		Prompt:                     config.Prompt,
+		AllowedTools:               config.AllowedTools,
+		ParentContextHandoff:       requestHandoff,
+		mandatoryChildTaskComplete: trusted,
+	}
+	if trusted {
+		req.ForkDepth = parentDepth + 1
 	}
 	// Apply optional model and max_steps overrides from ForkConfig.
 	// Empty/zero values mean "use runner defaults" (inherit from parent run).
@@ -2303,17 +3070,14 @@ func (r *Runner) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (
 		req.MaxTurns = config.MaxTurns
 	}
 
-	// Inherit SystemPrompt, Permissions, and ProfileName from the parent run when possible.
-	if meta, ok := htools.RunMetadataFromContext(ctx); ok && meta.RunID != "" {
-		r.mu.RLock()
-		parentState, parentOK := r.runs[meta.RunID]
-		if parentOK {
-			req.SystemPrompt = parentState.staticSystemPrompt
-			perms := parentState.permissions
-			req.Permissions = &perms
-			req.ProfileName = parentState.profileName
-		}
-		r.mu.RUnlock()
+	// Inherit parent policy only through the private, still-live origin
+	// capability. RunMetadata is public tool context and must never select a
+	// parent whose prompt, permissions, or profile a direct caller can inherit.
+	if trusted {
+		req.SystemPrompt = parentState.staticSystemPrompt
+		perms := parentState.permissions
+		req.Permissions = &perms
+		req.ProfileName = parentState.profileName
 	}
 
 	run, err := r.StartRun(req)
@@ -2386,6 +3150,13 @@ func forkResultFromSnapshot(run Run) htools.ForkResult {
 // resolveProvider determines which Provider to use for a run.
 // Returns the provider, its name, and any error.
 func (r *Runner) resolveProvider(runID, model, preferredProvider string, allowFallback bool) (Provider, string, error) {
+	if forcedProviderName := r.configForRun(runID).ForcedDefaultProviderName; forcedProviderName != "" {
+		if r.provider == nil {
+			return nil, "", fmt.Errorf("forced default provider %q is unavailable", forcedProviderName)
+		}
+		return r.provider, forcedProviderName, nil
+	}
+
 	if r.providerRegistry == nil {
 		return r.provider, "default", nil
 	}
@@ -2455,6 +3226,14 @@ func (r *Runner) resolveProviderCandidates(runID, model, preferredProvider strin
 	}
 
 	candidates := []providerCandidate{{Provider: primary, Name: primaryName}}
+	// A forced assembly-owned provider is an egress boundary, not just a
+	// preferred primary. In particular, HARNESS_PROVIDER=fake must never
+	// construct or invoke a caller-selected registry fallback when the fake
+	// provider has a retryable failure. Keeping the candidate list to the forced
+	// provider makes the invariant hold for both successful and failed attempts.
+	if r.configForRun(runID).ForcedDefaultProviderName != "" {
+		return candidates, nil
+	}
 
 	if !allowFallback || r.providerRegistry == nil {
 		return candidates, nil
@@ -3022,10 +3801,15 @@ func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 
 	r.mu.RLock()
 	state, stateOK := r.runs[runID]
-	var baseAllowed, denied []string
+	var baseAllowed, denied, profileAllowed []string
+	profileRestricted := false
+	profileDenyAll := false
 	if stateOK {
 		baseAllowed = state.allowedTools
 		denied = state.deniedTools
+		profileAllowed = state.profileAllowedTools
+		profileRestricted = state.profileToolsRestricted
+		profileDenyAll = state.profileToolsDenyAll
 	}
 	r.mu.RUnlock()
 
@@ -3045,11 +3829,13 @@ func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 		}
 		defs = kept
 	}
+	defs = r.filterProfileDeniedActions(runID, defs)
 
 	// Skill constraints (activated by the skill tool) take precedence over the
 	// per-run base filter. If a skill constraint is active with a non-nil
 	// AllowedTools list, apply it exclusively.
 	constraint, active := r.skillConstraints.Active(runID)
+	skillOverride := active && constraint.AllowedTools != nil
 	if active && constraint.AllowedTools != nil {
 		allowed := make(map[string]bool, len(constraint.AllowedTools)+len(AlwaysAvailableTools))
 		for _, name := range constraint.AllowedTools {
@@ -3058,44 +3844,126 @@ func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 		for name := range AlwaysAvailableTools {
 			allowed[name] = true
 		}
+		if r.isMandatoryChildTaskComplete(runID, "task_complete") {
+			allowed["task_complete"] = true
+		}
 		filtered := make([]ToolDefinition, 0, len(allowed))
 		for _, def := range defs {
 			if allowed[def.Name] {
 				filtered = append(filtered, def)
 			}
 		}
-		return filtered
+		defs = filtered
 	}
 
 	// No active skill constraint (or skill constraint with nil AllowedTools =
 	// unrestricted). Apply the per-run base allowed-tools list from RunRequest.
-	if len(baseAllowed) == 0 {
-		return defs // no per-run restriction either
+	if !skillOverride && len(baseAllowed) > 0 {
+		allowed := make(map[string]bool, len(baseAllowed)+len(AlwaysAvailableTools))
+		for _, name := range baseAllowed {
+			allowed[name] = true
+		}
+		for name := range AlwaysAvailableTools {
+			// When a run explicitly restricts its tools via allowed_tools, only
+			// AskUserQuestion is truly unconditional infrastructure. find_tool and
+			// skill must NOT be silently force-granted: find_tool can surface
+			// deferred tools and skill can activate a skill constraint whose own
+			// allowlist replaces this base filter — both would let a restricted run
+			// reach tools outside its allowed_tools boundary (issue #527). They are
+			// available only when the caller lists them explicitly.
+			if name == "AskUserQuestion" || allowed[name] {
+				allowed[name] = true
+			}
+		}
+		if r.isMandatoryChildTaskComplete(runID, "task_complete") {
+			allowed["task_complete"] = true
+		}
+		filtered := make([]ToolDefinition, 0, len(allowed))
+		for _, def := range defs {
+			if allowed[def.Name] {
+				filtered = append(filtered, def)
+			}
+		}
+		defs = filtered
 	}
-
-	allowed := make(map[string]bool, len(baseAllowed)+len(AlwaysAvailableTools))
-	for _, name := range baseAllowed {
-		allowed[name] = true
+	if !profileRestricted {
+		return defs
 	}
-	for name := range AlwaysAvailableTools {
-		// When a run explicitly restricts its tools via allowed_tools, only
-		// AskUserQuestion is truly unconditional infrastructure. find_tool and
-		// skill must NOT be silently force-granted: find_tool can surface
-		// deferred tools and skill can activate a skill constraint whose own
-		// allowlist replaces this base filter — both would let a restricted run
-		// reach tools outside its allowed_tools boundary (issue #527). They are
-		// available only when the caller lists them explicitly.
-		if name == "AskUserQuestion" || allowed[name] {
+	allowed := make(map[string]bool, len(profileAllowed)+1)
+	if !profileDenyAll {
+		for _, name := range profileAllowed {
 			allowed[name] = true
 		}
 	}
-	filtered := make([]ToolDefinition, 0, len(allowed))
+	allowed["AskUserQuestion"] = true
+	filtered := make([]ToolDefinition, 0, len(defs))
 	for _, def := range defs {
-		if allowed[def.Name] {
+		if allowed[def.Name] || r.isMandatoryChildTaskComplete(runID, def.Name) {
 			filtered = append(filtered, def)
 		}
 	}
 	return filtered
+}
+
+func copyProfileDeniedActions(src map[htools.Action]struct{}) map[htools.Action]struct{} {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[htools.Action]struct{}, len(src))
+	for action := range src {
+		dst[action] = struct{}{}
+	}
+	return dst
+}
+
+func (r *Runner) filterProfileDeniedActions(runID string, defs []ToolDefinition) []ToolDefinition {
+	r.mu.RLock()
+	state := r.runs[runID]
+	deniedActions := copyProfileDeniedActions(func() map[htools.Action]struct{} {
+		if state == nil {
+			return nil
+		}
+		return state.profileDeniedActions
+	}())
+	r.mu.RUnlock()
+	if len(deniedActions) == 0 {
+		return defs
+	}
+	kept := make([]ToolDefinition, 0, len(defs))
+	registry := r.toolsForRun(runID)
+	for _, def := range defs {
+		if action, ok := registry.ActionFor(def.Name); ok {
+			if _, denied := deniedActions[action]; denied && !r.isMandatoryChildTaskComplete(runID, def.Name) {
+				continue
+			}
+		}
+		kept = append(kept, def)
+	}
+	return kept
+}
+
+func (r *Runner) profileActionDenied(runID, toolName string) bool {
+	if r.isMandatoryChildTaskComplete(runID, toolName) {
+		return false
+	}
+	r.mu.RLock()
+	state := r.runs[runID]
+	deniedActions := copyProfileDeniedActions(func() map[htools.Action]struct{} {
+		if state == nil {
+			return nil
+		}
+		return state.profileDeniedActions
+	}())
+	r.mu.RUnlock()
+	if len(deniedActions) == 0 {
+		return false
+	}
+	action, ok := r.toolsForRun(runID).ActionFor(toolName)
+	if !ok {
+		return false
+	}
+	_, denied := deniedActions[action]
+	return denied
 }
 
 // toolAllowedForRun reports whether name passes this run's base allowed-tools
@@ -3112,18 +3980,48 @@ func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 // filter entirely (same precedence as filteredToolsForRun), and is enforced
 // separately by SkillConstraintTracker.IsToolAllowed.
 func (r *Runner) toolAllowedForRun(runID, name string) bool {
+	if r.isMandatoryChildTaskComplete(runID, name) {
+		return true
+	}
+	r.mu.RLock()
+	var baseAllowed, denied, profileAllowed []string
+	profileRestricted := false
+	profileDenyAll := false
+	if state, ok := r.runs[runID]; ok {
+		baseAllowed = state.allowedTools
+		denied = state.deniedTools
+		profileAllowed = state.profileAllowedTools
+		profileRestricted = state.profileToolsRestricted
+		profileDenyAll = state.profileToolsDenyAll
+	}
+	r.mu.RUnlock()
+	for _, blocked := range denied {
+		if blocked == name {
+			return false
+		}
+	}
+	if profileRestricted {
+		profileOK := name == "AskUserQuestion"
+		if !profileDenyAll {
+			for _, allowed := range profileAllowed {
+				if allowed == name {
+					profileOK = true
+					break
+				}
+			}
+		}
+		if !profileOK {
+			return false
+		}
+	}
 	if constraint, active := r.skillConstraints.Active(runID); active && constraint.AllowedTools != nil {
 		return true
 	}
 
-	r.mu.RLock()
-	var baseAllowed []string
-	if state, ok := r.runs[runID]; ok {
-		baseAllowed = state.allowedTools
-	}
-	r.mu.RUnlock()
-
 	if len(baseAllowed) == 0 {
+		if profileRestricted {
+			return name == "AskUserQuestion"
+		}
 		return true // no per-run restriction
 	}
 	for _, allowed := range baseAllowed {
@@ -3135,6 +4033,19 @@ func (r *Runner) toolAllowedForRun(runID, name string) bool {
 	// restricted run keeps; find_tool and skill are deliberately not
 	// force-granted here, matching filteredToolsForRun (issue #527).
 	return name == "AskUserQuestion"
+}
+
+// isMandatoryChildTaskComplete identifies the one child-only lifecycle
+// control that survives restrictive child profile, skill, and tool filters.
+// It is deliberately run-state based so a root cannot acquire the exemption.
+func (r *Runner) isMandatoryChildTaskComplete(runID, name string) bool {
+	if name != "task_complete" {
+		return false
+	}
+	r.mu.RLock()
+	state := r.runs[runID]
+	r.mu.RUnlock()
+	return state != nil && state.mandatoryChildTaskComplete
 }
 
 // maybeActivateSkillConstraint inspects a skill tool result and activates
@@ -3196,6 +4107,12 @@ func (r *Runner) drainSteering(runID string, messages *[]Message) {
 }
 
 func (r *Runner) completeRun(runID, output string) {
+	unlockTerminal, ok := r.lockTerminalTransition(runID)
+	if !ok {
+		return
+	}
+	defer unlockTerminal()
+
 	rc := r.configForRun(runID)
 	// Clean up per-run workspace before terminal event (issue #324).
 	r.runWorkspaceCleanup(runID)
@@ -3219,21 +4136,22 @@ func (r *Runner) completeRun(runID, output string) {
 		msgs := copyMessages(state.messages)
 		r.mu.RUnlock()
 
-		r.mu.Lock()
-		touchedAt := time.Now().UTC()
-		r.conversations[convID] = msgs
-		r.conversationTouched[convID] = touchedAt
-		// Record ownership so that future StartRun callers with the same
-		// ConversationID can be validated against the originating tenant+agent
-		// (cross-tenant/cross-agent disclosure prevention, issue #221).
-		r.conversationOwners[convID] = conversationOwner{
-			tenantID: tenantID,
-			agentID:  agentID,
+		// Publish the message snapshot and its replay watermark at the same
+		// Runner-owned event boundary. The event cursor is sampled while event
+		// publication is excluded, then the conversation store is updated before
+		// the in-memory pair becomes visible. This prevents /messages from pairing
+		// old content with a newer assistant event (or the reverse).
+		unlockSequence := r.lockConversationSequence(convID)
+		r.conversationEventMu.Lock()
+		r.mu.RLock()
+		overlapped := r.conversationSnapshotHasOverlapLocked(runID, convID, state.run.CreatedAt)
+		r.mu.RUnlock()
+		watermark := ""
+		if !overlapped {
+			watermark = r.latestDurableConversationEventIDLocked(convID, tenantID)
 		}
-		r.pruneConversationMirrorLocked()
-		r.mu.Unlock()
 
-		// Persist to SQLite store if configured
+		// Persist to SQLite store if configured.
 		if rc.ConversationStore != nil {
 			storeMsgs := copyMessages(msgs) // defensive clone for untrusted store boundary
 			usageTotals, costTotals := r.accountingTotals(runID)
@@ -3247,19 +4165,51 @@ func (r *Runner) completeRun(runID, output string) {
 					rc.Logger.Error("failed to persist conversation", "conv_id", convID, "error", err)
 				}
 			} else {
-				// Wire tenant scoping: set workspace and tenant_id on the conversation row.
-				if tenantID == "default" {
-					tenantID = ""
+				// Keep terminal persistence aligned with the trusted workspace that
+				// was recorded before any mutating rewind capture. Default tenants
+				// are represented by an empty stored tenant ID, but their configured
+				// workspace is still required for a safe future restore.
+				storeTenantID := tenantID
+				if storeTenantID == "default" {
+					storeTenantID = ""
 				}
-				if tenantID != "" {
-					if err := rc.ConversationStore.UpdateConversationMeta(context.Background(), convID, "", tenantID); err != nil {
-						if rc.Logger != nil {
-							rc.Logger.Error("failed to update conversation meta", "conv_id", convID, "error", err)
-						}
+				workspace := rc.WorkspaceBaseOptions.RepoPath
+				if metaStore, ok := rc.ConversationStore.(interface {
+					PreserveConversationMeta(context.Context, string, string, string) error
+				}); ok {
+					// The SQLite store performs this preservation atomically. In
+					// particular, a zero-workspace terminal run cannot race a
+					// configured mutating run and erase its trusted rewind root.
+					if err := metaStore.PreserveConversationMeta(context.Background(), convID, workspace, storeTenantID); err != nil && rc.Logger != nil {
+						rc.Logger.Error("failed to preserve conversation meta", "conv_id", convID, "error", err)
+					}
+				} else if workspace != "" {
+					// Unknown store implementations cannot provide the atomic
+					// preservation contract. They may receive a trusted non-empty
+					// root, but are never asked to write an empty one.
+					if err := rc.ConversationStore.UpdateConversationMeta(context.Background(), convID, workspace, storeTenantID); err != nil && rc.Logger != nil {
+						rc.Logger.Error("failed to update conversation meta", "conv_id", convID, "error", err)
 					}
 				}
 			}
 		}
+
+		r.mu.Lock()
+		touchedAt := time.Now().UTC()
+		r.conversations[convID] = msgs
+		r.conversationTouched[convID] = touchedAt
+		r.conversationMessageWatermarks[convID] = watermark
+		// Record ownership so that future StartRun callers with the same
+		// ConversationID can be validated against the originating tenant+agent
+		// (cross-tenant/cross-agent disclosure prevention, issue #221).
+		r.conversationOwners[convID] = conversationOwner{
+			tenantID: tenantID,
+			agentID:  agentID,
+		}
+		r.pruneConversationMirrorLocked()
+		r.mu.Unlock()
+		r.conversationEventMu.Unlock()
+		unlockSequence()
 		r.pruneConversationMirror()
 	} else {
 		r.mu.RUnlock()
@@ -3275,8 +4225,6 @@ func (r *Runner) completeRun(runID, output string) {
 		r.closeAuditWriter(runID)
 	}
 
-	r.setStatus(runID, RunStatusCompleted, output, "")
-
 	usageTotals, costTotals := r.accountingTotals(runID)
 
 	// Efficiency suggestion: if the run used a named profile and the
@@ -3287,7 +4235,7 @@ func (r *Runner) completeRun(runID, output string) {
 	// Profile run history: persist completion record for analysis.
 	r.persistProfileRun(runID, "completed", costTotals.CostUSDTotal)
 
-	r.emit(runID, EventRunCompleted, map[string]any{
+	r.transitionTerminal(runID, RunStatusCompleted, output, "", EventRunCompleted, map[string]any{
 		"output":       output,
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
@@ -3608,6 +4556,12 @@ func (r *Runner) emitContextWindowSnapshot(
 }
 
 func (r *Runner) failRun(runID string, err error) {
+	unlockTerminal, ok := r.lockTerminalTransition(runID)
+	if !ok {
+		return
+	}
+	defer unlockTerminal()
+
 	rc := r.configForRun(runID)
 	if err == nil {
 		err = errors.New("run failed")
@@ -3651,14 +4605,12 @@ func (r *Runner) failRun(runID string, err error) {
 		r.closeAuditWriter(runID)
 	}
 
-	r.setStatus(runID, RunStatusFailed, "", err.Error())
-
 	usageTotals, costTotals := r.accountingTotals(runID)
 
 	// Profile run history: persist failure record for analysis.
 	r.persistProfileRun(runID, "failed", costTotals.CostUSDTotal)
 
-	r.emit(runID, EventRunFailed, map[string]any{
+	r.transitionTerminal(runID, RunStatusFailed, "", err.Error(), EventRunFailed, map[string]any{
 		"error":        err.Error(),
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
@@ -3675,6 +4627,12 @@ func (r *Runner) failRun(runID string, err error) {
 // reason="max_steps_reached" and max_steps field so clients can distinguish
 // this terminal state from other failures without parsing the error string.
 func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
+	unlockTerminal, ok := r.lockTerminalTransition(runID)
+	if !ok {
+		return
+	}
+	defer unlockTerminal()
+
 	rc := r.configForRun(runID)
 	err := fmt.Errorf("max steps (%d) reached", maxSteps)
 
@@ -3703,14 +4661,12 @@ func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 		r.closeAuditWriter(runID)
 	}
 
-	r.setStatus(runID, RunStatusFailed, "", err.Error())
-
 	usageTotals, costTotals := r.accountingTotals(runID)
 
 	// Profile run history: persist partial record (max steps reached) for analysis.
 	r.persistProfileRun(runID, "partial", costTotals.CostUSDTotal)
 
-	r.emit(runID, EventRunFailed, map[string]any{
+	r.transitionTerminal(runID, RunStatusFailed, "", err.Error(), EventRunFailed, map[string]any{
 		"error":        err.Error(),
 		"reason":       "max_steps_reached",
 		"max_steps":    maxSteps,
@@ -3729,6 +4685,12 @@ func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 // reason="max_turns_exhausted" and max_turns field so clients can distinguish
 // this terminal state from other failures without parsing the error string.
 func (r *Runner) failRunMaxTurns(runID string, maxTurns int) {
+	unlockTerminal, ok := r.lockTerminalTransition(runID)
+	if !ok {
+		return
+	}
+	defer unlockTerminal()
+
 	rc := r.configForRun(runID)
 	err := fmt.Errorf("max turns (%d) reached", maxTurns)
 
@@ -3757,14 +4719,12 @@ func (r *Runner) failRunMaxTurns(runID string, maxTurns int) {
 		r.closeAuditWriter(runID)
 	}
 
-	r.setStatus(runID, RunStatusFailed, "", err.Error())
-
 	usageTotals, costTotals := r.accountingTotals(runID)
 
 	// Profile run history: persist partial record (max turns exhausted) for analysis.
 	r.persistProfileRun(runID, "partial", costTotals.CostUSDTotal)
 
-	r.emit(runID, EventRunFailed, map[string]any{
+	r.transitionTerminal(runID, RunStatusFailed, "", err.Error(), EventRunFailed, map[string]any{
 		"error":        err.Error(),
 		"reason":       "max_turns_exhausted",
 		"max_turns":    maxTurns,
@@ -3782,6 +4742,12 @@ func (r *Runner) failRunMaxTurns(runID string, maxTurns int) {
 // to RunStatusCancelled. It mirrors the structure of failRun but uses the
 // dedicated cancelled event and status rather than failed.
 func (r *Runner) cancelledRun(runID string) {
+	unlockTerminal, ok := r.lockTerminalTransition(runID)
+	if !ok {
+		return
+	}
+	defer unlockTerminal()
+
 	rc := r.configForRun(runID)
 	// Clean up per-run workspace before terminal event (issue #324).
 	r.runWorkspaceCleanup(runID)
@@ -3805,10 +4771,8 @@ func (r *Runner) cancelledRun(runID string) {
 		r.closeAuditWriter(runID)
 	}
 
-	r.setStatus(runID, RunStatusCancelled, "", "")
-
 	usageTotals, costTotals := r.accountingTotals(runID)
-	r.emit(runID, EventRunCancelled, map[string]any{
+	r.transitionTerminal(runID, RunStatusCancelled, "", "", EventRunCancelled, map[string]any{
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
 	})
@@ -3920,6 +4884,12 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 		defer cleanupCancel()
 		return errors.Join(ctx.Err(), r.shutdownToolRegistriesOnce(cleanupCtx), r.closeAuditBucketsOnce())
 	}
+}
+
+// ShutdownSignal closes as soon as Shutdown begins. Long-lived helpers that
+// are scoped to this Runner can select on it without owning shutdown itself.
+func (r *Runner) ShutdownSignal() <-chan struct{} {
+	return r.done
 }
 
 func (r *Runner) shutdownToolRegistriesOnce(ctx context.Context) error {
@@ -4167,26 +5137,136 @@ func (a usageTotalsAccumulator) completionUsage() CompletionUsage {
 }
 
 func (r *Runner) setStatus(runID string, status RunStatus, output, runErr string) {
-	r.mu.Lock()
+	r.setStatusContext(context.Background(), runID, status, output, runErr)
+}
 
+func (r *Runner) setStatusContext(
+	ctx context.Context,
+	runID string,
+	status RunStatus,
+	output, runErr string,
+) bool {
+	return r.updateStatusContext(ctx, runID, status, output, runErr, nil)
+}
+
+func (r *Runner) setStatusAndEmitContext(
+	ctx context.Context,
+	runID string,
+	status RunStatus,
+	output, runErr string,
+	eventType EventType,
+	payload map[string]any,
+) bool {
+	return r.updateStatusContext(ctx, runID, status, output, runErr, func() bool {
+		return r.emitWithPersistence(ctx, runID, eventType, payload, true)
+	})
+}
+
+func (r *Runner) updateStatusContext(
+	ctx context.Context,
+	runID string,
+	status RunStatus,
+	output, runErr string,
+	afterPersist func() bool,
+) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	r.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	if err := state.statusMu.lock(ctx); err != nil {
+		return false
+	}
+	defer state.statusMu.unlock()
+
+	r.mu.RLock()
+	current, ok := r.runs[runID]
+	available := ok && current == state && !state.terminated && !isTerminalRunStatus(state.run.Status)
+	r.mu.RUnlock()
+	if !available || ctx.Err() != nil {
+		return false
+	}
+	finalRun, ok := r.statusRunSnapshot(runID, status, output, runErr)
+	if !ok {
+		return false
+	}
+	if r.statusBeforeCommitHook != nil {
+		r.statusBeforeCommitHook(runID, status)
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	if !r.commitStatusSnapshot(runID, finalRun) {
+		return false
+	}
+	persistCtx, cancel := context.WithTimeout(ctx, r.terminalStoreTimeoutDuration())
+	persisted := r.storeUpdateRunSnapshotContext(persistCtx, finalRun)
+	cancel()
+	if !persisted {
+		return false
+	}
+	if afterPersist != nil {
+		// Keep statusMu held through its corresponding lifecycle event so
+		// terminal mutation/publication cannot overtake a waiting transition.
+		return afterPersist()
+	}
+	return ctx.Err() == nil
+}
+
+func (r *Runner) statusRunSnapshot(runID string, status RunStatus, output, runErr string) (Run, bool) {
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.RUnlock()
+		return Run{}, false
+	}
+	finalRun := state.run
+	finalRun.Status = status
+	finalRun.Output = output
+	finalRun.Error = runErr
+	finalRun.UpdatedAt = time.Now().UTC()
+	if shouldPersistWorkflowRecap(status) {
+		finalRun.Recap = buildWorkflowRecap(finalRun, state.messages, state.events)
+	} else {
+		finalRun.Recap = nil
+	}
+	r.mu.RUnlock()
+	return finalRun, true
+}
+
+func (r *Runner) commitStatusSnapshot(runID string, finalRun Run) bool {
+	r.mu.Lock()
 	state, ok := r.runs[runID]
 	if !ok {
 		r.mu.Unlock()
-		return
+		return false
 	}
-	state.run.Status = status
-	state.run.Output = output
-	state.run.Error = runErr
-	state.run.UpdatedAt = time.Now().UTC()
-	if shouldPersistWorkflowRecap(status) {
-		state.run.Recap = buildWorkflowRecap(state.run, state.messages, state.events)
-	} else {
-		state.run.Recap = nil
+	if state.terminated && !isTerminalRunStatus(finalRun.Status) {
+		r.mu.Unlock()
+		return false
+	}
+	if isTerminalRunStatus(state.run.Status) && !isTerminalRunStatus(finalRun.Status) {
+		r.mu.Unlock()
+		return false
+	}
+	state.run.Status = finalRun.Status
+	state.run.Output = finalRun.Output
+	state.run.Error = finalRun.Error
+	state.run.UpdatedAt = finalRun.UpdatedAt
+	state.run.Recap = finalRun.Recap
+	if state.statusChanged != nil {
+		close(state.statusChanged)
+		state.statusChanged = make(chan struct{})
 	}
 	r.mu.Unlock()
-
-	// Persist the updated run state to the store (non-fatal, called after unlock).
-	r.storeUpdateRun(runID)
+	return true
 }
 
 func (r *Runner) setMessages(runID string, messages []Message) {
@@ -4400,10 +5480,14 @@ func (r *Runner) runMetadata(runID string) htools.RunMetadata {
 		return htools.RunMetadata{RunID: runID, TenantID: "default", ConversationID: runID, AgentID: "default"}
 	}
 	return htools.RunMetadata{
-		RunID:          state.run.ID,
-		TenantID:       state.run.TenantID,
-		ConversationID: state.run.ConversationID,
-		AgentID:        state.run.AgentID,
+		RunID:             state.run.ID,
+		TenantID:          state.run.TenantID,
+		ConversationID:    state.run.ConversationID,
+		AgentID:           state.run.AgentID,
+		Model:             state.run.Model,
+		ProviderName:      state.run.ProviderName,
+		AllowFallback:     state.allowFallback,
+		FallbackProviders: copyStringSlice(state.fallbackProviders),
 	}
 }
 
@@ -4545,6 +5629,113 @@ func (r *Runner) ConversationMessages(conversationID string) ([]Message, bool) {
 	return nil, false
 }
 
+// ConversationMessageSnapshot is an immutable pairing of a conversation's
+// rendered messages with the exact durable event identity through which that
+// snapshot is complete. LastEventID is empty when no trustworthy durable
+// boundary exists; clients must then request full event replay.
+type ConversationMessageSnapshot struct {
+	Messages    []Message
+	LastEventID string
+}
+
+// ConversationMessagesSnapshot returns messages and their replay watermark at
+// one Runner-owned conversation event boundary. The tenant ID scopes recovery
+// reads from the durable event store; HTTP authorization and ownership checks
+// remain the server's responsibility and occur before this method is called.
+func (r *Runner) ConversationMessagesSnapshot(conversationID, tenantID string) (ConversationMessageSnapshot, bool) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return ConversationMessageSnapshot{}, false
+	}
+	unlockSequence := r.lockConversationSequence(conversationID)
+	defer unlockSequence()
+	r.conversationEventMu.Lock()
+	defer r.conversationEventMu.Unlock()
+
+	return r.conversationMessagesSnapshotLocked(conversationID)
+}
+
+// conversationMessagesSnapshotLocked is the snapshot half of the
+// conversation replay handshake. Callers hold the conversation sequence and
+// event locks, so the messages and watermark cannot straddle an event
+// publication. tenantID is intentionally not needed here: it scopes durable
+// replay reads, while conversation ownership is checked by the HTTP layer.
+func (r *Runner) conversationMessagesSnapshotLocked(conversationID string) (ConversationMessageSnapshot, bool) {
+	messages, ok := r.ConversationMessages(conversationID)
+	if !ok {
+		return ConversationMessageSnapshot{}, false
+	}
+	r.mu.RLock()
+	watermark, paired := r.conversationMessageWatermarks[conversationID]
+	r.mu.RUnlock()
+	if !paired {
+		// Message mutations (undo, rewind, compaction, or an external store
+		// writer) are not transactionally versioned with the run-event store.
+		// After restart there is therefore no durable proof that a historical
+		// event cursor describes the loaded messages. Full replay is the only
+		// lossless fallback until a durable snapshot/version marker exists.
+		watermark = ""
+	}
+	return ConversationMessageSnapshot{
+		Messages:    copyMessages(messages),
+		LastEventID: watermark,
+	}, true
+}
+
+// conversationSnapshotHasOverlapLocked reports whether another run's lifetime
+// overlaps the run whose messages are being published. Caller holds r.mu for
+// reading and the conversation sequence/event locks, so a newly admitted run
+// cannot publish an event between this check and cursor sampling. Overlap has
+// no single safe conversation cursor: interleaved events may not be represented
+// in this run's message slice, so the snapshot must use empty/full replay.
+func (r *Runner) conversationSnapshotHasOverlapLocked(runID, conversationID string, startedAt time.Time) bool {
+	for otherID, other := range r.runs {
+		if otherID == runID || other == nil || other.run.ConversationID != conversationID {
+			continue
+		}
+		if !isTerminalRunStatus(other.run.Status) || !other.run.UpdatedAt.Before(startedAt) {
+			return true
+		}
+	}
+	return false
+}
+
+// latestDurableConversationEventIDLocked returns the newest event ID visible
+// in the configured durable conversation-event reader. Callers hold
+// conversationEventMu and have already excluded overlapping run lifetimes.
+func (r *Runner) latestDurableConversationEventIDLocked(conversationID, tenantID string) string {
+	rc := r.snapshotConfig()
+	reader, ok := rc.Store.(store.ConversationEventReader)
+	if !ok {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), terminalEventStoreTimeout)
+	defer cancel()
+	after := ""
+	latest := ""
+	for {
+		page, err := reader.GetConversationEvents(ctx, store.ConversationEventFilter{
+			ConversationID: conversationID,
+			TenantID:       strings.TrimSpace(tenantID),
+			AfterEventID:   after,
+			Limit:          conversationEventReplayLimit,
+		})
+		if err != nil || (after != "" && !page.CursorFound) {
+			return ""
+		}
+		for _, event := range page.Events {
+			if event == nil {
+				continue
+			}
+			after = event.EventID
+			latest = event.EventID
+		}
+		if !page.Truncated || len(page.Events) == 0 {
+			return latest
+		}
+	}
+}
+
 // DropConversationCache evicts conversationID from the in-memory conversation
 // mirror so the next ConversationMessages call falls back to the persistent
 // store. It is used after external truncations that mutate the store behind
@@ -4558,6 +5749,10 @@ func (r *Runner) DropConversationCache(conversationID string) {
 	defer r.mu.Unlock()
 	delete(r.conversations, conversationID)
 	delete(r.conversationTouched, conversationID)
+	// External truncation/rewind invalidates the old content-to-event pairing.
+	// A present empty cursor forces safe full replay rather than deriving a
+	// cursor from pre-truncation completed events.
+	r.conversationMessageWatermarks[conversationID] = ""
 }
 
 // GetConversationStore returns the configured conversation store, or nil.
@@ -5322,7 +6517,79 @@ func (r runTranscriptReader) Snapshot(limit int, includeTools bool) htools.Trans
 
 // emit appends one event to the canonical in-memory ledger and mirrors that
 // same event to subscribers and the optional JSONL recorder.
-func (r *Runner) emit(runID string, eventType EventType, payload map[string]any) {
+func (r *Runner) emit(runID string, eventType EventType, payload map[string]any) bool {
+	return r.emitWithPersistence(context.Background(), runID, eventType, payload, false)
+}
+
+func (r *Runner) emitWithPersistence(
+	ctx context.Context,
+	runID string,
+	eventType EventType,
+	payload map[string]any,
+	requirePersistence bool,
+) bool {
+	return r.emitWithTerminalCommitContext(
+		ctx,
+		runID,
+		eventType,
+		payload,
+		requirePersistence,
+		nil,
+		nil,
+	)
+}
+
+// emitWithTerminalCommit runs terminalPersist and terminalCommit after the
+// terminal event is in replay/store/recorder history but before subscribers
+// receive it. The global conversationEventMu is released around recorder and
+// status-store I/O while a per-conversation sequence lock prevents overtaking;
+// unrelated conversation journals remain available. Non-terminal callers pass
+// nil callbacks.
+func (r *Runner) emitWithTerminalCommit(
+	runID string,
+	eventType EventType,
+	payload map[string]any,
+	terminalPersist func(bool),
+	terminalCommit func(),
+) bool {
+	return r.emitWithTerminalCommitContext(
+		context.Background(),
+		runID,
+		eventType,
+		payload,
+		false,
+		terminalPersist,
+		terminalCommit,
+	)
+}
+
+func (r *Runner) emitWithTerminalCommitContext(
+	ctx context.Context,
+	runID string,
+	eventType EventType,
+	payload map[string]any,
+	requirePersistence bool,
+	terminalPersist func(bool),
+	terminalCommit func(),
+) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	r.mu.RLock()
+	initialState := r.runs[runID]
+	conversationID := ""
+	if initialState != nil {
+		conversationID = initialState.run.ConversationID
+	}
+	r.mu.RUnlock()
+	if initialState == nil {
+		return false
+	}
+	unlockSequence := r.lockConversationSequence(conversationID)
+	defer unlockSequence()
 	r.conversationEventMu.Lock()
 	conversationLocked := true
 	defer func() {
@@ -5335,7 +6602,7 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 	state, ok := r.runs[runID]
 	if !ok {
 		r.mu.Unlock()
-		return
+		return false
 	}
 
 	// Drop post-terminal events to preserve forensic ordering. Provider
@@ -5344,32 +6611,140 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 	// appended to the forensic record after it is sealed.
 	if state.terminated {
 		r.mu.Unlock()
-		return
+		return false
 	}
 	journal := newEventJournal(r)
 	delivery, deliver := journal.prepareLocked(state, runID, eventType, payload)
 	publishTerminal := deliver && !delivery.dropped && IsTerminalEvent(eventType)
 	r.mu.Unlock()
 	if !deliver {
-		return
+		return false
 	}
 	if publishTerminal {
-		journal.publishTerminal(delivery)
 		r.conversationEventMu.Unlock()
 		conversationLocked = false
-		r.pruneCompletedRuns()
-		journal.dispatch(delivery)
-		return
+		eventPersisted := journal.persistTerminalEventContext(ctx, delivery)
+		r.conversationEventMu.Lock()
+		conversationLocked = true
+		journal.recordTerminalConversation(delivery)
+		r.conversationEventMu.Unlock()
+		conversationLocked = false
+		if r.terminalBeforeDispatchHook != nil {
+			r.terminalBeforeDispatchHook(runID, eventType)
+		}
+		journal.dispatchContext(context.Background(), delivery, false)
+		if terminalPersist != nil {
+			terminalPersist(eventPersisted)
+		}
+		r.conversationEventMu.Lock()
+		conversationLocked = true
+		if terminalCommit != nil {
+			terminalCommit()
+		}
+		journal.fanoutTerminal(delivery)
+		r.conversationEventMu.Unlock()
+		conversationLocked = false
+		return true
 	}
 	if delivery.dropped {
 		r.conversationEventMu.Unlock()
 		conversationLocked = false
-		journal.dispatch(delivery)
-		return
+		dispatched := journal.dispatchContext(ctx, delivery, requirePersistence)
+		if IsTerminalEvent(eventType) && terminalPersist != nil {
+			// StorageModeNone intentionally suppresses the terminal event; its
+			// status remains persistable by explicit policy rather than being
+			// classified as an AppendEvent failure.
+			r.markTerminalEventSuppressed(runID)
+			terminalPersist(true)
+		}
+		r.conversationEventMu.Lock()
+		conversationLocked = true
+		if IsTerminalEvent(eventType) && terminalCommit != nil {
+			terminalCommit()
+		}
+		r.conversationEventMu.Unlock()
+		conversationLocked = false
+		return dispatched
 	}
-	journal.dispatch(delivery)
+	dispatched := journal.dispatchContext(ctx, delivery, requirePersistence)
 	r.conversationEventMu.Unlock()
 	conversationLocked = false
+	return dispatched
+}
+
+// lockTerminalTransition serializes complete terminal helper lifecycles. The
+// second check happens after acquiring terminalMu so a waiter cannot run audit,
+// profile, cleanup, backup, or pruning side effects after another helper seals
+// the run.
+func (r *Runner) lockTerminalTransition(runID string) (func(), bool) {
+	r.mu.RLock()
+	state := r.runs[runID]
+	r.mu.RUnlock()
+	if state == nil {
+		return nil, false
+	}
+
+	state.terminalMu.Lock()
+	r.mu.RLock()
+	current := r.runs[runID]
+	available := current == state && !state.terminated
+	r.mu.RUnlock()
+	if !available {
+		state.terminalMu.Unlock()
+		return nil, false
+	}
+	return state.terminalMu.Unlock, true
+}
+
+// transitionTerminal publishes exactly one matching terminal event before it
+// makes the terminal status visible. emit returns false for a run already
+// sealed by a competing terminal path, so only the event winner may publish
+// status and persist the matching final run record.
+func (r *Runner) transitionTerminal(
+	runID string,
+	status RunStatus,
+	output, runErr string,
+	eventType EventType,
+	payload map[string]any,
+) bool {
+	if r.terminalTransitionHook != nil {
+		r.terminalTransitionHook(runID, status, eventType)
+	}
+	r.mu.RLock()
+	state := r.runs[runID]
+	r.mu.RUnlock()
+	if state == nil {
+		return false
+	}
+	state.statusMu.Lock()
+	defer state.statusMu.Unlock()
+	r.mu.RLock()
+	current := r.runs[runID]
+	available := current == state && !state.terminated
+	r.mu.RUnlock()
+	if !available {
+		return false
+	}
+	committed := false
+	var finalRun Run
+	prepared := false
+	statusPersisted := false
+	if !r.emitWithTerminalCommit(runID, eventType, payload, func(eventPersisted bool) {
+		finalRun, prepared = r.statusRunSnapshot(runID, status, output, runErr)
+		if prepared && eventPersisted {
+			statusPersisted = r.storeUpdateRunSnapshot(finalRun)
+		}
+	}, func() {
+		if prepared {
+			committed = r.commitStatusSnapshot(runID, finalRun)
+			if committed && statusPersisted {
+				r.markTerminalStatusPersisted(finalRun)
+			}
+		}
+	}) {
+		return false
+	}
+	return committed
 }
 
 // EmitEvent publishes an additive adapter-originated event through the run's
@@ -5548,7 +6923,9 @@ func (r *Runner) closeAuditWriter(runID string) {
 // never propagate back to the run loop. A nil store is a no-op for all calls.
 
 // storeCreateRun persists the initial run record to the configured store.
-// Called once at the start of StartRun and ContinueRun after the run ID is assigned.
+// ContinueRun uses this historical non-fatal helper after assigning its new
+// run ID. StartRun performs its one CreateRun attempt directly before state
+// admission so typed conversation-owner conflicts can stop dispatch.
 func (r *Runner) storeCreateRun(run Run) {
 	rc := r.configForRun(run.ID)
 	if rc.Store == nil {
@@ -5562,38 +6939,39 @@ func (r *Runner) storeCreateRun(run Run) {
 	}
 }
 
-// storeUpdateRun persists the current run state (status, output, error) to the store.
-// Called from setStatus after each status transition.
-func (r *Runner) storeUpdateRun(runID string) {
-	rc := r.configForRun(runID)
-	if rc.Store == nil {
-		return
-	}
-	r.mu.RLock()
-	state, ok := r.runs[runID]
-	if !ok {
-		r.mu.RUnlock()
-		return
-	}
-	run := state.run
-	r.mu.RUnlock()
+func (r *Runner) storeUpdateRunSnapshot(run Run) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), r.terminalStoreTimeoutDuration())
+	defer cancel()
+	return r.storeUpdateRunSnapshotContext(ctx, run)
+}
 
-	sr := runToStoreRun(run)
-	if err := rc.Store.UpdateRun(context.Background(), sr); err != nil {
-		if rc.Logger != nil {
-			rc.Logger.Error("store: UpdateRun failed", "run_id", runID, "error", err)
-		}
+func (r *Runner) storeUpdateRunSnapshotContext(ctx context.Context, run Run) bool {
+	rc := r.configForRun(run.ID)
+	if rc.Store == nil {
+		return true
 	}
+	sr := runToStoreRun(run)
+	if err := rc.Store.UpdateRun(ctx, sr); err != nil {
+		if rc.Logger != nil {
+			rc.Logger.Error("store: UpdateRun failed", "run_id", run.ID, "error", err)
+		}
+		return false
+	}
+	return true
+}
+
+func (r *Runner) terminalStoreTimeoutDuration() time.Duration {
+	if r.terminalStoreTimeout > 0 {
+		return r.terminalStoreTimeout
+	}
+	return terminalEventStoreTimeout
 }
 
 func shouldPersistWorkflowRecap(status RunStatus) bool {
 	return status == RunStatusCompleted || status == RunStatusFailed || status == RunStatusCancelled
 }
 
-// storeAppendEvent persists a single event to the store.
-// Called from emit() after the event is appended to state.events.
-// Executed outside the lock to avoid increasing lock hold time.
-func (r *Runner) storeAppendEvent(ev Event, seq uint64) bool {
+func (r *Runner) storeAppendEventContext(parent context.Context, ev Event, seq uint64) bool {
 	rc := r.configForRun(ev.RunID)
 	if rc.Store == nil {
 		return true
@@ -5610,7 +6988,7 @@ func (r *Runner) storeAppendEvent(ev Event, seq uint64) bool {
 		Payload:   string(payloadJSON),
 		Timestamp: ev.Timestamp,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), terminalEventStoreTimeout)
+	ctx, cancel := context.WithTimeout(parent, r.terminalStoreTimeoutDuration())
 	defer cancel()
 	if err := rc.Store.AppendEvent(ctx, se); err != nil {
 		if rc.Logger != nil {
@@ -5628,6 +7006,25 @@ func (r *Runner) markTerminalEventPersisted(runID string) {
 	if state := r.runs[runID]; state != nil {
 		state.terminalEventPersisted = true
 	}
+}
+
+func (r *Runner) markTerminalEventSuppressed(runID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if state := r.runs[runID]; state != nil {
+		state.terminalEventSuppressed = true
+	}
+}
+
+func (r *Runner) markTerminalStatusPersisted(run Run) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.runs[run.ID]
+	if state == nil || !isTerminalRunStatus(state.run.Status) ||
+		state.run.Status != run.Status || !state.run.UpdatedAt.Equal(run.UpdatedAt) {
+		return
+	}
+	state.terminalStatusPersisted = true
 }
 
 // storeAppendNewMessages appends any messages in the current run state that

@@ -18,6 +18,16 @@ const shellCommandWaitDelay = 5 * time.Second
 
 const maxOutputBytes = 4096
 
+// BoundedExecutionSummary limits terminal output and error summaries written
+// to cron history. It is shared by shell and harness observation paths so a
+// remote/provider failure cannot turn a status endpoint into an unbounded log.
+func BoundedExecutionSummary(summary string) string {
+	if len(summary) <= maxOutputBytes {
+		return summary
+	}
+	return summary[:maxOutputBytes]
+}
+
 // Executor runs a job and returns the result.
 type Executor interface {
 	Execute(ctx context.Context, job Job) (output string, err error)
@@ -74,10 +84,7 @@ func (e *ShellExecutor) Execute(ctx context.Context, job Job) (string, error) {
 	out, err := cmd.CombinedOutput()
 
 	// Truncate output to maxOutputBytes.
-	if len(out) > maxOutputBytes {
-		out = out[:maxOutputBytes]
-	}
-	output := string(out)
+	output := BoundedExecutionSummary(string(out))
 
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {

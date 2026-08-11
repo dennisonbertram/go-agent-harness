@@ -1,5 +1,1060 @@
 # Long-Term Thinking Log
 
+## 2026-08-08 (Issue #1285 — attached lifecycle PTY)
+
+- Command intent: establish the attachment seam necessary for truthful
+  scheduled-conversation TUI proof.
+- User intent: future cron/callback evidence must visibly continue one
+  conversation against the same daemon, not merely combine compatible logs.
+- Success definition: typed attachment, no second daemon, 100x30 sealed
+  frames, and source/lifecycle identity artifacts; normal/race/full checks pass.
+- Guardrails: acceptance-only; no cron/callback scenario, production behavior,
+  native GUI proof, or #1010 claim.
+- Outcome: a lifecycle-derived attachment now carries source SHA, starts only a
+  100x30 harnesscli PTY, seals identity-linked frames after API-known runs, and
+  keeps the collector's artifacts inside the owned bundle. The discovered
+  package-cwd artifact leak has a two-message regression.
+- Review repair: action sealing is now bound to the exact active token, so a
+  stale handle cannot credit prior bytes after another action starts. Artifact
+  labels/root are fail-closed before any output write; this preserves the
+  identity claim rather than merely avoiding filesystem inconvenience.
+- Verification correction: the 45-second scenario deadline begins after the
+  disposable daemon/TUI binaries are built. It measures owned lifecycle and
+  rendered continuation, while a full-suite instrumentation slowdown during
+  setup remains observable as a build failure rather than a false PTY result.
+
+## 2026-08-07 (Issue #1268 — PTY terminal artifact integrity)
+
+- Command intent: repair the acceptance runner's terminal-drain ordering so
+  successful real TUI evidence cannot lose final rendered bytes.
+- User intent: GUI/TUI/harness verification must prove feature intent from
+  complete rendered artifacts, not merely a completed child process.
+- Success definition: both successful runners drain to collector EOF, seal the
+  final complete frame, and only then clean up the master; Linux EIO remains a
+  clean post-byte EOF and failure paths remain prompt.
+- Non-goals: production TUI/harness behavior, tool semantics, API/SSE formats,
+  sleeps, timeout inflation, or fixture-only scope.
+- Outcome: both acceptance-runner owners now defer success cleanup and the
+  Linux integration fixture follows the same ownership contract. Review added
+  a tested master-before-process error-cleanup boundary and removed the
+  fixture timeout. Revised focused normal/race is green; full regression and
+  hosted Linux proof remain required before merge.
+
+## 2026-08-07 (Issue #1264 — Runner Test Single-Lock Snapshots)
+
+- Command intent: remove the recursive `Runner.mu.RLock` pattern that blocks
+  GitHub race CI while preserving mandatory child policy assertions.
+- Success definition: both affected child lookups copy asserted data under one
+  read lock; targeted repeated race, package race, and full regression pass;
+  #1263 race CI can rerun without a waived timeout.
+- Guardrails: test/docs only; do not change production Runner locking, pruning,
+  scheduler, persistence, API, clients, or callback/cron behavior.
+
+## 2026-08-07 (Issue #1260 — Resumed TUI Fresh Reply Ownership)
+
+- Command intent: make the resumed TUI visibly retain callback history and
+  render the next local assistant reply despite concurrent run and
+  conversation SSE subscriptions.
+- Success definition: same-ID copies render once; a conversation copy before
+  or after `RunStartedMsg`, a run terminal before a conversation final, and a
+  late prior-run terminal all retain the new reply and transcript.
+- Guardrails: TUI reducer/bridge identity only; no callback scheduler,
+  harness API/persistence contract, native GUI, or schema change.
+- Test-first evidence: the unpatched reducer lost `FRESH_AFTER_LATE_CALLBACK`
+  when a delayed callback event plus unowned terminal finalized the fresh
+  accumulator and its local copy was ID-deduplicated.
+
+## 2026-08-07 (Issue #1256 — Trusted Rewind Workspace Metadata)
+
+- Command intent: make default and named conversation rewind points usable without weakening destructive restore trust.
+- Success definition: metadata precedes capture, fork inherits it, empty owners stay 404, and focused/full/30x100 PTY evidence passes.
+- Guardrails: no CWD/client path inference and no schema migration.
+
+## 2026-08-07 (Issue #1246 — persisted TUI session rehydration)
+
+- Command intent: make `/sessions` selection restore and continue the durable
+  conversation in the real TUI without revising the merged replay protocol.
+- User intent: durable sessions must be reviewable, searchable, and usable for
+  the next message rather than merely visible in a picker.
+- Success definition: Enter reaches `SessionPickerSelectedMsg`; selected
+  history renders once, `/search` finds it, a subsequent turn stays in the
+  selected conversation, focused normal/race and full regression pass, and a
+  30x100 exact-head PTY retains artifact evidence.
+- Guardrails: reuse existing atomic replay/SSE ownership and legacy fallback;
+  no persistence/API, native GUI, provider, or replay-protocol redesign.
+- Outcome: the global Submit interception was the sole routing bypass. The
+  picker now wraps its component selection to the model message; that message
+  starts the atomic replay boundary, while only unsupported servers fall back
+  to durable history. The direct PTY rendered `FIRST_REPLY`, one-result search,
+  and `POST_SELECTION_REPLY` under the selected durable conversation.
+
+## 2026-08-07 (Issue #1247 — Cron Core-Tool Documentation and Registry Regression)
+
+- Command intent: make the documented/default-registry cron contract match the
+  production implementation: all eight cron CRUD/history tools are direct
+  initial-turn core tools, not deferred discovery candidates.
+- User intent: prevent an agent from wasting its first turn trying
+  `find_tool(select:cron_create)` when direct cron creation and lifecycle
+  management are already available.
+- Success definition: each of `cron_create`, `cron_list`, `cron_get`,
+  `cron_update`, `cron_history`, `cron_delete`, `cron_pause`, and
+  `cron_resume` is initial-run visible and absent from deferred definitions;
+  website/operator docs say the same; normal/race/full gates pass.
+- Guardrails: docs and default-registry regression coverage only. Do not alter
+  `find_tool`, tool constructors, scoped ownership/authorization, cron
+  execution, persistence, API, TUI, or GUI behavior.
+
+## 2026-08-07 (Issue #1236 — Plural Workflow Subscribe Handoff)
+
+- Command intent: eliminate the deterministic persisted-history/live-channel
+  gap in plural workflow subscriptions without serializing O(history) reads.
+- User intent: workflow, cron, callback, and client observers must not lose a
+  terminal or progress event simply because they subscribed concurrently.
+- Success definition: each event is observed exactly once across history/live,
+  initialization bursts exceed channel capacity without loss, Store errors and
+  cancellation leave no subscriber residue, fresh engines replay existing
+  durable history and allocate the next sequence, and normal/race/stress/full
+  gates pass on a separate closing PR.
+- Guardrails: adapt only the singular engine watermark plus pending-buffer
+  pattern plus a read-only Store high-water primitive; no timeout increase,
+  broad lock, schema change, or server SSE terminal-history repair. The latter
+  is separately tracked as #1237.
+
+## 2026-08-06 (Issue #1224 — deterministic script descendant cleanup)
+
+- Command intent: make the descendant cleanup regression deterministic under
+  full race load without weakening the production timeout/process-group path.
+- Success definition: a child is proven started before test-parent cancellation,
+  early handler exit reports its actual result, cancellation completes promptly,
+  and the descendant dies; the ordinary configured-timeout test remains.
+- Guardrails: tests/docs only; no `loader.go`, API, client, persistence, or
+  timeout-policy change. Rollback is a single test/docs revert.
+## 2026-08-06 (Issue #1222 — semantic working-memory tool results)
+
+- Command intent: make cron/callback-style and ordinary agent continuations
+  receive the original working-memory JSON type through the core tool and real
+  API/SSE transcript path.
+- User intent: preserve the durable memory contract while making a continued
+  conversation able to reason over the value it stored, not a double-encoded
+  representation.
+- Success definition: valid string/object/array/number/bool/null values are
+  semantic in get/list; malformed legacy storage remains readable; SQLite
+  reopen preserves canonical snippets; an actual same-conversation harnessd
+  continuation exposes the corrected value over SSE.
+- Guardrails: no schema/migration, no client rewrite, no cron/callback change,
+  and no change to missing-key result shape. Rollback is one code revert with
+  no data repair.
+
+## 2026-08-06 (Issue #1220 — owner-created native rendered driver)
+
+- Command intent: turn the existing owner lifecycle and deterministic fixture
+  into one real, fail-closed rendered two-message native scenario foundation.
+- User intent: make forward progress toward trustworthy GUI proof without ever
+  attaching to user processes, accepting TCC prompts, or relabeling headless
+  evidence as rendered success.
+- Success definition: a non-prompting platform permission gate precedes effects;
+  only owner-created children are driven; screenshot, AX, SSE, API/store, and log
+  artifacts are retained and hash/correlation validated; cleanup is explicit;
+  focused/race/Swift/full-regression gates pass before commit and push.
+- Guardrails: exactly one core scenario; fake provider and private loopback only;
+  no cron/callback rendered claim, product UI/API change, broad kill, permission
+  request, #1089 completion, or #1010 completion.
+## 2026-08-06 (Issue #1221 — geometry-aware fresh PTY conversation)
+
+- Command intent: establish the first official fresh multi-turn PTY primitive
+  for the #1088 slash-command matrix, with visible terminal evidence and
+  durable correlation.
+- User intent: distinguish a real GUI/TUI transcript failure from a broken
+  harness setup, without claiming that every command or native matrix is now
+  proven.
+- Success definition: explicit 30x100 launch on BSD/Linux forms; visible
+  FIRST_REPLY, one-result `/search`, and SECOND_REPLY from one conversation;
+  exact-once fake SSE lifecycle and API/store records; hashed artifacts and
+  normal/race/full gates.
+- Guardrails: test-only runner changes, isolated fake provider, no runtime
+  TUI/API/cron/callback behavior, one closing PR, and no merge from this slice.
+- Rollback: revert the isolated acceptance/docs commit; it owns no deployed
+  state or data migration.
+
+## 2026-08-06 (Issue #1215 — harnessd fixture causal readiness)
+
+- Command intent: repair the aggregate race baseline by making three harnessd
+  fixtures wait on their owned lifecycle/listener evidence rather than a short
+  speculative startup deadline.
+- User intent: do not let test noise obscure real API/TUI/native GUI, cron, or
+  callback convergence; preserve behavioral assertions and leave runtime
+  lifecycle semantics untouched.
+- Success definition: malformed catalog is still nonfatal through actual
+  daemon health and clean shutdown; cleaner startup/cancellation and delayed
+  exit acknowledgement remain asserted; focused normal/race, package race,
+  and full regression pass.
+- Guardrails: one test/docs-only issue/PR, no runtime timeout change, no
+  reserve-close-rebind, no blind wait increase, no client/API/tool change.
+- Rollback: revert the isolated fixture/docs commit; no data repair or deploy
+  rollback exists.
+
+## 2026-08-06 (Issue #1214 — Source-Workflow Invalid-Protocol Handshake)
+
+- Command intent: remove the Linux scheduling race from exactly the
+  invalid-protocol-after-result fixture without broadening source-workflow
+  behavior.
+- User intent: accepted regression evidence must prove the semantic failure it
+  names rather than a pipe-timing accident.
+- Success definition: the child consumes the ordinary `start` message, emits a
+  valid terminal result, then causes the existing late-message error; focused
+  normal/race and full regression pass in one test-only closing PR.
+- Non-goals: source runtime/SDK changes, protocol changes, clients, #1209
+  native scenarios, and any product behavior.
+- Guardrails: preserve the explicit raw late `log`, no sleeps or retry loops,
+  and do not merge from this slice.
+
+## 2026-08-06 (Issue #1212 — Explicit Real-Provider Test Opt-In)
+
+- Command intent: make normal repository regression deterministic and offline
+  even when provider credentials exist, while retaining an intentional real
+  provider model-list smoke command.
+- User intent: eliminate flaky external timeouts and accidental provider calls
+  without losing a documented operator verification lane.
+- Success definition: a pure no-network regression proves credential-only
+  execution is disabled; focused normal/race and the complete regression gate
+  pass without contacting providers; the only live command requires both an
+  exact flag and credential.
+- Guardrails: test-only boundary; no provider implementation, endpoint,
+  credentials, retries, catalog/routing, persistence, API, CLI, UI, or
+  deployment changes; never execute the paid live lane during this task.
+
+## 2026-08-06 (Issue #1210 terminal SSE settlement)
+
+- Command intent: make the real run-scoped SSE API internally consistent when
+  a terminal event is replayed while terminal status persistence is still in
+  flight; do not misclassify this as run-agent behavior or hide it in an
+  acceptance retry.
+- Success definition: a deterministic blocked terminal `UpdateRun` proves no
+  completed/failed/cancelled terminal frame exits `/events` while GET is
+  non-terminal; release yields exactly one matching terminal frame and GET
+  state, including `Last-Event-ID` replay.
+- Guardrails: preserve journal order, live delivery, wire shape, auth, and
+  provider behavior; use request cancellation rather than timeout polling.
+
+## 2026-08-05 (Issue #1204 real PTY continuation evidence)
+
+- Command intent: prove the actual terminal `/resume` and `/continue` paths,
+  rather than inferring them from fake-only reducers or package tests.
+- User intent: retain auditable evidence that a visible continuation belongs to
+  the intended source conversation and durable child run, while keeping test
+  state and any cleanup safely outside the checkout and user configuration.
+- Success definition: a fake-only, disposable daemon yields a source and a
+  distinct same-conversation child; the typed command, interpreted visible
+  reply, one child delta, completed SSE, and API/store probe are all retained
+  and hash-bound. Focused normal/race and full regression must pass before a
+  completion claim.
+- Scope decision: fix fixture observability (readiness, ANSI/alternate-screen
+  state, blank redraw, Unicode cells, artifacts, and process cleanup) without
+  changing production provider, API, TUI, persistence, or client behavior.
+- #1207 repair decision: preserve BSD direct `script` invocation on Darwin,
+  but use util-linux `-c` with a single POSIX-quoted command on Linux. Shell
+  interpolation is not permitted; readiness must report an owned child exit
+  immediately rather than waiting out a rendering timeout. Focused normal and
+  race coverage and the full regression passed with `TMPDIR=/private/tmp`
+  (`85.3%`, zero uncovered functions); independent review and hosted CI remain
+  merge gates.
+- Review follow-up: completion observation must cover every semantic wait, not
+  only the initial rendered screen. The child-discovery poll now fails promptly
+  on the owned PTY exit and has a real post-input regression.
+
+## 2026-08-05 (Issue #1199 synchronous durable authored skills)
+
+- Command intent: eliminate watcher timing from create-to-verify and make every verification path durable.
+- Success: created skills are immediately registry-visible; verification writes SKILL.md then reloads; disk format, exclusive creation, and pack separation remain unchanged.
+- Rollback: revert lifecycle wiring without a migration.
+
+## 2026-08-05 (Issue #1201 API/SSE evidence-runner foundation; parent #1087)
+
+- Command intent: execute registry-derived safe API cases through real harnessd
+  HTTP/SSE while binding the inventory hash, ordered actions, raw lifecycle
+  evidence, independent durable-state probes, and cleanup.
+- User intent: never call a tool-event or transport response proof of feature
+  intent, and never represent an incomplete tool catalog as all-tool coverage.
+- Success definition: every available API inventory item has a reviewed safe
+  case or runtime-backed N/A; each pass has run/conversation/event IDs, raw
+  SSE/terminal artifacts, typed external probe, verified cleanup, and a full
+  real-daemon fixture suite; rejection cases prove no mutation.
+- Guardrails: no PTY/native/cron convergence claim, no direct manager calls,
+  no real credentials by default, and no product repair hidden in the runner.
+## 2026-08-05 (Issue #1089 — Rendered Native Acceptance)
+
+- Command intent: make native acceptance prove an installed rendered UI path,
+  not a headless client, ToolWalk result, or assistant reply.
+- User intent: correlate visible ordered messages/controls with raw SSE/API/
+  SQLite state while preserving existing apps and processes.
+- Success definition: a hash-bound native overlay maps every applicable item or
+  terminal-only N/A, and a real isolated driver produces digest-bound proof
+  artifacts with independent postconditions and verified cleanup.
+- Guardrails: no GUI launch/foreground without operator approval; no reuse or
+  termination of pre-existing GoCode/harnessd; cron/callback convergence stays
+  in #1010.
+- Review repair success definition: qualifying native evidence is a one-shot
+  manifest with exactly one PASS per applicable case, canonical contained
+  regular artifacts, and launcher-owned nonce/temp/app-build/loopback-child
+  daemon provenance. Generic assembled reports remain history-preserving.
+
+## 2026-08-05 (Issue #1194 strict porcelain blame parsing)
+
+- Command intent: make `git_blame_context` report real line/commit identity
+  when porcelain includes rename/rewrite metadata, without making optional
+  commit-subject enrichment a tool failure.
+- User intent: deep-git tool output must remain trustworthy when used in a
+  multi-message agent conversation and transcript.
+- Success definition: only exact 40/64-hex, positive-position porcelain
+  headers produce records; `previous`/malformed metadata cannot overwrite them;
+  failed/timed-out `git show` output is never rendered; literal, rewrite, and
+  fake-provider API/SSE evidence all pass.
+- Guardrails: no schema, persistence, auth, profile, TUI/GUI, or #1195
+  diff-range change.
+
+## 2026-08-05 (Issue #1187 isolated profile CRUD)
+
+- Command intent: make documented profile CRUD reachable in real harnessd
+  without mutating a user's real profile directory during verification.
+- User intent: every agent/API profile path must work at the production
+  composition boundary, not merely in a direct package test.
+- Success definition: one absolute isolated directory drives catalog discovery,
+  HTTP create/read/update/read/delete/not-found, and fake-provider tool turns;
+  project > user > built-in reads, authentication, built-in protection,
+  traversal validation, and atomic writes remain intact.
+- Guardrails: no HOME override, schema migration, or UI profile-selection
+  semantics change.
+## 2026-08-05 (Issue #1188 selected ordinary-run profile policy)
+
+- Command intent: make a profile selected in the TUI govern the next ordinary
+  interactive/API run rather than merely recording its name for isolation/MCP.
+- User intent: a visible profile selection must truthfully constrain tools and
+  permissions and shape the resulting multi-message conversation.
+- Success definition: a selected profile composes model, budgets, prompt,
+  reasoning, tools, explicit capability denials, and isolation before ordinary
+  admission; explicit request values override only non-safety defaults, while
+  profile restrictions remain upper bounds. Startup and subagent paths remain
+  their existing owners.
+- Guardrails: no profile CRUD/schema change, no global profile mutation, and
+  no rollback/migration beyond reverting the admission composition.
+- Review extension: profile capability restrictions must remain immutable
+  through `ContinueRun` and dynamic registry replacement; external MCP RPC is
+  a network capability and must fail closed under explicit net denial.
+
+## 2026-08-05 (Issue #1174 TUI `/init` SSE persistence)
+
+- Command intent: repair `/init` so a real final SSE lifecycle writes the generated workspace instructions.
+- User intent: visible generated instructions must become the next turn's real project context, without silently overwriting a tool-created file.
+- Success definition: only a matching accepted run's `assistant.message` plus successful terminal commits atomically; failed/fatal/foreign terminals and file appearance never write.
+- Guardrails: TUI/workspace-write only; no server, provider, profile, GUI, or user-global change.
+
+## 2026-08-05 (Issue #1183 replay SSE fixture)
+
+- Command intent: restore the complete durable `/replay run_*` test contract without changing the intentional returned-run SSE subscription.
+- User intent: a replayed durable conversation must visibly run through terminal completion, while rollout-file simulation stays one-shot.
+- Success definition: the fixture validates the durable POST and returned run SSE `Accept` request, consumes a terminal event and close, and proves simulation makes no event-stream request.
+- Guardrails: test/docs only; no production replay route, TUI behavior, cron/callback, or cancellation-seam change.
+
+## 2026-08-05 (Issue #1175 bootstrap path identity)
+
+- Command intent: repair the macOS-only bootstrap provenance test baseline without relaxing bootstrap validation.
+- Success definition: fixture expectations use canonical filesystem identity, while every child-worktree revision and dirty-metadata assertion remains unchanged.
+
+## 2026-08-05 (Issue #1177 harnessd race-readiness fixtures)
+
+- Command intent: remove the two hosted race-only harnessd readiness failures
+  without weakening production startup behavior or broadening timeouts.
+- User intent: a red baseline must be repaired before it can block credible
+  cron/callback and transcript acceptance work.
+- Success definition: the two unchanged memory-configuration fixtures bind
+  `127.0.0.1:0`, discover only the listener actually acquired by the daemon,
+  await its health and real signal shutdown, and pass focused normal/race plus
+  the full serial regression gate.
+- Guardrails: test/docs only; no daemon, callback, cron, provider, API, TUI,
+  GUI, timeout, or test-serialization change.
+
+## 2026-08-05 (Issue #1173 durable run replay)
+
+- Command intent: make `/replay <run-id>` execute a completed durable run without changing explicit rollout-file simulation.
+- User intent: a run advertised by `/runs` visibly replays in its same conversation with fake/provider routing preserved.
+- Success definition: authenticated terminal durable source resolves memory-first then store, starts a distinct same-scope/model/effective-provider run, and TUI receives `RunStartedMsg`; unknown/nonterminal/cross-tenant paths remain safe.
+- Guardrails: no GUI, fallback-list policy, rollout redesign, or merge.
+
+## 2026-08-04 (Issue #1169 Bootstrap VCS Provenance)
+
+- Command intent: repair the clean-worktree bootstrap failure exposed by the
+  acceptance provenance guard without relaxing that guard.
+- User intent: an exact merged source checkout must produce an exact clean
+  executable that can be trusted for cron/callback end-to-end proof.
+- Success definition: a disposable linked child with a dirty parent produces
+  a binary stamped only with the child HEAD and `vcs.modified=false`; inherited
+  external Git state cannot redirect the build; a default origin-backed run
+  uses the fetched remote commit rather than local stale `main`; invalid build
+  metadata removes the candidate and fails bootstrap.
+- Guardrails: explicit `-buildvcs=true`, no synthetic VCS flags, preserve
+  #1165, and do not change provider, scheduler, API, TUI, or macOS behavior.
+
+## 2026-08-04 (Issue #830 Anthropic Retry Fixture Budget)
+
+- Command intent: remove the pre-existing full-coverage retry-budget flake on
+  one reviewable PR without changing production retry behavior.
+- User intent: keep the 429/503 retry contract trustworthy under real suite
+  contention, rather than merely bypassing a red test.
+- Success definition: both status tests retain their two-attempt success
+  assertions while their package-local fixture has enough bounded scheduling
+  headroom; focused normal/race stress, the full Anthropic package, and the
+  full regression gate pass.
+- Guardrails: issue #830 only, strict historical red characterization, no
+  production retry algorithm/default/config/API change, and no merge.
+## 2026-08-04 (Issue #1165 acceptance runtime provenance)
+
+- Command intent: prevent acceptance from executing a stale or dirty harnessd
+  artifact, record authoritative evidence, and keep the repair to one
+  unmerged closing PR.
+- User intent: no false acceptance result or real-provider cost may arise from
+  a binary that differs from the requested clean source revision.
+- Success: launcher checks `go version -m` before daemon/provider dispatch,
+  rejects dirty/mismatched/missing VCS metadata, records raw build info plus
+  SHA-256 after success, and has deterministic no-start stale coverage plus a
+  matching clean acceptance fixture.
+- Guardrails: no provider routing, scheduler, credentials, API, persistence,
+  GUI, or automatic retry/rebuild changes; do not merge this branch.
+
+## 2026-08-04 (Issue #1161 scheduled routing preservation)
+
+- Command intent: fix only #1161 from `c991a725` in one unmerged PR by carrying
+  safe model/provider/fallback policy through every scheduled-run boundary.
+- User intent: a cron or callback accepted from a fallback-enabled origin must
+  produce its same-conversation assistant continuation, not fail after firing.
+- Success: embedded/remote cron and durable callbacks replay model, provider,
+  allow-fallback, and ordered fallback providers exactly; idempotency includes
+  those values; legacy defaults, tenant/auth/scope, and secret handling remain.
+- Guardrails: strict red-green TDD, no #1162 work, no catalog/UI redesign, no
+  credentials, no merge, and no green claim without focused race plus full gate.
+## 2026-08-04 (Issue #1162 — Authoritative fake-provider routing)
+
+- Command intent: make explicit `HARNESS_PROVIDER=fake` deterministically win over catalog model routing on one unmerged closing PR.
+- User intent: local API/TUI/GUI acceptance must never leak prompts or costs to a configured real provider while retaining catalog metadata.
+- Success definition: daemon assembly proves catalog-known and absent fixture models complete through fake even with `AllowFallback=true` and a requested OpenAI fallback, catalog metadata remains usable, and the configured real client is never called; a retryable fake error also never invokes that fallback; focused normal/race and full regression are green.
+- Non-goals: catalog disabling, provider credential redesign, API/schema changes, and normal non-fake catalog routing changes.
+- Guardrails: strict red-green test-first evidence, fresh worktree at current origin/main, exact #1162 closing reference, no merge.
+
+## 2026-08-04 (Issue #1158 conversation history watermark foundation)
+
+- Command intent: give selected-conversation clients an exact event identity
+  paired with the history they render, so later cron/callback turns are judged
+  by identity rather than response text.
+- User intent: a scheduled continuation that repeats historical text must still
+  visibly advance the TUI conversation once, while reconnect/overlap replay
+  remains duplicate-free.
+- Success for this dependency slice: Runner atomically returns copied messages
+  plus a trustworthy cursor; `/messages` exposes it tenant-safely; the TUI
+  decodes new and old servers. #1148 then owns initial SSE use, bounded dedupe,
+  and the live same-text behavior proof.
+- Guardrails: do not transplant #1148, claim atomicity across unrelated store
+  transactions, add content identity, or skip events when recovery is uncertain.
+
+## 2026-08-04 (Issue #1156 MCP HTTP test transport isolation)
+
+- Command intent: make the full regression gate trustworthy by removing
+  process-global HTTP idle-pool sharing from MCP test fixture construction.
+- User intent: a flaky 401/403 test must diagnose a real authentication
+  regression, not be hidden by unrelated `httptest` teardown.
+- Success definition: every `NewHTTPConnForTest` client owns a clone of the
+  default transport configuration; deterministic tests prove the legacy global
+  coupling and preserve strict typed-auth coverage; complete race and full
+  regression gates pass without changing production transport behavior.
+- Guardrails: test/docs only, no retry or error remapping changes, and no claim
+  that default idle-pool cleanup deterministically cancels active requests.
+
+## 2026-08-04 (Issue #1148 TUI scheduled continuation)
+
+- User intent: scheduled cron/callback work must visibly advance the selected
+  terminal conversation, including after reconnect, without transcript replay or
+  wrong-conversation events.
+- Success: authenticated, cursor-aware conversation SSE owns idle updates while
+  active run streams retain sole terminal finalization ownership.
+
+## 2026-08-04 (Issue #1149 cron execution-history API)
+
+- Command and user intent: operators need durable scheduled-run evidence through
+  the API without exposing another tenant's job history.
+- Success: `runs:read` callers can read owned executions through the canonical
+  route; authorization precedes backend history access and pagination is bounded.
+
+## 2026-08-04 (Issue #1152 — Harnessd Race-Stable Fixtures)
+
+- Command intent: repair the five hosted race-only `cmd/harnessd` baseline
+  fixtures without changing default callback startup or durable persistence.
+- User intent: do not waive red CI or treat scheduler delivery as complete
+  while unrelated daemon lifecycle tests are timing-sensitive.
+- Success definition: the five non-callback fixtures explicitly opt out of
+  callbacks and use causal provider/cleaner/listener readiness rather than
+  sleeps; repeated normal/race, complete package race, and full regression pass.
+- Guardrails: no production callback, API, persistence, scheduler, GUI, or TUI
+  behavior change; callback-enabled coverage must remain.
+
+## 2026-08-03 (Issue #1144 — Transient Callback Heartbeat Fixture)
+
+- Command intent: remove the hosted race-only heartbeat fixture flake without
+  changing callback ownership, retry, or lease semantics.
+- User intent: callback/cron quality gates must prove a delayed continuation
+  retains its durable identity rather than passing due to arbitrary timing.
+- Success definition: a test-owned, real-Store-delegating seam observes one
+  injected transient failure and the next successful durable renewal; the
+  fixture proves a later persisted deadline under the original token and
+  attempt one, with cleanup unable to strand dispatch shutdown.
+- Guardrails: test/docs only, one-second fixture lease, bounded causal waits,
+  no raw sleep or timeout extension, focused normal/race stress, and full
+  regression before draft PR.
+
+## 2026-08-03 (Issue #1140 — Matrix Listener Identity)
+
+- Command intent: repair the independently observed harness matrix race without
+  broadening the #1138 native-control slice.
+- User intent: accept no red baseline while retaining real concurrent startup
+  coverage rather than serializing or weakening matrix tests.
+- Success definition: each matrix check probes the listener its own daemon
+  actually acquired; custom skill loading stays an endpoint-level proof; the
+  listener default preserves production startup behavior.
+- Guardrails: strict red-green TDD, issue-only PR, no API/config/persistence
+  change, no arbitrary timeout increase, and full normal/race regression.
+
+## 2026-08-03 (Issue #1124 retry-wait recovery fixture)
+
+- Command intent: repair the hosted retry-wait recovery baseline without
+  changing a callback's durable timer, retry policy, or ownership semantics.
+- User intent: a delayed continuation must not start before its durable retry
+  deadline, and after the deadline must continue the same conversation/run
+  exactly once with no leaked claim identity.
+- Success definition: a test-only mutex-protected fake clock plus manual
+  pre/post-deadline delivery proves the untouched retry checkpoint and the
+  later same-run admission; normal/race/package/full gates are green.
+- Guardrails: no product source, API, SQLite schema, config, client, UI, or
+  lifecycle change; no sleep/timeout increase or synthetic production defect.
+## 2026-08-03 (Issue #1136 immutable timeout authority)
+
+- Command intent: make a timed-out submitted A independently and exactly
+  cancellable after B/C selection without allowing the timeout path to affect
+  B or C.
+- Success: only a Runner deadline-minted opaque ticket can consume A's
+  started-only capability once; terminal, failure, reset, and load revoke it;
+  reset/load physically stop every A/C submission stream. Direct deterministic
+  proof complements #1133 policy waits.
+- Non-goal: reintroducing run-ID lookup, changing server cancellation, or
+  mutating selected-run UI from timeout transport.
+
+## 2026-08-03 (Issue #1133 intent correction)
+
+- Command intent: a callback/cron continuation must visibly continue B while
+  the initiating tool walk truthfully observes its own submitted A outcome.
+- Success: B displacement is sticky for control authority; A terminal/failure
+  after B is a valid A verdict; an A deadline cancels only A and produces no B
+  action or visible-state mutation.
+- Non-goal: making B a hidden fallback, treating displacement as success, or
+  using shared `currentRunID` to judge/control A.
+
+## 2026-08-03 (Issue #1130 submission-local outcomes)
+
+- Command intent: repair the #1128 review findings without weakening the
+  native external-run ownership fences.
+- User intent: an initiating A turn must receive its real terminal/failure
+  outcome, while a visible callback/cron B remains correct and controllable.
+- Success: barrier-proven A terminal/failure survives B selection; late A work
+  cannot change B; ToolWalk cancels only a genuine A timeout; reset/load/EOF
+  are deterministic ownership boundaries.
+- Guardrails: stacked native/ToolWalk-only change; preserve #1122/#1125
+  expected-run guards and #1128 A-only transcript/displacement behavior.
+
+## 2026-08-03 (Issue #1128 submitted-run ownership)
+
+- Command intent: close the remaining native composer/ToolWalk A-to-B ownership
+  gaps identified by Sol review after #1125.
+- User intent: an agent-walk or user click must continue/control the submitted
+  conversation turn, never a later cron/callback continuation that happens to
+  be visually selected.
+- Success: immutable composer action selection plus an A-only handle whose
+  identity comes only from `startRun`, with deterministic zero-B-action proof,
+  retained A terminal verdict, and safe failure/reset behavior.
+
+## 2026-08-03 (Issue #1125 native action-owner fence)
+
+- Command intent: repair the remaining stale native action paths identified in
+  Sol review of #1123 as a single stacked slice.
+- User intent: no scheduled continuation receives Stop, steer, or timeout cancel
+  meant for an earlier rendered run.
+- Success: expected-run guards and captured client identities with deterministic
+  zero-B-endpoint proof, while #994 and #1122 semantics remain intact.
+
+## 2026-08-03 (Issue #1122 Native Interactive-State Ownership)
+
+- Command intent: prevent a stale approval, plan, or input affordance from
+  directing a user decision to a newer scheduled continuation.
+- User intent: cron/callback conversation continuation must be visibly and
+  safely controllable, not merely runnable through the harness.
+- Success definition: every pending affordance carries its exact run identity;
+  owner changes and retirement synchronously erase stale UI; captured stale
+  actions cannot start a B request; selected B survives foreign terminal replay.
+- Guardrails: stack on #1118, preserve #994 delayed acknowledgement ownership,
+  change no server/TUI/callback behavior, and keep a deterministic TDD record.
+
+## 2026-08-03 (Issue #1007 External Scheduled-Run Control Rebase)
+
+- Command intent: make scheduled callback/cron continuations visibly active
+  and safely actionable in native chat without regressing main's accounting or
+  acknowledged control behavior.
+- User intent: a deployment-watch continuation must carry its conversation
+  forward in the GUI, including visible status and correct Stop/approval/input/
+  steering targeting—not merely fire on the harness.
+- Success definition: selected external runs visibly resume activity; all
+  actions target only that run; stale/replayed/foreign events cannot resurrect
+  or displace it; full macapp/repository and later live acceptance evidence
+  pass before merge/proof claims.
+- Guardrails: no server protocol/persistence changes, no status fallback that
+  hides scheduled state, and no account mutation before control authority.
+
+## 2026-08-03 (Issue #1120 blocked heartbeat fixture)
+
+- Command intent: repair the callback test proof exposed by hosted race without
+  weakening the blocking-heartbeat assertion or changing production semantics.
+- User intent: a callback continuation must retain real process fencing and a
+  truthful durable handoff under load; a passing timing shortcut is not proof.
+- Success definition: a deterministic test-only sequence proves fencing,
+  deadline cancellation, exact-token `retry_wait` release, stable attempt/run
+  linkage, and zero replacement admission; required normal/race/full gates
+  pass from the exact stacked tree.
+- Guardrails: one-second test lease only, no product-source changes, preserve
+  the blocked renewal and all existing callback ownership invariants.
+
+## 2026-08-03 (Issue #1112 — Authenticated Cron Assembly Cost Isolation)
+
+- Command intent: diagnose and repair the race-only authenticated cron
+  remote-start assembly timeout without increasing deadlines or adding a blind
+  retry.
+- User intent: keep the cron/callback delivery chain genuinely green while
+  preserving authenticated correlation, idempotency, one start, durable run
+  linkage, and terminal conversation observation.
+- Success definition: the assembly test uses a real random bearer and real
+  harnessd middleware but a deliberate minimum-cost test hash; a deterministic
+  assertion prevents production-cost bcrypt from re-entering this bounded
+  fixture; focused normal/race stress and the full regression gate pass.
+- Guardrails: no production bcrypt, scheduler, remote starter, timeout, retry,
+  endpoint, persistence, callback, or client behavior changes.
+- Delivery status: [PR #1113](https://github.com/dennisonbertram/go-code/pull/1113)
+  merged with `Closes #1112` into `main` as `62becd39`.
+
+## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
+
+- Command intent: make the native callback replay regression deterministic
+  without changing product behavior or masking the asynchronous reconcile path.
+- User intent: a delayed callback/cron must be visibly durable in the GUI after
+  it has advanced the conversation, not merely terminal in harness state.
+- Success definition: C's terminal ownership/accounting is proven before a
+  fixture gate releases its durable message response, then the test awaits the
+  rendered C assistant row while retaining C state/accounting. The two adjacent
+  stale-terminal tests wait for rendered durable A/B rows rather than raw
+  request issuance.
+- Guardrails: test fixture only; no sleeps, raw transport-completion fences,
+  generic reconcile generation, API/persistence/TUI behavior changes, or merge.
+## 2026-08-03 (Issue #1106 Callback Claim Ownership)
+
+- Command intent: repair the hosted callback-manager race without widening the
+  callback tool or accepting duplicate durable conversation turns.
+- User intent: a one-shot callback must visibly continue its conversation once
+  even when two harness managers and SQLite contention overlap.
+- Success definition: per-connection SQLite contention settings, an atomic
+  token-verified claim/reclaim result, bounded pre-claim retries, and a
+  heartbeat that only abandons after definitive ownership loss or its last
+  confirmed deadline. Focused normal/race and the full regression gate must
+  pass before one closing PR is offered.
+- Non-goals: distributed exactly-once external effects after process crash,
+  cron changes, callback schema changes, or merging this branch.
+- Review-repair success definition: after deadline cancellation, the same
+  single manager must re-arm its token-fenced `retry_wait` rather than strand
+  it. Expired/NULL dispatch recovery requires a process-lifetime workspace
+  fence that is released by actual process loss, not merely a listener or a
+  callback lease timestamp. Preserve no live overlap and the at-least-once
+  external process-crash boundary.
+- Final acceptance guardrails: a future crash lease must become recoverable at
+  its timer deadline under existing authority; deadline release must obey the
+  durable attempt bound/backoff; non-filesystem or non-authoritative stores
+  fail closed; actual abrupt process death releases the recovery fence.
+- Mixed-version acceptance: whichever binary wins pending/retry admission owns
+  a persisted state the other cannot reclaim while live. Current crash recovery
+  additionally requires the exact observed token under process-loss authority;
+  claim contention retries for manager lifetime with capped delay. This PR
+  proves API-persisted status only; native/TUI visibility remains in
+  #1007/#1009/#1010.
+
+## 2026-08-03 (Issue #1102 — Runner AskUser Wait Test)
+
+- Command intent: repair only the deterministic `TestRunnerAskUserQuestionWaitsAndResumes` race/order baseline in one isolated closing PR.
+- User intent: do not waive flaky baseline work; preserve the actual lifecycle guarantee that clients can observe a waiting question and then resume the same run.
+- Success definition: the test observes the authoritative `run.waiting_for_user` lifecycle boundary without sleeps, immediately verifies `GetRun` reports `waiting_for_user`, submits input, and retains the existing complete ordered lifecycle under race repetition and full regression.
+- Guardrails: do not change pending broker availability, lifecycle ordering, persistence, API, TUI/macOS behavior, cron/callback code, or weaken an assertion.
+
+## 2026-08-03 (Issue #1006 — Callback Dispatch Retry and Idempotent Run Linkage)
+
+- Command intent: make a callback's delayed continuation truthful across a
+  transient start failure, restart, duplicate timer delivery, and cancellation.
+- User intent: “in two minutes say hello” must either visibly advance the same
+  scoped conversation once or remain visibly actionable as a retry/failure; a
+  timer attempt alone is not success.
+- Success definition: a persisted state machine claims one due callback at a
+  time, retries only bounded safe transient errors, and records one stable
+  Runner-admitted run ID/scope before reporting `started`; recovery of stale
+  leases does not duplicate the run; terminal failure/cancel remains visible.
+- Non-goals: native GUI controls (#1007), cron overlap, distributed region
+  coordination, and provider-specific retry rules.
+- Guardrails: base is merged #1005 `72fef8ab`; preserve #1005 durable timer
+  startup/shutdown ordering and #1004 cron lifecycle; do not persist raw
+  errors/secrets; obtain design review before altering the embedded Runner
+  durable identity boundary; strict red-green tests before production changes.
+- Current outcome: the local candidate implements the durable state machine and
+  stable Runner admission boundary with focused repeated race, assembled
+  harness, and complete affected-package evidence. Independent review repaired
+  conversation-level lifecycle replay after terminal scheduling runs, durable
+  list failure truthfulness, and strict safe-summary exposure. A replacement
+  Runner rebuilds current callback lifecycle replay from durable state before
+  active work resumes. The pre-review full gate passed at 85.5% with zero
+  uncovered functions; the final reviewed candidate also passes that exact gate
+  after the review repairs. Commit/promotion remain. Native controls and live
+  full-conversation proof remain #1007/#1010 rather than being inferred here.
+
+## 2026-08-03 (Issue #1098 — Deleted-Job Cron Reconciliation Coverage)
+
+- Command intent: repair the post-merge regression coverage gap blocking the
+  cron/callback promotion chain, without conflating it with callback work.
+- User intent: a scheduled conversation must not duplicate after a deleted job
+  or falsely claim a terminal result when durability fails.
+- Success definition: exact-base red/green tests prove unavailable terminal
+  persistence, RunID retention, no deleted-job touch, persistence-before-lease
+  release/readmission, and failure retention; normal/race/coverage/full gates
+  pass on one isolated no-push commit.
+- Guardrails: strict TDD, no schema/API/UI/config changes, retain cancellation,
+  transient, Stop-wins, and commit-wins semantics.
+- Outcome: the first red was the authoritative zero-function coverage report,
+  not a fabricated product behaviour failure. Direct contract tests were green
+  against the existing implementation, and rebased focused/full gates prove
+  the test-only repair without broadening cron behaviour.
+
+## 2026-08-02 (Issue #1093 — Deterministic Conversation-Cleaner Shutdown)
+
+- Command intent: repair the hosted `cmd/harnessd` race timeout without increasing sleep or timeout budgets.
+- User intent: a requested shutdown must not merely cancel retention work; it must know that cleaner work has exited before persistence is closed or the daemon returns.
+- Success definition: the cleaner exposes an exit acknowledgement; bootstrap owns cancel-plus-await exactly once on normal and startup-failure paths; retention/pinned semantics remain unchanged; targeted repeated race and full regression pass.
+- Non-goals: inventory, cron/callback behavior, retention-policy changes, schema/API/client changes, and broad bootstrap redesign.
+- Guardrails: strict red-green with channel handshakes rather than startup sleeps; preserve original startup errors and all store cleanup ordering.
+
+## 2026-08-01 (Issue #1086 — Authoritative Acceptance Inventory)
+
+- Command intent: land the source-derived foundation for the broader tool and
+  command acceptance program without claiming that any API, PTY, or native GUI
+  execution lane has been proven.
+- User intent: make every enabled capability and terminal command visible,
+  condition-accounted, and bound to a real behavioral postcondition before
+  accepting a cross-surface conversation as working.
+- Success definition: the compiler derives the live daemon tool catalog and
+  built-in TUI registry, reports canonical aliases and per-surface outcomes,
+  rejects omitted configured dynamic providers and invented names, and makes a
+  pass require an exact case/action sequence plus independently verified probe
+  evidence. Focused/race and full-regression evidence must be green; #1087--#1090
+  and #1010 remain required for execution and scheduled-work convergence.
+- Non-goals: parallel tool catalogs, ToolWalk behavioral changes, tool
+  execution, GUI claims, cron/callback repairs, or changes to existing
+  `/v1/tools` field semantics. Additive provenance fields are part of the
+  inventory boundary.
+- Current outcome: compiler/schema/report, registry-owned present provenance,
+  and live configured/unavailable resolver evidence are implemented with
+  focused normal/race evidence. Evidence and rendering now fail closed against
+  the hashed inventory. Swift applicability, full regression, commit,
+  exact-diff review, and promotion remain parent-lane gates.
+## 2026-08-03 (Issue #1096 — Deterministic Keychain Regression Gate)
+
+- Command intent: remove environment-sensitive login-Keychain mutation from the standard modelstore regression lane while preserving explicit macOS host-live proof.
+- User intent: unrelated cron/callback and GUI work must not be blocked or falsely green because a test process happened to have (or lack) a logged-in Keychain session.
+- Success definition: deterministic injected coverage proves all `security(1)` create/update/read/delete command contracts, stdin-only secret handling, timeout, and error behavior; every real mutation test clearly skips unless `HARNESS_TEST_REAL_KEYCHAIN=1`; opt-in tests use unique process accounts and cleanup; standard full regression and repeated host-live runs pass.
+- Guardrails: retain current 15-second bounds, propagate errors, avoid blind retries/global serialization, and make no provider, persistence, API, client, callback, or Keychain grammar change.
+
+## 2026-08-03 (Issue #1005 — Durable delayed callbacks)
+
+- Command intent: make one-shot callbacks survive `harnessd` restarts without
+  weakening existing tenant/agent/conversation scope behavior.
+- Success definition: create is durable before acknowledgement, startup after
+  the callback starter is bound re-arms pending rows (including overdue rows),
+  explicit cancellation/terminal outcomes persist, and shutdown stops only
+  local timers. Retry/idempotency/run-link policy is reserved for #1006.
+
+## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
+
+- Command intent: repair the deterministic approval publication race in one isolated, uncommitted PR-sized worktree slice without client retries, sleeps, full regression, server lifecycle, GitHub mutation, or promotion.
+- User intent: once API/TUI/native clients can observe either approval-required event, their first valid approve or deny action must be actionable rather than timing-dependent.
+- Success definition: split the existing broker lifecycle so in-memory pending state and checkpoint records exist before ordinary-tool and plan-exit publication; immediate real HTTP/SSE approve and deny reach terminal conversations; the nanosecond-precision advertised tool deadline equals the registered deadline; successful pre-Wait decisions survive delayed waiting; expiry and resolution have one observable winner; preserve timeout, cancellation, duplicate-resolution, and fail-closed semantics.
+- Guardrails: no schema or endpoint change, no parallel broker, no altered policy, no client retry, no expanded checkpoint cancellation policy; focused normal/race/repetition evidence only.
+- Root-cause outcome: the two runner publishers emitted before `Ask`, whose concrete implementations alone created pending state. The deterministic gated E2E red returned HTTP 404 on immediate approval.
+- Implementation outcome: `ApprovalBroker.Register` returns an `ApprovalWaiter`, runners register then publish then wait, and direct `Ask` remains compatible. In-memory decision state and checkpoint `ExpirePending` make resolution-vs-expiry linearizable, while `RFC3339Nano` round-trips the exact registered deadline.
+
+## 2026-08-01 (Issue #1081 — Portable Keychain Parser Coverage)
+
+- Command intent: restore the exact-main Ubuntu zero-function coverage gate
+  without altering a correct production Keychain implementation.
+- User intent: keep production promotion trustworthy by fixing the actual
+  cross-platform test gap rather than waiving a red baseline.
+- Success definition: one table-driven portable test directly covers valid and
+  malformed `keychainParts` targets, the Darwin integration remains in place,
+  and targeted/local/hosted full regression gates are green on the exact PR
+  head.
+- Non-goals: Keychain CRUD, credential grammar, provider behavior, security
+  process invocation, schemas, APIs, clients, and coverage configuration.
+- Guardrails: the strict red is hosted run `30672776651`; do not invent a
+  behavioral red, alter production code, or add a coverage exemption.
+
+## 2026-08-01 (TUI Terminal Assistant Message — Issue #1056)
+
+- Command intent: restore terminal-only assistant replies in the real TUI and
+  preserve exact multi-turn conversation state.
+- User intent: daemon success is insufficient when a client conversation looks
+  blank; visible and exported chat must agree with SSE and persistence.
+- Success definition: final-only content renders and exports once,
+  delta-plus-final remains idempotent, tool-card order survives later provider
+  content and replay, and two complete turns remain exactly
+  user/assistant/user/assistant through focused, race, full, and real PTY proof.
+- Guardrails: issue #1056, isolated worktree, behavior-level red before the
+  reducer change, no server/provider/schema expansion, and no failing-baseline
+  waiver.
+
+## 2026-08-01 (Conversational Cron CRUD Acceptance Repair — Issue #1002)
+
+- Command intent: close the exact-head audit blockers in conversational cron
+  CRUD/history, prove the real same-conversation lifecycle, and promote the
+  issue through its guarded PR and merge gates.
+- User intent: names may repeat across independent tenant/conversation/agent scopes, while every model mutation/read remains ID-only and ownership-safe; durable and live scheduler state must never silently diverge.
+- Success definition: deterministic reds cover name fallback, ambiguous operator lookup, assembled automatic embedded/remote model scope, stale edit/pause/resume/delete, semantic collated migration detection, prepared active replacement, non-reusable registration identity, and linearizable execution admission; migration preserves jobs/history/timestamps and integrity; full regression and a real-provider all-eight-tool same-conversation fire/CRUD lifecycle pass before promotion.
+- Non-goals: #1003 authentication/readiness, #1004 overlap/terminal linkage,
+  callbacks, and native UI. No regression or hosted failure is waived.
+- Guardrails: preserve the existing candidate, use strict focused TDD, scope at the common model-registry boundary exactly once, retain raw operator compatibility, keep operator name lookup distinct from model CRUD, require a read version for every existing-row model mutation, and return not-found across scope boundaries.
+- Final guardrail: create and resume are paused-first. Active replacement retains the old live/durable job through inert `Prepare`, then CASes the new active row and performs an infallible commit. The final registration check and execution-row creation are one scheduler-locked admission point shared with prepare/commit/remove. Overlapping run-tracking monotonicity belongs to #1004 and is not folded into #1002.
+## 2026-08-01 (Issue #1003 Standalone cronsd Ingress Boundary)
+
+- Command intent: close the privilege-escalation path where network callers
+  could use cronsd's outbound harness credential through unauthenticated CRUD.
+- User intent: preserve working cron CRUD and conversation continuation while
+  making tenant ownership authoritative at both API and scheduler startup.
+- Success definition: distinct ingress auth protects readiness and every
+  management route; real HTTP create/read/update/delete/history passes;
+  spoofed/foreign tenants cannot observe, mutate, delete, or execute jobs; and
+  harnessd plus cronctl supply credentials explicitly.
+- Non-goals: multi-tenant credentials in one cronsd process, retry/overlap
+  policy, callback delivery, or GUI behavior.
+- Outcome: each cronsd instance is explicitly single-tenant. Tenantless legacy
+  shell jobs are durably claimed on startup; ambiguous harness or foreign rows
+  abort startup before scheduler registration.
+- Review repair: ownership is no longer inferred in an HTTP response copy.
+  SQLite atomically assigns each legacy shell row to one tenant; losing servers
+  return not-found or fail startup. Run-store migration now atomically
+  reconstructs existing conversation owners and refuses ambiguous history.
+
+## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
+
+- Command intent: repair the separate hosted race failure where the initial
+  workflow `start` write returns EPIPE before the already-started child is
+  waited and its exit evidence is resolved.
+- User intent: land one strict red-green baseline repair before rebasing #1070,
+  preserving actionable workflow diagnostics and a genuinely green race gate.
+- Success definition: a deterministic real-child test proves exit-before-write,
+  exact reaping, and bounded stderr; resolver controls preserve deadline,
+  semantic protocol, process-exit, standalone write, close, and success order;
+  focused through full regression gates pass.
+- Non-goals: #1070 terminal publication, #973 invalid-protocol/nil-map defects,
+  protocol redesign, retries, timeout changes, or unbounded stderr.
+- Guardrails: one shared outcome arbiter, one wait per started child, process
+  group cleanup on write/protocol failure, strict TDD, and no push or merge.
+- Review outcome: a second deterministic red proved that cleanup SIGKILL could
+  mask a standalone initial EPIPE while the child was still live. The outcome
+  now distinguishes a parent-requested SIGKILL from a natural child exit.
+- Implementation outcome: initial write failure skips protocol serving but
+  still terminates the process group, closes stdin, waits exactly once, and
+  enters the shared arbiter. Exit 7 plus bounded stderr remains primary; a
+  cleanup-caused SIGKILL does not replace the earlier write error.
+- Verification outcome: both lifecycle branches and resolver/stderr controls
+  pass normal/race x100, complete workflow normal/race passes, and
+  `make test-race` passes. The accepted non-PTY full regression passes normal,
+  full race, and coverage at 85.6% with zero uncovered functions.
+
+## 2026-07-31 (Runner Dispatcher Shutdown Isolation — Issue #1068)
+
+- Command intent: independently classify and repair the 4/5 aggregate race
+  failure without combining remote cron or terminal-publication work.
+- User intent: make shutdown proof identify the exact Runner so CI neither
+  hides a real goroutine leak nor blocks on a healthy unrelated Runner.
+- Success definition: a deterministic two-Runner control proves target exit
+  while a control dispatcher stays live; focused through hosted gates pass on
+  one unmerged closing PR.
+- Non-goals: PR #1060, PR #1055, issue #1067, worker-pool redesign, or longer sleeps.
+- Guardrails: strict red-green TDD, preserve `done`/`dispatcherWG` ownership,
+  queue drain, active cancellation, idempotency, and exact regression commands.
+- Next verification step: capture aggregate race red evidence, then add the
+  deterministic instance-scoped test before changing production code.
+- Root-cause outcome: the exact aggregate command reproduced 4/5 failures and
+  the two-Runner red classified the target result as a process-global identity
+  false positive. Review found real adjacent test leaks as well: five bounded
+  worker-pool construction sites created seven Runners per repetition without
+  `Shutdown`, leaving dispatchers alive after those tests returned.
+- Implementation outcome: target exit identity now comes from a hook ordered
+  immediately before the existing instance wait-group completion; production
+  shutdown ordering and queue accounting remain unchanged. A shared bounded
+  test constructor releases blocked providers before Shutdown and owns cleanup
+  for every affected worker-pool fixture.
+- Review-fix verification: deterministic cleanup normal/race, all worker-pool
+  normal/race x100, complete harness race x5, harness vet, and the unchanged
+  repository regression gate pass. The local commit is ready for parent
+  promotion; PR #1069 remains open and unmerged pending hosted reruns.
+
+## 2026-07-31 (Terminal Status/Event Atomicity — Issue #1067)
+
+- Command intent: repair the aggregate-load Runner race where `GetRun` exposes
+  completed, failed, or cancelled before the matching terminal event and
+  required causal evidence are replayable.
+- User intent: external monitoring must never report a terminal result from an
+  incomplete transcript, and this engine repair must remain isolated from PR
+  #1060/#1055.
+- Success definition: deterministic no-sleep red evidence covers all terminal
+  statuses; one shared lifecycle seam makes terminal ledger/store publication
+  precede status visibility while preserving recorder order; immediate
+  Subscribe and HTTP SSE replay agree; focused stress, affected race/vet, full
+  regression, and hosted checks pass on one unmerged closing PR. Concurrent
+  Start recovery/pruning must not evict a completed source after Continue has
+  validated it but before that continuation performs its single-winner commit.
+  Test helpers that promise a collected terminal run must preserve event
+  assertions while independently requiring the later terminal status, without
+  weakening the production event-first order or direct barrier regressions.
+- Non-goals: conversation cursor redesign, cron/callback behavior, client UI,
+  provider routing, schemas, or workflow timing changes.
+- Guardrails: preserve out-of-lock bounded store writes, terminal sealing,
+  recorder drain order, cleanup order, causal/error snapshots, SSE IDs, and
+  unrelated conversation responsiveness. Do not claim a cross-record store
+  transaction the interface cannot provide. Never evict truthful terminal state
+  without both event and status durability, and never trade that protection for
+  unbounded memory growth during permanent store failure.
+- Outcome: one winner-only transition now publishes terminal ledger history
+  before matching in-memory status and subscriber fanout. Retained terminal
+  status persistence is attempted only after event append reports success;
+  append/status failures have explicit bounded live-availability behavior.
+  Shared per-run status serialization prevents a delayed non-terminal overwrite,
+  and refcounted per-conversation sequencing avoids both overtaking and lock-map
+  growth. Exact-head retention hardening now tracks event and status durability
+  separately, requires both before pruning, and closes new admission when the
+  combined unresolved backlog reaches `MaxCompletedRetention`. Status recovery
+  uses one unlocked deadline capped at 250 ms; Start/Continue expose typed HTTP
+  503 while no-store and intentional StorageModeNone policies remain distinct.
+  Successful status recovery immediately restores the retention bound before
+  reopening admission. A temporary in-state reservation now protects a
+  validated Continue source from every prune caller across unlocked recovery;
+  release on all exits restores the retention policy without weakening the
+  existing single-winner check. Focused normal/race and real HTTP mapping tests
+  plus affected normal/race/vet are green. The unchanged foreground repository
+  gate passes normal, full race, and 85.7% coverage with zero uncovered
+  production functions on the prior follow-up diff. After hosted race run
+  `30656467482`, the shared test collector now treats terminal history plus the
+  later terminal status as its settled boundary under one total deadline. The
+  event-first production contract and direct phase tests remain unchanged;
+  affected normal/race x100 and hosted-equivalent `make test-race` pass. The
+  final outside-sandbox foreground repository gate passes normal, full race,
+  and 85.7% coverage with zero uncovered production functions. Exact-head
+  review then hardened the helper boundary again: settlement now requires
+  exactly one terminal event whose meaning matches terminal status, and the
+  phase regression proves it entered settlement before asserting non-return.
+  Focused normal/race x100, hosted-equivalent race, and the final foreground
+  repository gate pass; coverage remains 85.7% with zero uncovered production
+  functions on this follow-up diff.
+
+## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
+
+- Command intent: isolate and clear the hosted race blocker first observed on
+  PR #1051 without changing that PR's verified retention semantics.
+- User intent: distinguish the subscriber-pinned retention repair from an
+  unrelated owned CI failure and leave the exact reviewed head genuinely green.
+- Success definition: provider-key capture still requires live health, the
+  exact fake key, and bounded shutdown while tolerating contended race-runner
+  scheduling; focused through hosted gates pass.
+- Guardrails: separate issue-first test-only slice, one caller budget change,
+  no production startup/provider/listener changes, and no broad #958 cleanup.
+- Outcome: the fixture now uses the established ten-second matrix budget on
+  dedicated PR #1063; focused and adjacent normal/race stress, the complete
+  regression gate, and both hosted checks are green.
+
+## 2026-07-31 (Issue #1064 — Workflow Exit Error Precedence)
+
+- Command intent: repair the scheduling-dependent source-workflow failure that
+  lets stdin-close `broken pipe` mask a non-zero child-process exit.
+- User intent: keep workflow failures actionable and hosted gates stable by
+  reporting the primary child failure and bounded stderr, without hiding real
+  cleanup-only failures.
+- Success definition: a deterministic no-sleep dual-error regression proves
+  timeout, protocol, process-exit, and close-cleanup precedence in that order;
+  focused stress, complete workflow normal/race, the unchanged foreground
+  regression gate, and hosted checks pass; one closing PR requests Codex review
+  and remains unmerged.
+- Non-goals: workflow protocol changes, retries, broad process-supervision
+  changes, or ignoring stdin-close errors.
+- Guardrails: preserve bounded stderr and successful workflow behavior; update
+  issue #1064 if root-cause evidence changes.
+- Outcome: a deterministic outcome seam now keeps deadline, protocol, process
+  exit, and stdin-close cleanup in that order. The semantic red returned
+  `broken pipe`; the green returned the child exit plus bounded stderr.
+  Focused normal/race stress, complete workflow normal/race, and the unchanged
+  regression gate are green at 85.6% coverage with zero uncovered functions.
+## 2026-07-30 (Issue #1052 Provider API-key Capture Synchronization)
+
+- Command intent: Restore a zero-failure merge path for the cron/callback
+  repair chain after PR #1051 exposed a race-suite false negative.
+- User intent: Do not waive repository failures; fix them and continue through
+  merged, manually proven API, TUI, and native GUI behavior.
+- Success definition:
+  - The API-key capture test observes the provider factory directly.
+  - It no longer depends on a three-second full-server readiness deadline.
+  - Graceful shutdown remains bounded and leak-free.
+  - Focused repeated normal/race tests and the repository normal/race/coverage
+    gate pass on the exact reviewed head.
+- Non-goals: Production startup, health endpoint, and global timeout changes.
+- Next verification step: Make the direct signal expectation fail first, emit
+  it at the provider factory boundary, then run focused and full gates.
+
+## 2026-07-30 (Issue #1054 Waiting/Pending Atomicity)
+
+- Command intent: Fix the exact hosted lifecycle failure blocking the
+  cron/callback repair chain.
+- User intent: Harness and GUI state must agree in real time, not merely pass
+  source-level tests.
+- Success definition:
+  - `PendingInput` succeeds whenever `waiting_for_user` is observable.
+  - Both in-memory and durable checkpoint brokers uphold the invariant.
+  - A resume accepted before a deadline remains accepted even when persistence
+    or pending notification completes after that deadline.
+  - An accepted answer cannot become a resumed run before pending-state
+    publication finishes, including when the notifier deadline wins selection.
+  - Lost resume/approval/deny races return stable no-pending or conflict
+    semantics at the harness and HTTP boundaries, never false success or 500.
+  - Resolution remains single-winner across Service instances sharing a
+    durable store, without serializing unrelated checkpoints or ignoring a
+    waiting caller's context.
+  - Pending publication honors its deadline through persistence, stale run
+    writes cannot overwrite terminal state, and callback-omitting brokers still
+    produce one visible wait/resume lifecycle after exposing readable pending
+    input.
+  - Pending publication is once-on-success across callback and observer:
+    transient status/event failures retry, an observer already publishing is
+    drained, deliberate redaction suppression completes without retry, and
+    failed strict appends cannot create an SSE cursor gap.
+  - Cross-Service waiter polling tolerates transient reads after registration;
+    local notification, a later durable read, or caller cancellation decides
+    the result rather than a single opportunistic poll failure.
+  - Event ordering, cancellation, timeout, and denied-call restoration remain
+    correct and race-clean.
+  - Full repository verification and final native GUI conversation proof pass.
+- Non-goals: Redesigning structured questions or approval behavior.
+- Next verification step: Add a deterministic gated-broker regression, confirm
+  the ordering bug, then introduce post-registration notification.
 ## 2026-07-31 (TUI Waiting Conversation Overlay — Issue #1058)
 
 - Command intent: independently confirm and repair the native TUI failure where
@@ -43,6 +1098,59 @@
 - Outcome: a capacity-one handoff establishes the required happens-before edge
   while the provider still asserts the non-terminal step-two status; all local
   focused, package, race, and coverage gates are green.
+## 2026-07-30 (Worktree Containment CI Synchronization — Issue #1039)
+
+- Command intent: clear the red Linux fast gate exposed while merging the
+  reviewed cron/callback native conversation repairs.
+- User intent: merge only when the accepted normal, race, native, API, TUI, and
+  GUI evidence is genuinely green rather than waiving an intermittent failure.
+- Success definition: the real bash containment test inspects the provisioned
+  worktree before cleanup, retains every routing invariant, and passes focused
+  stress plus the full repository gate.
+- Guardrails: issue-first isolated worktree, deterministic red evidence,
+  test-only synchronization, no production lifetime change, and no sleeps.
+## 2026-07-30 (Default Workspace Registry Test Isolation — Issue #1042)
+
+- Command intent: clear the repeatable workspace-package blocker discovered by
+  the mandatory post-merge coverage gate.
+- User intent: do not merge the cron/callback GUI work over any red accepted
+  baseline, even when the failure is in an unrelated test fixture.
+- Success definition: every in-process invocation owns a unique registry name,
+  retains the duplicate-registration contract, and passes repeated/race/full
+  gates.
+- Guardrails: issue-first isolated worktree, test-only atomic identity, no
+  production reset/unregister or weakened assertion.
+- Outcome: the atomic invocation identity retained every public registry
+  assertion and cleared focused stress, package stress, normal, race, and
+  coverage verification.
+
+## 2026-07-30 (Subscriber-Pinned Retention Quota — Issue #1048)
+
+- Command intent: repair the run-retention defect exposed while proving the
+  cron/callback GUI merge chain.
+- User intent: keep API, TUI, and GUI conversation streams reliable under real
+  concurrent lifecycle pressure, not merely green in isolated tests.
+- Success definition: pinned runs stay readable, newly completed runs remain
+  subscribable, unpinned history stays bounded, and cancellation reclaims the
+  exception.
+- Guardrails: issue-first isolated worktree, preserve persistent records and
+  terminal ordering, no config or wire changes.
+- Outcome: pruning pressure now comes only from drainable terminal candidates;
+  pinned states remain temporary exceptions, subscriber cancellation still
+  triggers cleanup, and all focused through full gates are green.
+
+## 2026-07-30 (Swarm Activation Control Lifecycle Race — Issue #1046)
+
+- Command intent: clear the hosted baseline flake blocking the cron/callback
+  merge chain.
+- User intent: prove all accepted gates are green before merging to `main`.
+- Success definition: the test deterministically exercises both a denied member
+  and a live unrestricted control, then cleans up normally.
+- Guardrails: issue-first isolated worktree, test-only lifecycle control, no
+  production activation or Runner change.
+- Outcome: the dedicated provider holds the actual control run live through
+  activation inspection, then releases it to normal completion; focused,
+  package, race, and coverage gates are green.
 
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
@@ -1608,6 +2716,418 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Next verification step: write the attached-image/direct-publication tests,
   confirm their expected failures, implement the smallest publisher and
   selective cleanup path, then run live GitHub proof.
+
+## 2026-07-31 (Issue #1003 Remote cronsd Harness Dispatch)
+
+- Command intent: implement only the authenticated remote `cronsd` harness
+  execution child of epic #1000, then push a reviewable PR without merging.
+- User intent: make a scheduled harness job cross the standalone cronsd to
+  harnessd boundary with tenant/agent/conversation scope and job/execution
+  correlation intact, with explicit readiness and no shell fallback.
+- Success definition: typed remote HTTP start, required auth/config, bounded
+  timeouts, structured safe failures, distinct shell/harness dispatch, green
+  focused/race/full regression gates, and a real local cronsd-to-harnessd
+  canary. #1010 and every other epic child remain out of scope.
+- Dependency evidence: closed #1001 is present on current `origin/main` as
+  `RunStartRequest`, persisted scope fields, `DispatchExecutor`, and the
+  embedded harness starter contract.
+- Next verification step: write the remote adapter, dedicated harnessd
+  endpoint, and readiness tests red before implementing them.
+
+## 2026-07-31 (Issue #1003 Independent Replay-Safety Review)
+
+- Command intent: independently review PR #1060 at its exact head, fix any
+  #1003 defect test-first, rebase onto current `origin/main`, run focused and
+  affected normal/race plus the unchanged foreground regression gate, push,
+  and request exact-head Codex review without merging.
+- User intent: do not confuse client-side retry avoidance with server-side
+  idempotency; an accepted replayable HTTP start must not create a second run
+  after harnessd restarts.
+- Success definition: concurrent and restart-spanning duplicate deliveries
+  return one reserved run ID, fingerprint conflicts remain tenant-isolated,
+  redirects cannot move the bearer credential, existing scope/provenance/
+  timeout/body-bound contracts stay green, and #1004 terminal linkage remains
+  out of scope.
+- TDD evidence: `TestCronRunEndpointDurablyDeduplicatesAfterRestart` first
+  failed with two distinct run IDs after reopening SQLite; the redirect test
+  first followed HTTP 307 and returned success from the target. Both pass
+  after the durable reservation and no-redirect fixes.
+- Baseline coordination: #1054, #1064, and #1039 were inspected before the
+  full gate. The final foreground run must match any failure exactly rather
+  than waiving it.
+
+## 2026-07-31 (Issue #1003 Fresh-Store Authentication Review)
+
+- Command intent: independently reproduce and repair the reported first-boot
+  cronsd authentication failure on PR #1060 without absorbing #1004 run
+  linkage.
+- User intent: a configured remote cron must authenticate on a genuinely fresh
+  harnessd run database, not only in tests that manually migrate API keys.
+- Success definition: production persistence bootstrap applies the existing
+  idempotent API-key migration, a fresh database can create and validate a
+  `runs:write` key, all prior replay/concurrency/timeout/correlation behavior
+  stays green, and `cron_executions.run_id` remains explicitly owned by #1004.
+- TDD evidence: the startup-level test failed first with SQLite
+  `no such table: api_keys`, then passed after the bootstrap wiring change.
+
+## 2026-07-31 (Issue #1003 Final Exact-Head Review)
+
+- Command intent: resolve every exact-head review blocker on PR #1060 before
+  acceptance, without changing #1004 terminal run linkage.
+- User intent: remote cron starts must be durable before acceptance, honor the
+  job's requested scheduling timeout, and remain bounded in memory for a
+  long-running daemon.
+- Success definition: reserved persistence failure dispatches nothing and
+  returns service unavailable; the earliest job/parent/transport deadline
+  wins with typed cancellation; the process cache owns only in-flight
+  coalescing while durable storage owns sequential/restart replay.
+- Strict red evidence: the three regressions respectively observed HTTP 202
+  after `CreateRun` failure, a 5-second parent deadline instead of the 1-second
+  job deadline, and one retained completed cache entry.
+- Final reliability definition: if dispatch succeeds but the acceptance write
+  fails, same-process retry reuses the active reserved run and only retries the
+  durable mark. Concurrent direct resume attempts must never overwrite state
+  or dispatch the same reserved ID twice.
+- Acceptance alone is not proof a queued worker transitioned to running:
+  restart must inspect durable status and resume accepted queued rows too.
+  CRUD must not create a deadline bypass, and response-body timeout/cancel
+  retains the same typed transport semantics as a pre-header failure.
+
+## 2026-08-01 (Issue #1003 Persisted Agent Ownership Repair)
+
+- Command intent: repair only the restart-time same-tenant cross-agent
+  conversation admission while preserving remote idempotency and valid
+  same-agent continuation.
+- Success definition: a reopened run/conversation store rejects a second agent
+  and admits the recorded owner; a durable ownership lookup outage never
+  silently authorizes access.
+
+## 2026-08-01 (Issue #1003 Atomic Ownership Follow-up)
+
+- Command intent: close the concurrent first-claim gap without broadening into
+  #1004 or weakening valid same-owner continuation.
+- Success definition: even when two processes observe no prior conversation
+  run, one atomic durable tenant/agent claim wins, one run dispatches, the
+  loser receives access denied, and a failed run insert cannot reserve a false
+  owner.
+- Ordinary starts share that security boundary: ownership conflict must be
+  synchronous and pre-dispatch, without converting unrelated best-effort
+  persistence outages into run failures or performing a duplicate insert.
+
+## 2026-08-01 (Issue #1003 Cross-Process Dispatch Lease)
+
+- Command intent: close the remaining multi-process replay race at the remote
+  cron start boundary without absorbing #1004 terminal linkage.
+- Success definition: two harnessd servers sharing SQLite return one reserved
+  identity and invoke one provider for both first delivery and queued recovery;
+  a crashed owner's queued work becomes recoverable after a bounded expiry.
+- Safety invariant: dispatch requires a durable lease, and acceptance requires
+  that same owner. Process-local cache state is an optimization, never the
+  cross-process authority.
+
+## 2026-08-01 (Issue #1003 Lease Review Follow-up)
+
+- Command intent: make the dispatch lease linearizable and live-run-aware
+  without promising provider-side distributed exactly-once or absorbing
+  #1004.
+- Success definition: `acquired=true` always carries the caller's owner from
+  the winning atomic statement; process clock skew cannot shorten a SQLite
+  lease; queued/running ownership renews until local liveness ends; concurrent
+  legacy startup remains available.
+- Residual boundary: lease heartbeats bound ordinary failover races, but a
+  process paused beyond expiry immediately before an unfenced external effect
+  still needs downstream idempotency/fencing for absolute exactly-once.
+
+## 2026-08-02 (Issue #1004 restart observation readiness repair)
+
+- Command intent: preserve no-overlap and terminal linkage without allowing a
+  recovered active remote run to block cronsd or harnessd boot.
+- Success definition: startup restores the durable lease synchronously,
+  embedded and remote observation are asynchronous/cancellable, repeated bind
+  calls do not double-count scope, nonterminal work denies a duplicate, and a
+  durable terminal transition releases exactly one lease.
+- TDD evidence: embedded missing-method red and isolated `0a00575b` remote
+  test timeout in synchronous `ObserveRun`; focused normal/race covers startup,
+  authenticated polling, terminal release, and repeated post-bind retry.
+
+## 2026-08-02 (Issue #1004 shutdown-safe restart observation)
+
+- Command intent: keep asynchronous restart observation from outliving the
+  scheduler/store that owns its execution history, without terminalizing a
+  still-live run merely because shutdown cancelled polling.
+- Success definition: scheduler Stop rejects later bind notifications, cancels
+  and joins every active reconciliation observer before returning, and writes
+  neither terminal execution state nor job-run tracking for cancellation.
+- Evidence: exact pre-fix test-only replay was red for early Stop return and
+  post-stop bind work; direct normal and race x10 focused checks are green.
+  Full repository race remains required and unwaived.
+
+## 2026-08-02 (Issue #1004 terminal persistence Stop fence)
+
+- Command intent: make the terminal observation result and scheduler shutdown
+  mutually exclusive at the durable execution boundary without holding a lock
+  across remote polling.
+- Success definition: Stop wins preserves the recovered active row and scoped
+  lease; a terminal commit that wins completes execution update, lease release,
+  and job-run tracking before Stop returns. Only an explicit job-not-found may
+  terminalize a recovered row; canceled or transient lookups must retain it.
+- Evidence: exact `9181311` individual red tests exposed all four failures.
+  New direct normal and race x20 tests plus the existing lifecycle bundle pass.
+  Sandboxed IPv6 listener denial was rerun host-local successfully; the prior
+  repository-wide harnessd race timeout remains unwaived.
+
+## 2026-08-02 (Issue #1004 live observation cancellation)
+
+- Success requires a cron-created conversation to retain its durable run link
+  and no-overlap lease until a real terminal observation commits, while Stop
+  cancels/joins only observation—not dispatch or shell drain.
+- Evidence distinguishes red shutdown defects from already-passing commit-wins
+  and shell-drain controls. Direct normal/race x20 live coverage is green;
+  independent review and full regression remain promotion gates.
+
+## 2026-08-02 (Issue #1004 recovered observer error retention)
+
+- Command intent: recover linked cron runs without admitting overlaps merely
+  because a remote observer is temporarily unavailable.
+- Success definition: recovered execution terminalization occurs only for an
+  observed, error-free result. 503/stream errors, unobserved results, and
+  cancellation preserve the durable row, `RunID`, and scope lease with no job
+  tracking touch; later rows still reconcile.
+- Evidence: exact `1d699808` test-only replay was red for 503, stream, and
+  mixed error-plus-success recovery. Direct focused normal and race x20 pass;
+  full repository regression remains unwaived.
+
+## 2026-08-03 (Issue #1004 embedded observer replay contract)
+
+- Command intent: terminal cron history must advance from a committed harness
+  result even when the terminal event lands in Runner replay during the
+  subscriber registration/commit gap.
+- Success definition: replay terminal events are not trusted as outcome data;
+  the bridge waits for authoritative completed, failed, or cancelled `GetRun`
+  state, retains a low-rate cancellation-bound status fallback for suppressed
+  events, remains cancellable when commit never arrives, and reports a closed
+  live stream without terminal replay as nonterminal observation error.
+- Evidence: deterministic private-seam tests exercise the exact replay gap and
+  controls; real embedded conversation stress passes x100 after the bridge fix.
+## 2026-08-03 — Issue #1115 workflow subscriber terminal-close regression
+
+- Command intent: restore a green hosted baseline by deterministically proving that a workflow subscriber registered before terminal transition closes even when its 64-slot live-event buffer is full.
+- User intent: keep cron/callback delivery work moving without accepting flaky CI or weakening concurrency correctness.
+- Success definition: the fixture establishes `Start -> Subscribe -> release -> >64 events -> terminal`; buffered values remain ordered, closure is observed, post-terminal cancel is safe, repeated normal/race and full regression pass, and no callback/cron or workflow production semantics change.
+- Scope decision: preserve the existing late-subscriber replay contract. The hosted failure came from the test calling `Start` before `Subscribe`, not from the engine's already-locked terminal close/delete path.
+
+## 2026-08-03 — Issue #1132 compaction-after-wait lifecycle proof
+
+- Command intent: restore a green concurrency baseline without changing the
+  harness's deliberate pending-before-publication ordering.
+- User intent: scheduled conversations must have reliable evidence that their
+  wait, compaction, and continuation flow is correct rather than a passing
+  sleep-based fixture.
+- Success definition: subscribe immediately after start, observe the public
+  `run.waiting_for_user` event, then prove pending/status, compaction,
+  submission, event order, final output, and message/tool deltas through
+  repeated normal/race and repository regression gates.
+- Scope decision: no production change is warranted because the public event
+  itself is the correct readiness contract; the old test conflated it with
+  earlier broker registration.
+## 2026-08-03 — Issue #1135 deterministic cron recovery fixture
+
+- Command intent: restore the cron race baseline without weakening durable
+  no-overlap or changing a correct scheduler implementation.
+- User intent: acceptance evidence for scheduled conversation continuation must
+  distinguish a real release-order defect from a test that sampled before its
+  scheduler-owned lifecycle completed.
+- Success definition: both post-bind embedded and asynchronous remote recovery
+  fixtures prove denial through terminal persistence, completion after
+  `reconcileWG`, exact lease/scope cleanup, and subsequent same-scope admission;
+  focused normal/race, cron package normal/race, full regression, independent
+  review, and hosted checks pass.
+- Guardrails: test/docs only; preserve scheduler, durable rows, remote auth,
+  no-overlap, API, TUI, and macOS behavior.
+- Verification: focused normal/race x100, `./internal/cron` normal/race, and
+  tmux-hosted `./scripts/test-regression.sh` pass at 85.5% coverage with zero
+  uncovered functions.
+## 2026-08-03 (Issue #1141 deterministic callback deadline fixture)
+
+- Command intent: remove the three hosted callback deadline-release fixture races without changing callback production behavior.
+- User intent: preserve trustworthy regression gates for durable callback continuation state visible through harness APIs and clients.
+- Success definition: each fixture proves actual deadline cancellation before release and retains the exact durable retry/failure contract; focused normal and race x20 plus full regression pass. Evidence: all three gates passed; this remains a test-only reliability slice.
+
+## 2026-08-04 (Issue #1153 cron dispatch-poll coverage)
+
+- Command intent: close the real durable cron contention/cancellation coverage
+  gap without making the accepted regression baseline conditional or weaker.
+- User intent: scheduled work must remain exactly-once and cancellation-safe
+  when separate harness servers briefly contend for the same continuation.
+- Success definition: deterministic higher-level tests force retry and
+  cancellation through `getOrStartCronRun`, preserving one reserved run and no
+  cancelled dispatch; targeted normal/race, complete server race, and the full
+  coverage gate pass.
+- Guardrails: no lease, API, persistence-schema, TUI, GUI, provider, or auth
+  production behavior change; only fixture coverage unless a minimal seam is
+  unavoidable.
+
+## 2026-08-05 (Issue #1180 linked-worktree VCS bootstrap provenance)
+
+- Command intent: make canonical fresh worktrees compile binaries whose Go VCS
+  evidence truthfully identifies the clean target commit.
+- User intent: preserve a strict fail-closed provenance gate while unblocking
+  reliable API, TUI, and native GUI validation from fresh worktrees.
+- Success definition: target HEAD/clean state is checked first; an owned local
+  clone is detached at that exact SHA and clean; Go builds only in its
+  directory-form `.git`; candidates retain revision/modified validation and
+  publish atomically; wrong/missing metadata remains rejected and absent.
+- Scope decision: no Git environment workaround, metadata synthesis, runtime
+  behavior, cron, callback, API, or client change.
+
+## 2026-08-05 (Issue #1190 production MCP transport isolation)
+
+- Command intent: remove real production MCP auth-dial coupling to the global
+  HTTP idle pool without weakening strict error classification.
+- User intent: CI and harness MCP tool discovery must surface an actionable
+  authorization failure, not an unrelated transport cancellation.
+- Success definition: each production connection owns a cloned default
+  transport, connection close cannot affect another/global pool, and a gated
+  auth dial returns `ErrUnauthorized` after unrelated global cleanup. No retry
+  or error masking is permitted.
+# 2026-08-05 (Issue #1186 public cron validation errors)
+
+- Command intent: repair the public harness cron facade so malformed caller
+  input is actionable 400 validation rather than a false scheduler outage.
+- User intent: cron operations must behave equivalently in embedded and remote
+  modes without hiding real 404, 409, storage, scheduler, or transport errors.
+- Success definition: typed validation survives raw cronsd client and both
+  adapters to POST/PATCH; invalid writes do not persist; valid writes and all
+  existing non-validation error classes retain behavior; focused/race/full/API
+  verification is green on one isolated closing PR.
+- Guardrails: no scheduling, persistence-schema, authentication, GUI/TUI, or
+  lifecycle changes; no inferred validation from unstructured dependency text.
+
+# 2026-08-05 (Issue #1198 isolated skills directory)
+
+- Command intent: make `HARNESS_SKILLS_DIR` a real, single, fail-closed
+  harnessd storage boundary rather than an error-message-only setting.
+- User intent: exercise skill authoring and verification without writing under
+  the user's home/global skills directory, while retaining real catalog and
+  conversation behavior.
+- Success definition: absolute override drives loader, tool registry, watcher,
+  verification, and workflow discovery; unset fallback remains compatible;
+  relative input never starts a server or causes TUI local catalog fallback;
+  real fake-provider API/SSE proof and normal/race/full regressions are green
+  on one reviewable closing PR.
+## 2026-08-06 (Issue #1208 — Native Scenario Preflight Review Repair)
+
+- Command intent: repair the review-found native fixture trust and semantic
+  gaps without running a GUI or broadening lifecycle authority.
+- User intent: make the later tool/cron/callback proof genuinely reviewable
+  and fail closed, while preserving explicit TCC/foreground consent.
+- Success definition: writes reject traversal and symlink escapes at the I/O
+  boundary; scenario contracts prove exact core-tool, cron, and callback
+  semantics, including the parser-backed `cron_create` schedule contract;
+  focused/race, Swift, and full repository gates pass.
+- Guardrails: no app launch, AX/OCR, Screen Recording/Accessibility prompt,
+  existing-process/session attachment, reuse, or termination.
+- Diagnostic outcome: the independent exact-head #1087 failure reporting
+  `tool:git_status` terminal status `running` passed once normally and twenty
+  consecutive race repetitions. Treat it as non-reproduced, not waived; the
+  unchanged full gate is the remaining confirmation.
+# 2026-08-07 (Issue #1270 replay-boundary fixture causality)
+
+- Command intent: remove the race-only scheduling ambiguity from the focused
+  selected-conversation replay-boundary regression without changing product
+  behavior or accepting a longer timeout.
+- User intent: a scheduled continuation must remain proven as a normal TUI
+  turn after an atomic replay snapshot, not merely as a harness-side event.
+- Success definition: the fixture publishes the live event only after the
+  model has visibly applied the snapshot; historic/queued exact-once and live
+  rendering assertions remain intact; focused normal/race, package race, and
+  full regression pass.
+- Guardrails: no product source/API/persistence change, no timeout inflation,
+  and retain useful causal diagnostics on failure.
+# 2026-08-07 (Issue #1273 — native GUI proof root identity)
+
+- Command intent: repair the native acceptance baseline without weakening
+  ownership validation.
+- User intent: a valid owned proof must not fail merely because macOS presents
+  a safe parent directory alias differently to fixture and file resolution.
+- Success definition: parent aliases seal/validate and serialize canonical
+  root identity; final-root/artifact symlinks and unsafe/uncorrelated evidence
+  remain rejected; focused normal/race and full regression are green.
+# 2026-08-07 (Issue #1275 — replay/live rendered proof)
+
+- Command intent: repair the race acceptance proof without masking a true SSE
+  bridge or reducer failure.
+- User intent: scheduled continuation must be proven as a normal visible TUI
+  turn after one atomic replay snapshot.
+- Success: transcript owns snapshot exact-once truth; `live:3` decode and
+  post-update render own live truth; diagnostics distinguish stages; no product
+  behavior or timeout changes; focused, race, and full gates pass.
+# 2026-08-07 (Issue #1272 — fetched bootstrap source provenance)
+
+- Command intent: make `scripts/init.sh` report and use an immutable current
+  requested source without changing legitimate reusable task branches.
+- User intent: acceptance evidence must distinguish merged-main bootstrap
+  source from a task worktree's later commits.
+- Success definition: fresh unqualified base resolves after fetch through a
+  stable remote-tracking SHA; explicit remote/SHA/local refs work; newly
+  created worktree HEAD equals source; reuse records source and head without
+  reset; focused and full regression gates pass on the closing PR.
+# 2026-08-08 (Issue #1282 stateful PTY frame barrier)
+
+- Command intent: turn the Lane B first-reply observation into trustworthy real-PTY evidence without changing product code.
+- User intent: never call API persistence a substitute for a visible conversation turn.
+- Success definition: first prompt completes in the isolated store and its assistant reply is sealed in a 100x30 frame before every subsequent stateful command; each later command has a visible frame and the final probe correlates the same conversation.
+- Guardrails: no sleeps as readiness, no timeout inflation, and no TUI/server/provider/persistence production changes.
+
+# 2026-08-08 (Issue #1280 — shared same-daemon acceptance lifecycle)
+
+- Command intent: give scheduled-conversation proof a safe reusable lifecycle
+  where API/SSE and PTY attach to one isolated daemon.
+- User intent: establish genuine cross-surface evidence without claiming #1010
+  or native GUI proof is complete.
+- Success definition: source/resource ownership and same-daemon attachment are
+  test-covered; listener collision leaves its owner untouched; source mismatch
+  starts no child; normal/race/full gates pass in a reviewable child PR.
+- Guardrails: no scheduler semantics, persistence migration, production
+  harnessd behavior, GUI work, or #1010 close in this slice.
+
+## Independent review repair
+
+- Completion must be a broadcast fact: both readiness and teardown need to
+  observe the same child exit without consuming one another's signal.
+- A caller's parent environment cannot select lifecycle-owned resource paths;
+  only explicit non-resource test configuration may cross into the child.
+- Source revision alone is insufficient evidence for a daemon process. Retain
+  canonical executable path and content digest so stale or arbitrary commands
+  cannot claim the current source identity.
+
+## P1 cleanup/reap repair
+
+- A recorded PID is not authority after reaping: Close must observe completed
+  ownership before signaling, because process-group identifiers can be reused.
+- SIGKILL is an escalation request, not proof of exit. Keep artifact logging
+  open until bounded reaping confirms the exact owned child and its wait result.
+
+# 2026-08-08 (Issue #1281 — API manifest daemon provenance binding)
+
+- Command intent: prevent an API coverage report from treating a manually
+  supplied listener as proof of the daemon source that supplied the inventory.
+- User intent: inventory and execution-plan evidence must remain attributable
+  to one reviewable, lifecycle-owned daemon without claiming execution proof.
+- Success definition: manifest source SHA and lifecycle source/address/command
+  provenance match before the report reads live inventory; a source mismatch
+  fails first; reports retain inventory and accepted daemon identity; focused,
+  race, and full gates pass on the closing PR.
+- Guardrails: reuse lifecycle's durable artifact only; no new public endpoint,
+  scheduler behavior, persistence migration, or GUI/TUI claim.
+
+## P1 executable identity revalidation
+
+- A lifecycle artifact is launch-time evidence, not perpetual authority. Its
+  command record must be revalidated at report consumption against the current
+  canonical executable bytes.
+- Fail closed for relative, symlink/noncanonical, missing, unreadable, or
+  digest-mismatched paths before any live inventory request or coverage claim.
 ## 2026-07-31 — Issue #1058 review expansion
 
 - Command intent: address PR #1061 review comment 3687057509 before handoff by

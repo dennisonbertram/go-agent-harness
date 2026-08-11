@@ -112,7 +112,7 @@ a user message starts with `/<skill-name>`, the skill is invoked explicitly rega
 Skills are loaded at startup from two directories (highest precedence first):
 
 1. `<workspace>/.go-harness/skills/` — local, workspace-scoped
-2. `$HARNESS_GLOBAL_DIR/skills/` (default: `~/.go-harness/skills/`) — global
+2. `$HARNESS_SKILLS_DIR/` when set, otherwise `$HARNESS_GLOBAL_DIR/skills/` (default: `~/.go-harness/skills/`) — global. `HARNESS_SKILLS_DIR` must be absolute.
 
 A local skill with the same name as a global skill takes precedence. The server hot-reloads
 both directories every `HARNESS_WATCH_INTERVAL_SECONDS` (default: `5` seconds) when

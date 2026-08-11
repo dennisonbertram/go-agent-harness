@@ -7,10 +7,9 @@ import (
 	htools "go-agent-harness/internal/harness/tools"
 )
 
-// CallbackEventBridge forwards delayed-callback lifecycle events
-// (callback.scheduled / callback.fired / callback.canceled) from a
-// tools.CallbackManager onto the originating run's event stream so they are
-// observable on the live SSE stream.
+// CallbackEventBridge forwards delayed-callback lifecycle events from a
+// tools.CallbackManager into the owning conversation so they are observable
+// through live SSE and conversation replay.
 //
 // Observability semantics:
 //
@@ -18,11 +17,10 @@ import (
 //     set_delayed_callback tool call is executing, i.e. DURING the originating
 //     run. The run is live, so the bridge resolves it by conversation ID and
 //     the event is observable on that run's SSE stream in real time.
-//   - callback.fired and callback.canceled may occur after the originating run
-//     has ended (the timer fires, or the manager is shut down). If a live run
-//     still exists for the conversation the event is emitted there; otherwise
-//     there is no open stream to deliver it to and the bridge is a no-op for
-//     SSE. The event is still delivered to the sink at the unit level (T3).
+//   - Later dispatch/retry/failure/cancel events may occur after the originating
+//     run has ended. They are conversation-owned and must not be appended after
+//     a terminal run event. Recovery republishes the current durable lifecycle
+//     snapshot before active callback timers are re-armed.
 //
 // The runner is bound lazily because the CallbackManager is constructed before
 // the Runner exists (the same chicken-and-egg the callbackRunStarter solves).
@@ -75,14 +73,23 @@ func (b *CallbackEventBridge) Emit(event string, info htools.CallbackInfo) {
 	r.emitCallbackEvent(event, info)
 }
 
-// emitCallbackEvent resolves the live run that owns the callback's conversation
-// and emits the lifecycle event on it. No-op when no live run is found.
+// emitCallbackEvent keeps scheduled attached to its live scheduling run for
+// run-scoped compatibility. Later callback transitions are conversation-owned
+// work: publish them directly to the conversation journal so completion of the
+// scheduling run cannot drop retry/failure/start linkage, and never append a
+// post-terminal event to that sealed run.
 func (r *Runner) emitCallbackEvent(event string, info htools.CallbackInfo) {
-	runID, ok := r.liveRunForConversation(info.ConversationID)
-	if !ok {
-		return
+	if event == string(EventCallbackScheduled) {
+		if runID, ok := r.liveRunForConversation(info.ConversationID); ok {
+			r.emit(runID, EventType(event), callbackEventPayload(info))
+			return
+		}
 	}
-	r.emit(runID, EventType(event), callbackEventPayload(info))
+	originRunID := info.RunID
+	if originRunID == "" {
+		originRunID = "callback_" + info.ID
+	}
+	r.emitToConversation(info.ConversationID, originRunID, EventType(event), callbackEventPayload(info))
 }
 
 // liveRunForConversation returns the ID of the most-recently-created
@@ -119,7 +126,7 @@ func (r *Runner) liveRunForConversation(convID string) (string, bool) {
 
 // callbackEventPayload builds the SSE payload for a callback lifecycle event.
 func callbackEventPayload(info htools.CallbackInfo) map[string]any {
-	return map[string]any{
+	payload := map[string]any{
 		"callback_id":     info.ID,
 		"conversation_id": info.ConversationID,
 		"state":           string(info.State),
@@ -128,4 +135,17 @@ func callbackEventPayload(info htools.CallbackInfo) map[string]any {
 		"fires_at":        info.FiresAt,
 		"created_at":      info.CreatedAt,
 	}
+	if info.RunID != "" {
+		payload["run_id"] = info.RunID
+	}
+	if info.Attempt > 0 {
+		payload["attempt"] = info.Attempt
+	}
+	if !info.NextAttemptAt.IsZero() {
+		payload["next_attempt_at"] = info.NextAttemptAt
+	}
+	if summary := htools.SafeCallbackErrorSummary(info.LastError); summary != "" {
+		payload["last_error"] = summary
+	}
+	return payload
 }

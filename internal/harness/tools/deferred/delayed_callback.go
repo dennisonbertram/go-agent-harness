@@ -55,11 +55,15 @@ func SetDelayedCallbackTool(mgr *tools.CallbackManager) tools.Tool {
 		}
 
 		info, err := mgr.Set(tools.SetRequest{
-			ConversationID: md.ConversationID,
-			Delay:          delay,
-			Prompt:         args.Prompt,
-			TenantID:       md.TenantID,
-			AgentID:        md.AgentID,
+			ConversationID:    md.ConversationID,
+			Delay:             delay,
+			Prompt:            args.Prompt,
+			TenantID:          md.TenantID,
+			AgentID:           md.AgentID,
+			Model:             md.Model,
+			ProviderName:      md.ProviderName,
+			AllowFallback:     md.AllowFallback,
+			FallbackProviders: append([]string(nil), md.FallbackProviders...),
 		})
 		if err != nil {
 			return "", fmt.Errorf("set_delayed_callback failed: %w", err)
@@ -132,7 +136,10 @@ func ListDelayedCallbacksTool(mgr *tools.CallbackManager) tools.Tool {
 			return "", fmt.Errorf("list_delayed_callbacks: no run metadata in context")
 		}
 
-		callbacks := mgr.List(md.ConversationID)
+		callbacks, err := mgr.ListCallbacks(ctx, md.ConversationID)
+		if err != nil {
+			return "", fmt.Errorf("list_delayed_callbacks failed: %w", err)
+		}
 		return tools.MarshalToolResult(callbacks)
 	}
 

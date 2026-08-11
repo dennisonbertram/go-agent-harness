@@ -185,6 +185,7 @@ struct TranscriptTests {
             event(
                 .toolApprovalRequired,
                 ["call_id": "a", "tool": "bash", "arguments": "{}"]))
+        #expect(transcript.pendingApproval?.runID == "run_t")
         #expect(transcript.pendingApproval?.tool == "bash")
         #expect(transcript.runState == .waitingForUser)
 
@@ -210,6 +211,7 @@ struct TranscriptTests {
                 ]))
 
         let plan = transcript.pendingPlan
+        #expect(plan?.runID == "run_t")
         #expect(plan?.plan.contains("Do the thing") == true)
         #expect(plan?.options.map(\.id) == ["a", "b"])
         #expect(plan?.options.first?.description == "Smaller steps")
@@ -260,6 +262,84 @@ struct TranscriptTests {
         #expect(transcript.usage.totalTokens == 282)
         #expect(transcript.usage.promptTokens == 260)
         #expect(transcript.usage.completionTokens == 22)
+        #expect(transcript.usage.costUSD == 0.0025)
+        #expect(transcript.usage.costIsKnown)
+    }
+
+    /// A stream may reach the terminal snapshot without the earlier
+    /// `usage.delta` frame being available to this client. The terminal event
+    /// is still a complete, authoritative accounting snapshot from harnessd,
+    /// so rendering completion with zero usage is incorrect.
+    @Test("reconciles terminal accounting before completed state is observable")
+    func terminalEventReconcilesUsage() {
+        var transcript = Transcript()
+        transcript.apply(
+            event(
+                .runCompleted,
+                [
+                    "usage_totals": [
+                        "prompt_tokens_total": 260,
+                        "completion_tokens_total": 22,
+                        "total_tokens": 282,
+                    ],
+                    "cost_totals": [
+                        "cost_usd_total": 0.0025,
+                        "cost_status": "available",
+                    ],
+                ]))
+
+        #expect(transcript.runState == .completed)
+        #expect(transcript.usage.promptTokens == 260)
+        #expect(transcript.usage.completionTokens == 22)
+        #expect(transcript.usage.totalTokens == 282)
+        #expect(transcript.usage.costUSD == 0.0025)
+        #expect(transcript.usage.costIsKnown)
+    }
+
+    @Test("incomplete terminal accounting preserves earlier usage")
+    func incompleteTerminalAccountingDoesNotEraseUsage() {
+        var transcript = Transcript()
+        transcript.apply(
+            event(
+                .usageDelta,
+                [
+                    "cumulative_usage": ["total_tokens": 150],
+                    "cumulative_cost_usd": 0.001,
+                    "cost_status": "available",
+                ]))
+        transcript.apply(event(.runCompleted, ["usage_totals": [:], "cost_totals": [:]]))
+
+        #expect(transcript.runState == .completed)
+        #expect(transcript.usage.totalTokens == 150)
+        #expect(transcript.usage.costUSD == 0.001)
+        #expect(transcript.usage.costIsKnown)
+    }
+
+    /// Conversation-stream terminal handling immediately reconciles durable
+    /// messages. That rebuild must preserve the accounting the just-applied
+    /// event made visible; otherwise a real run flashes completed then loses
+    /// its usage before the UI can render it.
+    @Test("durable message reconciliation retains terminal accounting")
+    func reconcileRetainsTerminalUsage() {
+        var transcript = Transcript()
+        transcript.apply(
+            event(
+                .runCompleted,
+                [
+                    "usage_totals": ["total_tokens": 282],
+                    "cost_totals": ["cost_usd_total": 0.0025, "cost_status": "available"],
+                ]))
+
+        transcript.reconcile(
+            messages: [
+                StoredMessage(
+                    role: "user", content: "list the workspace", step: nil, toolCalls: nil),
+                StoredMessage(
+                    role: "assistant", content: "I listed it.", step: nil, toolCalls: nil),
+            ], preservingUsage: true)
+
+        #expect(transcript.runState == .completed)
+        #expect(transcript.usage.totalTokens == 282)
         #expect(transcript.usage.costUSD == 0.0025)
         #expect(transcript.usage.costIsKnown)
     }

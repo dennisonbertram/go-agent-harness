@@ -24,10 +24,18 @@ type SSEEventMsg struct {
 	Raw       json.RawMessage
 	ID        string
 	RunID     string
+	// Conversation is true only for the selected-conversation bridge. It lets
+	// the reducer retain a long-lived subscription independently of a run.
+	Conversation   bool
+	ConversationID string
 }
 
 // SSEErrorMsg signals a stream read/parse error.
-type SSEErrorMsg struct{ Err error }
+type SSEErrorMsg struct {
+	Err            error
+	Conversation   bool
+	ConversationID string
+}
 
 // SSEDoneMsg signals the stream ended. EventType is "run.completed" or
 // "run.failed" for a genuine terminal event delivered by the harness itself.
@@ -40,12 +48,35 @@ type SSEErrorMsg struct{ Err error }
 type SSEDoneMsg struct {
 	EventType string
 	Error     string // non-empty on run.failed
+	// RunID owns a terminal event. It is empty only for bridge-level lifecycle
+	// sentinels such as bridge.closed, which have no server event envelope.
+	// Retaining this identity prevents a late terminal from a previous run from
+	// settling the currently displayed run after a resumed conversation starts
+	// its own local SSE bridge.
+	RunID          string
+	Conversation   bool
+	ConversationID string
 }
 
 // SSEDropMsg signals a message was dropped due to channel backpressure. The
 // bridge now delivers real events with blocking sends specifically so this
 // should not happen in normal operation; it remains as a diagnostic hook.
-type SSEDropMsg struct{}
+type SSEDropMsg struct {
+	Conversation   bool
+	ConversationID string
+}
+
+// SSEConversationReplayBoundaryMsg reports whether a conversation SSE server
+// accepted the optional snapshot/replay boundary handshake. It is emitted by
+// the bridge before its first decoded event so older servers can retain the
+// pre-existing selected-conversation behavior rather than leaving the UI
+// waiting forever for a marker they do not implement.
+type SSEConversationReplayBoundaryMsg struct {
+	Supported      bool
+	StatusCode     int
+	Conversation   bool
+	ConversationID string
+}
 
 // SSEReconnectedMsg carries a freshly established SSE bridge channel and its
 // cancel func after an automatic reconnect attempt (see reconnectSSECmd)
@@ -95,8 +126,13 @@ type ToolCallChunkMsg struct {
 
 // ─── Run Lifecycle Messages ──────────────────────────────────────────────────
 
-// RunStartedMsg signals a new run has been started.
-type RunStartedMsg struct{ RunID string }
+// RunStartedMsg signals a new run has been started. ConversationID is
+// authoritative when a run is a continuation: its child RunID may differ from
+// the conversation that owns durable history and conversation SSE events.
+type RunStartedMsg struct {
+	RunID          string
+	ConversationID string
+}
 
 // RunCompletedMsg signals a run completed successfully.
 type RunCompletedMsg struct{ RunID string }
@@ -396,6 +432,9 @@ type ConversationMessage struct {
 type ConversationHistoryMsg struct {
 	ConversationID string
 	Messages       []ConversationMessage
+	// LastEventID is the exact event boundary paired with Messages by the
+	// harness. Empty means an old server or no trustworthy durable cursor.
+	LastEventID string
 }
 
 // ConversationHistoryErrorMsg signals that fetching a resumed conversation's

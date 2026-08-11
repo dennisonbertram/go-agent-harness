@@ -215,6 +215,7 @@ When a variable is absent, the corresponding endpoint returns `401`.
 | Variable | Default | Description |
 |---|---|---|
 | `HARNESS_GLOBAL_DIR` | `~/.go-harness` | Global directory for skills, workflows, and script tools. |
+| `HARNESS_SKILLS_DIR` | `$HARNESS_GLOBAL_DIR/skills` | Absolute override for the global skill root used consistently by loading, authoring, verification, hot reload, and Go workflow skill-bundle discovery. Relative values fail daemon startup. |
 | `HARNESS_RECIPES_DIR` | — | Directory for recipe definitions. |
 | `HARNESS_WORKFLOWS_DIR` | — | Directory for YAML workflow definitions. |
 | `HARNESS_NETWORKS_DIR` | — | Directory for network (agent graph) definitions. |

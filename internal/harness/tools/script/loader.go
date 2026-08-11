@@ -31,6 +31,10 @@ import (
 const (
 	defaultTimeoutSeconds = 30
 	maxTimeoutSeconds     = 300
+	// scriptWaitDrainDelay bounds the inherited-stdio drain after the handler
+	// has killed its process group. A child outside the group must not turn a
+	// configured script timeout into an unbounded Cmd.Wait.
+	scriptWaitDrainDelay = 2 * time.Second
 )
 
 // ScriptToolDef holds the parsed content of a tool.json manifest.
@@ -212,11 +216,18 @@ func makeScriptHandler(scriptPath string, timeoutSec int, toolName string) tools
 		defer cancel()
 
 		//nolint:gosec // scriptPath comes from a trusted local directory
-		cmd := exec.CommandContext(ctx, scriptPath)
+		// Do not use CommandContext here: its independent cancellation goroutine
+		// can kill only the direct script before this handler gets to kill the
+		// full process group. This handler owns the context transition and group
+		// kill below, which keeps descendants and their inherited stdio together.
+		cmd := exec.Command(scriptPath)
 
 		// Place the script in its own process group so we can kill the
 		// entire group (including any shell child processes) on timeout.
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		// Once the group is gone, a descendant that still owns stdout/stderr must
+		// not leave cmd.Wait draining pipes forever (#1216).
+		cmd.WaitDelay = scriptWaitDrainDelay
 
 		// Restrict environment: only HOME and PATH, no secrets.
 		cmd.Env = []string{

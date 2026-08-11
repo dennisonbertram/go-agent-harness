@@ -5,28 +5,114 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 )
 
 // MemoryStore is an in-memory implementation of Store.
 // Useful for unit tests that don't require SQLite.
 // All operations are thread-safe.
 type MemoryStore struct {
-	mu              sync.RWMutex
-	runs            map[string]*Run
-	messages        map[string][]*Message // keyed by runID
-	events          map[string][]*Event   // keyed by runID
-	nextEventCursor int64
-	apiKeys         map[string]*APIKey // keyed by key ID (issue #9)
+	mu                 sync.RWMutex
+	runs               map[string]*Run
+	messages           map[string][]*Message // keyed by runID
+	events             map[string][]*Event   // keyed by runID
+	nextEventCursor    int64
+	apiKeys            map[string]*APIKey // keyed by key ID (issue #9)
+	cronRunStarts      map[string]CronRunStart
+	conversationOwners map[string]conversationRunOwner
+}
+
+type conversationRunOwner struct {
+	tenantID string
+	agentID  string
 }
 
 // NewMemoryStore creates a new in-memory store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		runs:     make(map[string]*Run),
-		messages: make(map[string][]*Message),
-		events:   make(map[string][]*Event),
-		apiKeys:  make(map[string]*APIKey),
+		runs:               make(map[string]*Run),
+		messages:           make(map[string][]*Message),
+		events:             make(map[string][]*Event),
+		apiKeys:            make(map[string]*APIKey),
+		cronRunStarts:      make(map[string]CronRunStart),
+		conversationOwners: make(map[string]conversationRunOwner),
 	}
+}
+
+// ClaimCronRunStart atomically reserves a tenant-scoped idempotency key.
+func (m *MemoryStore) ClaimCronRunStart(_ context.Context, start CronRunStart) (CronRunStart, bool, error) {
+	if start.TenantID == "" || start.IdempotencyKey == "" || start.Fingerprint == "" || start.RunID == "" {
+		return CronRunStart{}, false, fmt.Errorf("store: complete cron run start binding is required")
+	}
+	if start.CreatedAt.IsZero() {
+		start.CreatedAt = time.Now().UTC()
+	}
+	key := start.TenantID + "\x00" + start.IdempotencyKey
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing, ok := m.cronRunStarts[key]; ok {
+		return existing, false, nil
+	}
+	m.cronRunStarts[key] = start
+	return start, true, nil
+}
+
+// AcquireCronRunStartDispatchLease atomically claims or renews a dispatch lease.
+func (m *MemoryStore) AcquireCronRunStartDispatchLease(_ context.Context, tenantID, idempotencyKey, owner string, now, leaseUntil time.Time) (CronRunStart, bool, error) {
+	if tenantID == "" || idempotencyKey == "" || owner == "" || !leaseUntil.After(now) {
+		return CronRunStart{}, false, fmt.Errorf("store: valid cron run dispatch lease is required")
+	}
+	key := tenantID + "\x00" + idempotencyKey
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	start, ok := m.cronRunStarts[key]
+	if !ok {
+		return CronRunStart{}, false, fmt.Errorf("store: cron run start binding not found")
+	}
+	if start.DispatchOwner != "" && start.DispatchOwner != owner && start.DispatchLeaseUntil.After(now) {
+		return start, false, nil
+	}
+	start.DispatchOwner = owner
+	start.DispatchLeaseUntil = leaseUntil
+	m.cronRunStarts[key] = start
+	return start, true, nil
+}
+
+// RenewCronRunStartDispatchLease extends a live lease held by the same owner.
+func (m *MemoryStore) RenewCronRunStartDispatchLease(_ context.Context, tenantID, idempotencyKey, owner string, now, leaseUntil time.Time) (CronRunStart, bool, error) {
+	if tenantID == "" || idempotencyKey == "" || owner == "" || !leaseUntil.After(now) {
+		return CronRunStart{}, false, fmt.Errorf("store: valid cron run dispatch lease is required")
+	}
+	key := tenantID + "\x00" + idempotencyKey
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	start, ok := m.cronRunStarts[key]
+	if !ok {
+		return CronRunStart{}, false, fmt.Errorf("store: cron run start binding not found")
+	}
+	if start.DispatchOwner != owner || !start.DispatchLeaseUntil.After(now) {
+		return start, false, nil
+	}
+	start.DispatchLeaseUntil = leaseUntil
+	m.cronRunStarts[key] = start
+	return start, true, nil
+}
+
+// MarkCronRunStartAccepted records that the current lease owner dispatched the reserved run.
+func (m *MemoryStore) MarkCronRunStartAccepted(_ context.Context, tenantID, idempotencyKey, owner string) error {
+	key := tenantID + "\x00" + idempotencyKey
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	start, ok := m.cronRunStarts[key]
+	if !ok {
+		return fmt.Errorf("store: cron run start binding not found")
+	}
+	if owner == "" || start.DispatchOwner != owner {
+		return ErrCronRunDispatchLeaseLost
+	}
+	start.Accepted = true
+	m.cronRunStarts[key] = start
+	return nil
 }
 
 // CreateRun persists a new run record.
@@ -38,6 +124,18 @@ func (m *MemoryStore) CreateRun(_ context.Context, run *Run) error {
 	defer m.mu.Unlock()
 	if _, exists := m.runs[run.ID]; exists {
 		return fmt.Errorf("store: run %q already exists", run.ID)
+	}
+	if run.ConversationID != "" {
+		tenantID, agentID := normalizeConversationOwner(run.TenantID, run.AgentID)
+		if owner, exists := m.conversationOwners[run.ConversationID]; exists {
+			if owner.tenantID != tenantID || owner.agentID != agentID {
+				return fmt.Errorf("store: conversation %q: %w", run.ConversationID, ErrConversationOwnerConflict)
+			}
+		} else {
+			// All remaining in-memory operations are non-failing, so this claim
+			// and the run insertion form one lock-scoped atomic operation.
+			m.conversationOwners[run.ConversationID] = conversationRunOwner{tenantID: tenantID, agentID: agentID}
+		}
 	}
 	cp := copyRun(run)
 	m.runs[run.ID] = cp

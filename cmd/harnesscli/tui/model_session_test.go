@@ -1,6 +1,8 @@
 package tui_test
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +74,130 @@ func TestSS007_SessionPickerSelectUpdatesConversationID(t *testing.T) {
 	// Overlay should close after selection.
 	if m.OverlayActive() && m.ActiveOverlay() == "sessions" {
 		t.Error("sessions overlay should close after a session is selected")
+	}
+}
+
+// TestIssue1246_SessionSelectionStartsBoundaryReplay proves the real keyboard
+// seam: /sessions plus Enter must produce the model's selection message and
+// start its atomic replay-to-live handoff rather than silently swallowing Enter.
+func TestIssue1246_SessionSelectionRehydratesDurableTranscript(t *testing.T) {
+	boundaryRequest := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/conversations/conv-selected/messages" {
+			t.Error("supported selected-session path must not GET message history")
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/conversations/conv-selected/events" {
+			t.Errorf("boundary request = %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if got := r.Header.Get("X-Harness-Conversation-Replay-Boundary"); got != "snapshot" {
+			t.Errorf("boundary header = %q, want snapshot", got)
+		}
+		if got := r.Header.Get("Last-Event-ID"); got != "" {
+			t.Errorf("Last-Event-ID = %q, want empty initial boundary cursor", got)
+		}
+		w.Header().Set("X-Harness-Conversation-Replay-Boundary", "snapshot")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: conversation.replay.completed\ndata: {\"type\":\"conversation.replay.completed\",\"payload\":{\"messages\":[],\"last_event_id\":\"snapshot:1\"}}\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		boundaryRequest <- struct{}{}
+	}))
+	defer srv.Close()
+
+	cfg := tui.DefaultTUIConfig()
+	cfg.BaseURL = srv.URL
+	m := tui.New(cfg)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = m2.(tui.Model)
+	m.SessionStore().Add(tui.StoredSessionEntry{ID: "conv-selected", StartedAt: time.Now()})
+	m = sendSlashCommand(m, "/sessions")
+
+	m2, enterCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m2.(tui.Model)
+	if enterCmd == nil {
+		t.Fatal("Enter on sessions overlay must emit a selected-session command")
+	}
+
+	var selected tui.SessionPickerSelectedMsg
+	selectedFound := false
+	switch result := enterCmd().(type) {
+	case tui.SessionPickerSelectedMsg:
+		selected = result
+		selectedFound = true
+	case tea.BatchMsg:
+		for _, sub := range result {
+			if sub == nil {
+				continue
+			}
+			if msg, ok := sub().(tui.SessionPickerSelectedMsg); ok {
+				selected = msg
+				selectedFound = true
+				break
+			}
+		}
+	default:
+		t.Fatalf("sessions Enter command = %T, want SessionPickerSelectedMsg or batch", result)
+	}
+	if !selectedFound {
+		t.Fatal("sessions Enter did not translate picker selection to SessionPickerSelectedMsg")
+	}
+
+	m2, selectionCmd := m.Update(selected)
+	m = m2.(tui.Model)
+	if selectionCmd == nil {
+		t.Fatal("selected session must enqueue atomic conversation replay")
+	}
+	batch, ok := selectionCmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatal("selected session must batch status and boundary stream startup")
+	}
+	for _, cmd := range batch {
+		if cmd != nil {
+			_ = cmd()
+		}
+	}
+	select {
+	case <-boundaryRequest:
+	case <-time.After(time.Second):
+		t.Fatal("selected session did not start the supported boundary SSE stream")
+	}
+	if !strings.Contains(m.View(), "Loading conversation conv-selected") {
+		t.Fatalf("selection must show replay loading state, got:\n%s", m.View())
+	}
+}
+
+func TestIssue1246_StaleHistoryCannotPolluteNewSelection(t *testing.T) {
+	m := initModel(t, 100, 30)
+	m2, _ := m.Update(tui.SessionPickerSelectedMsg{SessionID: "conv-a"})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.SessionPickerSelectedMsg{SessionID: "conv-b"})
+	m = m2.(tui.Model)
+
+	m2, _ = m.Update(tui.ConversationHistoryMsg{ConversationID: "conv-a", Messages: []tui.ConversationMessage{{Role: "assistant", Content: "A_STALE_REPLY"}}})
+	m = m2.(tui.Model)
+	if strings.Contains(m.View(), "A_STALE_REPLY") {
+		t.Fatal("late history from A must not render after selecting B")
+	}
+
+	// An older server reaches the existing GET fallback only after its selected
+	// conversation boundary is declared unsupported.
+	m2, _ = m.Update(tui.SSEConversationReplayBoundaryMsg{Conversation: true, ConversationID: "conv-b", Supported: false, StatusCode: 200})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.ConversationHistoryMsg{ConversationID: "conv-b", Messages: []tui.ConversationMessage{{Role: "assistant", Content: "B_CURRENT_REPLY"}}})
+	m = m2.(tui.Model)
+	if !strings.Contains(m.View(), "B_CURRENT_REPLY") {
+		t.Fatal("current B history must render")
+	}
+
+	m2, _ = m.Update(tui.ConversationHistoryErrorMsg{ConversationID: "conv-a", Err: "late A error"})
+	m = m2.(tui.Model)
+	if strings.Contains(m.StatusMsg(), "late A error") {
+		t.Fatal("late history error from A must not overwrite B status")
 	}
 }
 

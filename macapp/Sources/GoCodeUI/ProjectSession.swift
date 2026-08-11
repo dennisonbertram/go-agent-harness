@@ -136,6 +136,18 @@ public final class ProjectSession {
         self.serverEnvironment = serverEnvironment
     }
 
+    /// Deterministic native/ToolWalk integration seam. Production callers use
+    /// the URL/supervisor initializer above; tests inject the same client used
+    /// by their URLProtocol fixture so `Runner.walk` exercises ProjectSession.
+    init(workspace: URL, client: HarnessClient) {
+        self.workspace = workspace
+        externalBaseURL = nil
+        serverEnvironment = [:]
+        self.client = client
+        run = RunSession(client: client)
+        phase = .ready
+    }
+
     public var name: String { workspace.lastPathComponent }
     public var isReady: Bool { phase == .ready }
 
@@ -299,6 +311,56 @@ public final class ProjectSession {
         }
     }
 
+    /// Executes only a server-advertised scheduled-task action, then reloads
+    /// the authoritative task union even when the action fails. This avoids a
+    /// stale Activity row claiming an action succeeded after a concurrent
+    /// scheduler transition, restart, or permission change.
+    public func performTaskAction(_ action: TaskAction, for task: TaskInfo) async {
+        guard let client, task.actions?.contains(action) == true else { return }
+        do {
+            switch (task.type, action) {
+            case (.cron, .pause):
+                try await client.pauseCron(id: task.id, expectedUpdatedAt: task.updatedAtVersion)
+            case (.cron, .resume):
+                try await client.resumeCron(id: task.id, expectedUpdatedAt: task.updatedAtVersion)
+            case (.cron, .delete):
+                try await client.deleteCron(id: task.id, expectedUpdatedAt: task.updatedAtVersion)
+            case (.callback, .cancel):
+                try await client.cancelCallback(id: task.id)
+            default:
+                // Generic task actions either have a different existing
+                // control path or are an unknown additive server action.
+                return
+            }
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+        await refreshActivity()
+    }
+
+    /// Opens the actual conversation behind a scheduled task. A linked run is
+    /// only made the active chat control target after its own non-terminal
+    /// event passes through RunSession's reducer; terminal history opens as a
+    /// transcript without inventing Stop/approve/steer authority.
+    @discardableResult
+    public func openScheduledTask(_ task: TaskInfo) async -> Bool {
+        guard let client, let conversationID = task.conversationID, !conversationID.isEmpty else {
+            return false
+        }
+        do {
+            let messages = try await client.messages(conversationID: conversationID)
+            run?.load(messages: messages, conversationID: conversationID)
+            await refreshRewindPoints()
+            if let runID = task.runID, !runID.isEmpty {
+                await run?.attachLinkedActiveRun(runID: runID)
+            }
+            return true
+        } catch {
+            statusMessage = error.localizedDescription
+            return false
+        }
+    }
+
     /// Rehydrates the selected conversation from durable messages when Chat
     /// becomes visible. Conversation SSE remains the low-latency path; this is
     /// the durability safety net for a completed scheduled run that happened
@@ -329,12 +391,20 @@ public final class ProjectSession {
         extraDirs.removeAll { $0 == url }
     }
 
-    public func submit() {
+    @discardableResult
+    public func submit() -> RunSubmission? {
+        submit(timeoutAfter: nil)
+    }
+
+    /// ToolWalk alone supplies a bounded timeout; GUI submission remains
+    /// deliberately parameter-free.
+    @discardableResult
+    package func submit(timeoutAfter: Duration?) -> RunSubmission? {
         run?.model = selectedModel
         run?.planMode = planMode
         run?.extraDirs = extraDirs.map(\.path)
         run?.profile = selectedProfile
-        run?.submit()
+        let submission = run?.submit(timeoutAfter: timeoutAfter)
         Task {
             // `run.submit()` starts its own unstructured task that only sets
             // `conversationID` once harnessd has actually minted one — a
@@ -348,6 +418,7 @@ public final class ProjectSession {
             }
             await refreshConversations()
         }
+        return submission
     }
 
     public func openConversation(_ conversation: ConversationInfo) async {

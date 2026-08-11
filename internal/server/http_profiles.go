@@ -80,13 +80,13 @@ func (s *Server) handleListProfiles(w http.ResponseWriter, _ *http.Request) {
 
 // handleGetProfile returns a single profile by name.
 func (s *Server) handleGetProfile(w http.ResponseWriter, _ *http.Request, name string) {
+	var sourceTier string
 	var p *profiles.Profile
 	var err error
-
 	if s.profilesProject != "" || s.profilesUser != "" {
-		p, err = profiles.LoadProfileWithDirs(name, s.profilesProject, s.profilesUser)
+		p, sourceTier, err = profiles.ResolveProfileWithDirsAndSourceTier(name, s.profilesProject, s.profilesUser)
 	} else {
-		p, err = profiles.LoadProfile(name)
+		p, sourceTier, err = profiles.ResolveProfileWithSourceTier(name)
 	}
 
 	if err != nil {
@@ -97,9 +97,6 @@ func (s *Server) handleGetProfile(w http.ResponseWriter, _ *http.Request, name s
 		writeError(w, http.StatusNotFound, "not_found", "profile not found: "+name)
 		return
 	}
-
-	// Determine source tier.
-	sourceTier := s.resolveProfileSourceTier(name)
 
 	response := map[string]any{
 		"name":               p.Meta.Name,
@@ -117,21 +114,6 @@ func (s *Server) handleGetProfile(w http.ResponseWriter, _ *http.Request, name s
 		response["system_prompt"] = p.Runner.SystemPrompt
 	}
 	writeJSON(w, http.StatusOK, response)
-}
-
-// resolveProfileSourceTier returns the source tier for a named profile.
-func (s *Server) resolveProfileSourceTier(name string) string {
-	if s.profilesProject != "" {
-		if p, err := profiles.LoadProfileWithDirs(name, s.profilesProject, ""); err == nil && p != nil {
-			return "project"
-		}
-	}
-	if s.profilesUser != "" {
-		if p, err := profiles.LoadProfileWithDirs(name, "", s.profilesUser); err == nil && p != nil {
-			return "user"
-		}
-	}
-	return "built-in"
 }
 
 // profileMutationRequest is the JSON body for POST and PUT /v1/profiles/{name}.

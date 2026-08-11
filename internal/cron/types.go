@@ -1,16 +1,70 @@
 package cron
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"time"
 )
 
+// Scope is the immutable ownership tuple for a conversational cron job.
+type Scope struct{ TenantID, ConversationID, AgentID string }
+
+func (s Scope) Complete() bool { return s.TenantID != "" && s.ConversationID != "" && s.AgentID != "" }
+func (s Scope) Matches(job Job) bool {
+	return s.TenantID == job.TenantID && s.ConversationID == job.ConversationID && s.AgentID == job.AgentID
+}
+
+type scopeContextKey struct{}
+
+func WithScope(ctx context.Context, scope Scope) context.Context {
+	return context.WithValue(ctx, scopeContextKey{}, scope)
+}
+func ScopeFromContext(ctx context.Context) (Scope, bool) {
+	scope, ok := ctx.Value(scopeContextKey{}).(Scope)
+	return scope, ok && scope.Complete()
+}
+
 var ErrJobNotFound = errors.New("cron job not found")
+var ErrJobConflict = errors.New("cron job update conflict")
+var ErrJobAmbiguous = errors.New("cron job name is ambiguous")
+
+// ValidationError identifies a caller-correctable cron request error without
+// conflating it with storage, scheduler, or transport failures. It keeps the
+// actionable message emitted by cronsd while allowing adapters to retain its
+// HTTP 400 meaning across process boundaries.
+type ValidationError struct{ message string }
+
+func (e *ValidationError) Error() string { return e.message }
+
+// NewValidationError constructs a typed validation error with a bounded,
+// caller-safe message.
+func NewValidationError(message string) error { return &ValidationError{message: message} }
+
+func IsValidationError(err error) bool {
+	var target *ValidationError
+	return errors.As(err, &target)
+}
+
+// ErrExecutionSkippedOverlap is persisted on a skipped execution when another
+// cron-started run already owns the same durable conversation scope. It is a
+// stable machine-readable reason, not display prose.
+var ErrExecutionSkippedOverlap = errors.New("cron execution skipped: scoped conversation already active")
+
+// ErrRunObservationUnavailable means the runner lifecycle bridge is not bound
+// yet. It is nonterminal: startup ordering must not turn a live run into a
+// failed history record or release its scoped lease.
+var ErrRunObservationUnavailable = errors.New("cron run observation unavailable")
 
 func IsJobNotFound(err error) bool {
 	return errors.Is(err, ErrJobNotFound) || errors.Is(err, sql.ErrNoRows)
 }
+
+func IsJobConflict(err error) bool {
+	return errors.Is(err, ErrJobConflict)
+}
+
+func IsJobAmbiguous(err error) bool { return errors.Is(err, ErrJobAmbiguous) }
 
 // Job status constants
 const (
@@ -21,11 +75,18 @@ const (
 
 // Execution status constants
 const (
-	ExecStatusPending = "pending"
-	ExecStatusRunning = "running"
-	ExecStatusSuccess = "success"
-	ExecStatusFailed  = "failed"
-	ExecStatusTimeout = "timeout"
+	ExecStatusQueued    = "queued"
+	ExecStatusStarting  = "starting"
+	ExecStatusRunning   = "running"
+	ExecStatusSucceeded = "succeeded"
+	ExecStatusFailed    = "failed"
+	ExecStatusTimeout   = "timeout"
+	ExecStatusSkipped   = "skipped"
+
+	// Compatibility names retain existing callers while the wire lifecycle is
+	// made explicit. Older persisted `pending`/`success` rows remain readable.
+	ExecStatusPending = ExecStatusQueued
+	ExecStatusSuccess = ExecStatusSucceeded
 )
 
 // Execution type constants
@@ -81,11 +142,19 @@ type CreateJobRequest struct {
 
 // UpdateJobRequest is the request payload for updating a job.
 type UpdateJobRequest struct {
-	Schedule   *string `json:"schedule,omitempty"`
-	ExecConfig *string `json:"execution_config,omitempty"`
-	Status     *string `json:"status,omitempty"`
-	TimeoutSec *int    `json:"timeout_seconds,omitempty"`
-	Tags       *string `json:"tags,omitempty"`
+	Schedule          *string    `json:"schedule,omitempty"`
+	ExecConfig        *string    `json:"execution_config,omitempty"`
+	Status            *string    `json:"status,omitempty"`
+	TimeoutSec        *int       `json:"timeout_seconds,omitempty"`
+	Tags              *string    `json:"tags,omitempty"`
+	ExpectedUpdatedAt *time.Time `json:"expected_updated_at,omitempty"`
+}
+
+// DeleteJobRequest optionally carries an optimistic version. Operator callers
+// may keep using an empty DELETE, while model-facing tools always supply the
+// updated_at returned by cron_get.
+type DeleteJobRequest struct {
+	ExpectedUpdatedAt *time.Time `json:"expected_updated_at,omitempty"`
 }
 
 // ListExecutionsRequest is the request payload for listing executions.

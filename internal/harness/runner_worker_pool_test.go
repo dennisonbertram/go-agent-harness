@@ -97,6 +97,59 @@ func (p *seqRecordingProvider) Complete(_ context.Context, _ CompletionRequest) 
 	return CompletionResult{Content: "done"}, nil
 }
 
+func newWorkerPoolTestRunner(t *testing.T, provider Provider, release func(), config RunnerConfig) *Runner {
+	t.Helper()
+	runner := NewRunner(provider, NewRegistry(), config)
+	t.Cleanup(func() {
+		if release != nil {
+			release()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := runner.Shutdown(ctx); err != nil {
+			t.Errorf("shutdown bounded worker-pool test Runner: %v", err)
+		}
+	})
+	return runner
+}
+
+func TestWorkerPoolTestRunnerCleanupStopsDispatcher(t *testing.T) {
+	dispatcherExited := make(chan struct{})
+	var runner *Runner
+	provider := newCountingHeldProvider()
+	release := func() {
+		provider.releaseFirst()
+		provider.releaseRest()
+	}
+
+	t.Run("bounded fixture", func(t *testing.T) {
+		runner = newWorkerPoolTestRunner(t, provider, release, RunnerConfig{
+			DefaultModel:   "gpt-4.1-mini",
+			WorkerPoolSize: 1,
+		})
+		runner.poolDispatcherExitHook = func() { close(dispatcherExited) }
+		if _, err := runner.StartRun(RunRequest{Prompt: "blocked until cleanup"}); err != nil {
+			t.Fatalf("start blocked fixture run: %v", err)
+		}
+		select {
+		case <-provider.firstEntered:
+		case <-time.After(time.Second):
+			t.Fatal("blocked fixture run did not enter provider")
+		}
+	})
+
+	select {
+	case <-dispatcherExited:
+		return
+	default:
+		release()
+		if err := runner.Shutdown(context.Background()); err != nil {
+			t.Fatalf("clean leaked bounded Runner after red assertion: %v", err)
+		}
+		t.Fatal("bounded Runner dispatcher survived fixture cleanup because Shutdown was omitted")
+	}
+}
+
 // TestWorkerPool_QueuedStatusWhenPoolFull verifies that when more runs are
 // started than the pool size, the extras have RunStatusQueued.
 func TestWorkerPool_QueuedStatusWhenPoolFull(t *testing.T) {
@@ -107,7 +160,7 @@ func TestWorkerPool_QueuedStatusWhenPoolFull(t *testing.T) {
 
 	prov := newHeldProvider()
 
-	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+	runner := newWorkerPoolTestRunner(t, prov, prov.unblockAll, RunnerConfig{
 		DefaultModel:   "gpt-4.1-mini",
 		MaxSteps:       1,
 		WorkerPoolSize: poolSize,
@@ -170,12 +223,12 @@ func TestWorkerPool_QueuedTransitionsToRunning(t *testing.T) {
 	const poolSize = 1
 
 	prov := newCountingHeldProvider()
-	t.Cleanup(func() {
+	releaseProvider := func() {
 		prov.releaseFirst()
 		prov.releaseRest()
-	})
+	}
 
-	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+	runner := newWorkerPoolTestRunner(t, prov, releaseProvider, RunnerConfig{
 		DefaultModel:   "gpt-4.1-mini",
 		MaxSteps:       1,
 		WorkerPoolSize: poolSize,
@@ -230,7 +283,7 @@ func TestWorkerPool_ConfigurablePoolSize(t *testing.T) {
 			total := poolSize + 2
 			prov := newHeldProvider()
 
-			runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+			runner := newWorkerPoolTestRunner(t, prov, prov.unblockAll, RunnerConfig{
 				DefaultModel:   "gpt-4.1-mini",
 				MaxSteps:       1,
 				WorkerPoolSize: poolSize,
@@ -339,7 +392,7 @@ func TestWorkerPool_PoolSize1Serializes(t *testing.T) {
 
 	prov := newSeqRecordingProvider()
 
-	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+	runner := newWorkerPoolTestRunner(t, prov, nil, RunnerConfig{
 		DefaultModel:   "gpt-4.1-mini",
 		MaxSteps:       1,
 		WorkerPoolSize: 1,
@@ -383,12 +436,12 @@ func TestWorkerPool_RunQueuedEventEmitted(t *testing.T) {
 	t.Parallel()
 
 	prov := newCountingHeldProvider()
-	t.Cleanup(func() {
+	releaseProvider := func() {
 		prov.releaseFirst()
 		prov.releaseRest()
-	})
+	}
 
-	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+	runner := newWorkerPoolTestRunner(t, prov, releaseProvider, RunnerConfig{
 		DefaultModel:   "gpt-4.1-mini",
 		MaxSteps:       1,
 		WorkerPoolSize: 1,

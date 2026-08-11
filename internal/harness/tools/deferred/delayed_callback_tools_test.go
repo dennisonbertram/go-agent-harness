@@ -10,6 +10,8 @@ package deferred_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +19,12 @@ import (
 	tools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/harness/tools/deferred"
 )
+
+type listFailingCallbackStore struct{ tools.CallbackStore }
+
+func (*listFailingCallbackStore) ListAll(context.Context) ([]tools.CallbackInfo, error) {
+	return nil, errors.New("durable callback list unavailable")
+}
 
 func TestSetDelayedCallbackTool(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
@@ -30,6 +38,10 @@ func TestSetDelayedCallbackTool(t *testing.T) {
 		}
 
 		ctx := movedTestContextWithConversation("conv-1")
+		ctx = context.WithValue(ctx, tools.ContextKeyRunMetadata, tools.RunMetadata{
+			ConversationID: "conv-1", Model: "fixture-model", ProviderName: "missing-primary",
+			AllowFallback: true, FallbackProviders: []string{"secondary", "tertiary"},
+		})
 		args, _ := json.Marshal(map[string]string{"delay": "30s", "prompt": "check deploy"})
 		result, err := tool.Handler(ctx, args)
 		if err != nil {
@@ -45,6 +57,11 @@ func TestSetDelayedCallbackTool(t *testing.T) {
 		}
 		if info.ConversationID != "conv-1" {
 			t.Errorf("expected conv-1, got %s", info.ConversationID)
+		}
+		if info.Model != "fixture-model" || info.ProviderName != "missing-primary" ||
+			!info.AllowFallback || !slices.Equal(info.FallbackProviders, []string{"secondary", "tertiary"}) {
+			t.Fatalf("callback routing = model:%q provider:%q allow:%v fallbacks:%v",
+				info.Model, info.ProviderName, info.AllowFallback, info.FallbackProviders)
 		}
 	})
 
@@ -172,6 +189,17 @@ func TestListDelayedCallbacksTool(t *testing.T) {
 		_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
 		if err == nil {
 			t.Fatal("expected error for missing run metadata")
+		}
+	})
+
+	t.Run("durable list failure is not an empty success", func(t *testing.T) {
+		mgr := tools.NewCallbackManager(nil, tools.WithCallbackStore(&listFailingCallbackStore{}))
+		defer mgr.Shutdown()
+
+		tool := deferred.ListDelayedCallbacksTool(mgr)
+		ctx := movedTestContextWithConversation("conv-1")
+		if result, err := tool.Handler(ctx, json.RawMessage(`{}`)); err == nil {
+			t.Fatalf("durable list failure returned success %q", result)
 		}
 	})
 }

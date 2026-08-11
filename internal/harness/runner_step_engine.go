@@ -767,6 +767,7 @@ func (se *stepEngine) run() {
 			callArgs       json.RawMessage
 			toolCtx        context.Context
 			waitingForUser bool
+			publishPending askUserPendingPublisher
 			rewindPointID  string
 		}
 
@@ -792,6 +793,30 @@ func (se *stepEngine) run() {
 			}
 		}
 		enforceAgentSwarmSoleCall := agentSwarmSoleIdx >= 0 && len(result.ToolCalls) > 1
+
+		// task_complete is a terminal child control, so it cannot share a model
+		// response with an ordinary tool. Reject the whole turn before building
+		// pending executions: otherwise a sibling could mutate state even though
+		// the child claims to be terminal.
+		taskCompleteSoleIdx := -1
+		if r.isMandatoryChildTaskComplete(runID, "task_complete") {
+			for i, call := range result.ToolCalls {
+				if call.Name == "task_complete" {
+					taskCompleteSoleIdx = i
+					break
+				}
+			}
+		}
+		if taskCompleteSoleIdx >= 0 && len(result.ToolCalls) > 1 {
+			for _, call := range result.ToolCalls {
+				rejected := mustJSON(map[string]any{"error": "task_complete must be the only tool call in a model response; re-issue it alone"})
+				r.emit(runID, EventToolCallBlocked, map[string]any{"call_id": call.ID, "tool": call.Name, "reason": "task_complete_sole_call"})
+				messages = append(messages, Message{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: rejected})
+			}
+			r.stepSetMessages(runID, messages)
+			r.emit(runID, EventRunStepCompleted, map[string]any{"step": step, "tool_calls": len(result.ToolCalls), "duration_ms": time.Since(stepStartTime).Milliseconds()})
+			continue
+		}
 
 		// DeniedTools is the per-run absolute denylist (swarm members deny
 		// agent_swarm to forbid nested swarms); denied calls are blocked below
@@ -870,6 +895,28 @@ func (se *stepEngine) run() {
 				continue
 			}
 
+			if call.Name == "task_complete" && !r.isMandatoryChildTaskComplete(runID, call.Name) {
+				deniedOutput := mustJSON(map[string]any{"error": "task_complete is only available to trusted forked child runs"})
+				r.emit(runID, EventToolCallBlocked, map[string]any{"call_id": call.ID, "tool": call.Name, "reason": "task_complete_untrusted_origin"})
+				messages = append(messages, Message{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: deniedOutput})
+				r.stepSetMessages(runID, messages)
+				continue
+			}
+
+			if r.profileActionDenied(runID, call.Name) {
+				deniedOutput := mustJSON(map[string]any{
+					"error": fmt.Sprintf("tool %q is not available in this run: it is denied by the selected profile capability policy", call.Name),
+				})
+				r.emit(runID, EventToolCallBlocked, map[string]any{
+					"call_id": call.ID,
+					"tool":    call.Name,
+					"reason":  "profile_capability_denied",
+				})
+				messages = append(messages, Message{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: deniedOutput})
+				r.stepSetMessages(runID, messages)
+				continue
+			}
+
 			if !r.toolAllowedForRun(runID, call.Name) {
 				deniedOutput := mustJSON(map[string]any{
 					"error": fmt.Sprintf("tool %q is not available in this run: it is outside this run's allowed_tools list", call.Name),
@@ -908,7 +955,7 @@ func (se *stepEngine) run() {
 				continue
 			}
 
-			if !r.skillConstraints.IsToolAllowed(runID, call.Name) {
+			if !r.isMandatoryChildTaskComplete(runID, call.Name) && !r.skillConstraints.IsToolAllowed(runID, call.Name) {
 				constraint, _ := r.skillConstraints.Active(runID)
 				constraintSkillName := ""
 				var constraintAllowed []string
@@ -986,21 +1033,46 @@ func (se *stepEngine) run() {
 			}
 			if rc.ApprovalBroker != nil {
 				if needsApproval {
-					deadlineAt := time.Now().UTC().Add(rc.AskUserTimeout)
-					r.setStatus(runID, RunStatusWaitingForApproval, "", "")
-					r.emit(runID, EventToolApprovalRequired, map[string]any{
-						"call_id":     call.ID,
-						"tool":        call.Name,
-						"arguments":   call.Arguments,
-						"deadline_at": deadlineAt.Format(time.RFC3339),
-					})
-					approved, _, approvalErr := rc.ApprovalBroker.Ask(ctx, ApprovalRequest{
+					approvalReq := ApprovalRequest{
 						RunID:   runID,
 						CallID:  call.ID,
 						Tool:    call.Name,
 						Args:    call.Arguments,
 						Timeout: rc.AskUserTimeout,
+					}
+					approvalWaiter, registerErr := rc.ApprovalBroker.Register(ctx, approvalReq)
+					if registerErr != nil {
+						r.setStatus(runID, RunStatusRunning, "", "")
+						r.emit(runID, EventToolApprovalDenied, map[string]any{
+							"call_id": call.ID,
+							"tool":    call.Name,
+							"reason":  registerErr.Error(),
+						})
+						deniedOutput := mustJSON(map[string]any{
+							"error": map[string]any{
+								"code":    "approval_timeout",
+								"message": registerErr.Error(),
+							},
+						})
+						r.emit(runID, EventToolCallCompleted, map[string]any{
+							"call_id":     call.ID,
+							"tool":        call.Name,
+							"output":      deniedOutput,
+							"duration_ms": int64(0),
+						})
+						messages = append(messages, Message{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: deniedOutput})
+						r.stepSetMessages(runID, messages)
+						continue
+					}
+					deadlineAt := approvalWaiter.Pending().DeadlineAt
+					r.setStatus(runID, RunStatusWaitingForApproval, "", "")
+					r.emit(runID, EventToolApprovalRequired, map[string]any{
+						"call_id":     call.ID,
+						"tool":        call.Name,
+						"arguments":   call.Arguments,
+						"deadline_at": deadlineAt.Format(time.RFC3339Nano),
 					})
+					approved, _, approvalErr := approvalWaiter.Wait(ctx)
 					if approvalErr != nil {
 						if ctx.Err() != nil {
 							r.cancelledRun(runID)
@@ -1096,26 +1168,100 @@ func (se *stepEngine) run() {
 			// status-restoring code below, so the run kept executing while
 			// clients saw it as blocked on input that would never be asked for.
 			waitingForUser := false
+			var pendingNotifier htools.AskUserQuestionPendingNotifier
+			var publishPending askUserPendingPublisher
 			if call.Name == htools.AskUserQuestionToolName {
-				questions, err := htools.ParseAskUserQuestionArgs(callArgs)
+				_, err := htools.ParseAskUserQuestionArgs(callArgs)
 				if err == nil {
 					waitingForUser = true
-					deadlineAt := time.Now().UTC().Add(rc.AskUserTimeout)
-					r.setStatus(runID, RunStatusWaitingForUser, "", "")
-					r.emit(runID, EventRunWaitingForUser, map[string]any{
-						"call_id":     call.ID,
-						"tool":        call.Name,
-						"questions":   questions,
-						"deadline_at": deadlineAt,
-					})
+					publication := &askUserPendingPublication{}
+					publishPending = func(notifyCtx context.Context, pending htools.AskUserQuestionPending) bool {
+						return publication.publish(notifyCtx, func() bool {
+							return r.setStatusAndEmitContext(
+								notifyCtx,
+								runID,
+								RunStatusWaitingForUser,
+								"",
+								"",
+								EventRunWaitingForUser,
+								map[string]any{
+									"call_id":     pending.CallID,
+									"tool":        pending.Tool,
+									"questions":   pending.Questions,
+									"deadline_at": pending.DeadlineAt,
+								},
+							)
+						})
+					}
+					pendingNotifier = func(notifyCtx context.Context, pending htools.AskUserQuestionPending) {
+						publishPending(notifyCtx, pending)
+					}
 				}
 			}
 
 			meta := r.runMetadata(runID)
 			toolCtx := context.WithValue(ctx, htools.ContextKeyRunID, runID)
+			toolCtx = context.WithValue(toolCtx, trustedForkOriginKey{}, trustedForkOrigin{runner: r, parentRunID: runID})
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyPlanModeGate, runPlanModeGate{runner: r, runID: runID})
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyToolCallID, call.ID)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyRunMetadata, meta)
+			outerCallID := call.ID
+			toolCtx = htools.WithRecipeStepAuthorizer(toolCtx, func(stepIndex int, stepName, toolName string, args json.RawMessage) (json.RawMessage, error) {
+				memberCallID := fmt.Sprintf("%s:recipe:%d:%s", outerCallID, stepIndex, stepName)
+				if !r.toolAllowedForRun(runID, toolName) {
+					return nil, fmt.Errorf("tool %q is not allowed for this run", toolName)
+				}
+				if r.profileActionDenied(runID, toolName) {
+					return nil, fmt.Errorf("tool %q is denied by the selected profile capability policy", toolName)
+				}
+				if !r.skillConstraints.IsToolAllowed(runID, toolName) {
+					return nil, fmt.Errorf("tool %q is not allowed by the active skill constraint", toolName)
+				}
+				memberCall := ToolCall{ID: memberCallID, Name: toolName, Arguments: string(args)}
+				if denied, denialOutput := r.applyPreToolUseHooks(ctx, runID, memberCall, &args); denied {
+					return nil, fmt.Errorf("pre-tool hook denied recipe member %q: %s", toolName, denialOutput)
+				}
+				effect, err := r.permissionRuleDecision(runID, toolName, args)
+				if err != nil || effect == PermissionEffectDeny {
+					return nil, fmt.Errorf("tool %q is denied by a permission rule", toolName)
+				}
+				needsApproval := effect == PermissionEffectAsk
+				if !needsApproval && rc.ApprovalBroker != nil && effectiveApprovalPolicy != ApprovalPolicyNone && effectiveApprovalPolicy != "" {
+					switch effectiveApprovalPolicy {
+					case ApprovalPolicyAll:
+						needsApproval = true
+					case ApprovalPolicyDestructive:
+						needsApproval = runTools.IsMutating(toolName)
+					}
+				}
+				if !needsApproval {
+					return args, nil
+				}
+				if rc.ApprovalBroker == nil {
+					return nil, fmt.Errorf("tool %q requires approval but no approval broker is configured", toolName)
+				}
+				waiter, err := rc.ApprovalBroker.Register(ctx, ApprovalRequest{RunID: runID, CallID: memberCallID, Tool: toolName, Args: string(args), Timeout: rc.AskUserTimeout})
+				if err != nil {
+					return nil, fmt.Errorf("register approval for recipe member %q: %w", toolName, err)
+				}
+				r.setStatus(runID, RunStatusWaitingForApproval, "", "")
+				r.emit(runID, EventToolApprovalRequired, map[string]any{"call_id": memberCallID, "tool": toolName, "arguments": string(args), "deadline_at": waiter.Pending().DeadlineAt.Format(time.RFC3339Nano), "recipe_step": stepName})
+				approved, _, err := waiter.Wait(ctx)
+				r.setStatus(runID, RunStatusRunning, "", "")
+				if err != nil {
+					r.emit(runID, EventToolApprovalDenied, map[string]any{"call_id": memberCallID, "tool": toolName, "reason": err.Error(), "recipe_step": stepName})
+					return nil, fmt.Errorf("approval for recipe member %q: %w", toolName, err)
+				}
+				if !approved {
+					r.emit(runID, EventToolApprovalDenied, map[string]any{"call_id": memberCallID, "tool": toolName, "recipe_step": stepName})
+					return nil, fmt.Errorf("recipe member %q denied by operator", toolName)
+				}
+				r.emit(runID, EventToolApprovalGranted, map[string]any{"call_id": memberCallID, "tool": toolName, "recipe_step": stepName})
+				return args, nil
+			})
+			if pendingNotifier != nil {
+				toolCtx = htools.WithAskUserQuestionPendingNotifier(toolCtx, pendingNotifier)
+			}
 			toolCtx = htools.WithSandboxScope(toolCtx, effectiveSandboxScope)
 			// Extra directory roots granted on the run request (TUI /add-dir)
 			// ride the same per-call context so file-tool confinement permits
@@ -1173,6 +1319,7 @@ func (se *stepEngine) run() {
 				callArgs:       callArgs,
 				toolCtx:        toolCtx,
 				waitingForUser: waitingForUser,
+				publishPending: publishPending,
 			})
 		}
 
@@ -1187,18 +1334,43 @@ func (se *stepEngine) run() {
 				if rewind, ok := rc.ConversationStore.(RewindStore); ok && runTools.IsMutating(pe.call.Name) {
 					meta := r.runMetadata(runID)
 					workspace := rc.WorkspaceBaseOptions.RepoPath
-					if workspace != "" {
-						point := RewindPoint{ID: fmt.Sprintf("%s-%d-%s", runID, step, pe.call.ID), ConversationID: meta.ConversationID, Step: step, Tool: pe.call.Name}
-						if err := CaptureRewindPreImage(pe.toolCtx, rewind, point, workspace, pe.callArgs); err != nil {
+					// A restore root is a trust boundary. Persist only the canonical
+					// runner-configured workspace before SaveRewindPoint can make this
+					// mutating action rewindable. In particular, do not let a later
+					// terminal write (or a client/CWD fallback) decide the root.
+					metaStore, metaStoreOK := rc.ConversationStore.(interface {
+						EnsureConversationMeta(context.Context, string, string, string) error
+					})
+					tenantID := meta.TenantID
+					if tenantID == "default" {
+						tenantID = ""
+					}
+					if workspace != "" && metaStoreOK {
+						if err := metaStore.EnsureConversationMeta(pe.toolCtx, meta.ConversationID, workspace, tenantID); err != nil {
 							r.emit(runID, EventToolCallCompleted, map[string]any{"call_id": pe.call.ID, "tool": pe.call.Name, "rewind_warning": err.Error()})
-						}
-						if paths := ExtractRewindPaths(pe.call.Name, pe.callArgs); len(paths) > 0 {
-							pe.rewindPointID = point.ID
+						} else {
+							point := RewindPoint{ID: fmt.Sprintf("%s-%d-%s", runID, step, pe.call.ID), ConversationID: meta.ConversationID, Step: step, Tool: pe.call.Name}
+							if err := CaptureRewindPreImage(pe.toolCtx, rewind, point, workspace, pe.callArgs); err != nil {
+								r.emit(runID, EventToolCallCompleted, map[string]any{"call_id": pe.call.ID, "tool": pe.call.Name, "rewind_warning": err.Error()})
+							}
+							if paths := ExtractRewindPaths(pe.call.Name, pe.callArgs); len(paths) > 0 {
+								pe.rewindPointID = point.ID
+							}
 						}
 					}
 				}
 				start := time.Now()
+				stopPendingObserver := func() {}
+				if pe.waitingForUser {
+					stopPendingObserver = r.observeAskUserPending(
+						pe.toolCtx,
+						runID,
+						rc.AskUserBroker,
+						pe.publishPending,
+					)
+				}
 				out, err := runTools.Execute(pe.toolCtx, pe.call.Name, pe.callArgs)
+				stopPendingObserver()
 				if err == nil && pe.rewindPointID != "" {
 					if rewind, ok := rc.ConversationStore.(RewindStore); ok {
 						_ = FinalizeRewindPoint(pe.toolCtx, rewind, pe.rewindPointID, rc.WorkspaceBaseOptions.RepoPath)
@@ -1331,6 +1503,10 @@ func (se *stepEngine) run() {
 			}
 
 			if toolErr == nil {
+				if call.Name == "task_complete" && isValidatedTaskCompleteOutput(toolOutput) {
+					r.completeRun(runID, toolOutput)
+					return
+				}
 				if persist, isReset := htools.IsResetContextResult(call.Name, toolOutput); isReset {
 					r.mu.Lock()
 					var resetIdx int
@@ -1458,5 +1634,117 @@ func (se *stepEngine) run() {
 		r.failRunMaxTurns(runID, effectiveMaxTurns)
 	} else {
 		r.failRunMaxSteps(runID, effectiveMaxSteps)
+	}
+}
+
+func isValidatedTaskCompleteOutput(output string) bool {
+	var payload struct {
+		TaskComplete bool   `json:"_task_complete"`
+		Status       string `json:"status"`
+		Summary      string `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		return false
+	}
+	if !payload.TaskComplete || strings.TrimSpace(payload.Summary) == "" {
+		return false
+	}
+	switch payload.Status {
+	case "completed", "partial", "failed":
+		return true
+	default:
+		return false
+	}
+}
+
+type askUserPendingPublisher func(context.Context, htools.AskUserQuestionPending) bool
+
+// askUserPendingPublication serializes the broker callback and fallback
+// observer, but only consumes the publication after status and event
+// persistence both succeed. A transient failure therefore remains retryable.
+type askUserPendingPublication struct {
+	gate      contextMutex
+	published bool
+}
+
+func (p *askUserPendingPublication) publish(ctx context.Context, publish func() bool) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := p.gate.lock(ctx); err != nil {
+		return false
+	}
+	defer p.gate.unlock()
+	if p.published {
+		return true
+	}
+	if ctx.Err() != nil || !publish() {
+		return false
+	}
+	p.published = true
+	return true
+}
+
+func (r *Runner) observeAskUserPending(
+	ctx context.Context,
+	runID string,
+	broker htools.AskUserQuestionBroker,
+	publish askUserPendingPublisher,
+) func() {
+	if broker == nil || publish == nil {
+		return func() {}
+	}
+	observerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	var lifecycleMu sync.Mutex
+	started := false
+	stopped := false
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			if pending, ok := broker.Pending(runID); ok {
+				lifecycleMu.Lock()
+				if stopped {
+					lifecycleMu.Unlock()
+					return
+				}
+				started = true
+				lifecycleMu.Unlock()
+
+				notifyCtx := observerCtx
+				notifyCancel := func() {}
+				if !pending.DeadlineAt.IsZero() {
+					notifyCtx, notifyCancel = context.WithDeadline(observerCtx, pending.DeadlineAt)
+				}
+				defer notifyCancel()
+				for {
+					if publish(notifyCtx, pending) {
+						return
+					}
+					select {
+					case <-notifyCtx.Done():
+						return
+					case <-ticker.C:
+					}
+				}
+			}
+			select {
+			case <-observerCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return func() {
+		lifecycleMu.Lock()
+		if !started {
+			stopped = true
+			cancel()
+		}
+		lifecycleMu.Unlock()
+		<-done
+		cancel()
 	}
 }

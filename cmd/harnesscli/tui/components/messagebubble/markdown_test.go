@@ -233,3 +233,78 @@ func TestTUI023_VisualSnapshot_200x50(t *testing.T) {
 		t.Error("snapshot output is empty")
 	}
 }
+
+// TestRenderResolvesBackgroundOnce is the regression test for issue #1296.
+//
+// Each terminal background detection writes an OSC 11 query and a cursor-position
+// query to the TTY. Bubble Tea holds stdin in raw mode for the life of the program,
+// so it reads the terminal's replies before termenv can and renders them as literal
+// text in the input line. Detecting once per render is therefore the leak, and the
+// detection count is the part of it this package can measure without a PTY.
+func TestRenderResolvesBackgroundOnce(t *testing.T) {
+	calls := 0
+	restore := setStyleProbesForTest(
+		func() bool { return true }, // pretend stdout is a TTY
+		func() bool { calls++; return true },
+	)
+	defer restore()
+
+	// Vary the width so a width change cannot silently re-trigger detection.
+	for _, width := range []int{80, 100, 60, 80, 120} {
+		out := NewMarkdownRenderer(width).Render("# Heading")
+		// False-positive control: a Render that returned nothing could pass the
+		// call-count assertion without doing any work.
+		if out == "" {
+			t.Fatalf("Render at width %d returned empty output", width)
+		}
+	}
+
+	if calls != 1 {
+		t.Errorf("background detected %d times across 5 renders; want 1", calls)
+	}
+}
+
+// TestResolveStyleUsesNoTTYWithoutTerminal pins the pre-existing behavior that
+// glamour's auto style falls back to the NoTTY stylesheet when stdout is not a
+// terminal. The fix replaces auto style with an explicit one, so this branch has
+// to be reproduced rather than inherited.
+func TestResolveStyleUsesNoTTYWithoutTerminal(t *testing.T) {
+	detected := false
+	restore := setStyleProbesForTest(
+		func() bool { return false }, // not a TTY
+		func() bool { detected = true; return true },
+	)
+	defer restore()
+
+	if got := resolveGlamourStyle(); got != "notty" {
+		t.Errorf("resolveGlamourStyle() = %q, want %q", got, "notty")
+	}
+	if detected {
+		t.Error("background was probed with no terminal attached; that write is the leak")
+	}
+}
+
+// TestResolveGlamourStyleMapsBackground checks both TTY branches resolve to the
+// stylesheet matching the detected background.
+func TestResolveGlamourStyleMapsBackground(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dark bool
+		want string
+	}{
+		{"dark background", true, "dark"},
+		{"light background", false, "light"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := setStyleProbesForTest(
+				func() bool { return true },
+				func() bool { return tc.dark },
+			)
+			defer restore()
+
+			if got := resolveGlamourStyle(); got != tc.want {
+				t.Errorf("resolveGlamourStyle() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

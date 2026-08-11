@@ -188,10 +188,16 @@ func TestSourceManagerRunWorkflowFailsOnInvalidProtocolAfterResult(t *testing.T)
 
 	source := `package main
 
-import "fmt"
+import (
+	"fmt"
+
+	sdk "go-agent-harness/pkg/workflowsdk"
+)
 
 func main() {
-	fmt.Println(` + "`" + `{"type":"result","result":{"ok":true}}` + "`" + `)
+	sdk.Main(func(ctx *sdk.Context) (any, error) {
+		return map[string]any{"ok": true}, nil
+	})
 	fmt.Println(` + "`" + `{"type":"log","args":{"message":"late side effect"}}` + "`" + `)
 }`
 	_, err := manager.CreateWorkflow(context.Background(), workflow.CreateWorkflowRequest{

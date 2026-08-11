@@ -106,6 +106,74 @@ func TestRestoreRewindEndpointRequiresPointID(t *testing.T) {
 	}
 }
 
+// TestIssue1256_ForkRewindUsesInheritedTrustedWorkspace proves that the fork's
+// persisted owner root, not the server process CWD or a client value, controls
+// its destructive restore.
+func TestIssue1256_ForkRewindUsesInheritedTrustedWorkspace(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "safe.txt")
+	if err := os.WriteFile(path, []byte("after"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveConversation(ctx, "source-1256", []harness.Message{{Role: "user", Content: "keep"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateConversationMeta(ctx, "source-1256", workspace, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ForkConversation(ctx, "source-1256", "fork-1256"); err != nil {
+		t.Fatalf("ForkConversation: %v", err)
+	}
+	owner, err := store.GetConversationOwner(ctx, "fork-1256")
+	if err != nil || owner == nil || owner.Workspace != workspace {
+		t.Fatalf("fork owner = %+v, err=%v; want trusted workspace %q", owner, err, workspace)
+	}
+	if err := store.SaveRewindPoint(ctx, harness.RewindPoint{ID: "safe-point", ConversationID: "fork-1256", Tool: "write", Files: []harness.RewindFileSnapshot{{Path: "safe.txt", Content: []byte("before"), Exists: true, ExpectedHash: harness.RewindContentHash([]byte("after"))}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{ConversationStore: store})
+	body, _ := json.Marshal(map[string]any{"point_id": "safe-point"})
+	rr := httptest.NewRecorder()
+	New(runner).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/conversations/fork-1256/rewind", bytes.NewReader(body)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "before" {
+		t.Fatalf("fork workspace content = %q, err=%v, want before", got, err)
+	}
+}
+
+// TestIssue1256_EmptyWorkspaceFailsClosedWithoutMutatingFiles ensures a
+// rewind point cannot obtain a root from request, CWD, or another workspace.
+func TestIssue1256_EmptyWorkspaceFailsClosedWithoutMutatingFiles(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "safe.txt")
+	if err := os.WriteFile(path, []byte("after"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveConversation(ctx, "empty-1256", []harness.Message{{Role: "user", Content: "keep"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRewindPoint(ctx, harness.RewindPoint{ID: "empty-point", ConversationID: "empty-1256", Tool: "write", Files: []harness.RewindFileSnapshot{{Path: "safe.txt", Content: []byte("before"), Exists: true, ExpectedHash: harness.RewindContentHash([]byte("after"))}}}); err != nil {
+		t.Fatal(err)
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{ConversationStore: store})
+	body, _ := json.Marshal(map[string]any{"point_id": "empty-point"})
+	rr := httptest.NewRecorder()
+	New(runner).ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/conversations/empty-1256/rewind", bytes.NewReader(body)))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s, want 404", rr.Code, rr.Body.String())
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "after" {
+		t.Fatalf("untrusted workspace file = %q, err=%v, want untouched after", got, err)
+	}
+}
+
 // TestRestoreRewindEndpointRefusesExternalModificationWithoutForce verifies
 // the HTTP handler surfaces the store's refusal as a 409 without a force flag,
 // and that force:true proceeds anyway.

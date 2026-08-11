@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	htools "go-agent-harness/internal/harness/tools"
 	"gopkg.in/yaml.v3"
 )
 
@@ -240,7 +241,7 @@ func (e *Executor) Execute(ctx context.Context, r Recipe, params map[string]stri
 
 	results := make([]stepResult, 0, len(r.Steps))
 
-	for _, step := range r.Steps {
+	for stepIndex, step := range r.Steps {
 		// Check for cancellation before each step.
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -258,6 +259,13 @@ func (e *Executor) Execute(ctx context.Context, r Recipe, params map[string]stri
 		rawArgs, err := json.Marshal(substituted)
 		if err != nil {
 			return "", fmt.Errorf("step %q: marshal args: %w", step.Name, err)
+		}
+		if authorize := htools.RecipeStepAuthorizerFromContext(ctx); authorize != nil {
+			authorizedArgs, err := authorize(stepIndex, step.Name, step.Tool, rawArgs)
+			if err != nil {
+				return "", fmt.Errorf("step %q (tool=%s) denied: %w", step.Name, step.Tool, err)
+			}
+			rawArgs = authorizedArgs
 		}
 
 		output, err := handler(ctx, rawArgs)

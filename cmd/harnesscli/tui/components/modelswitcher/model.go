@@ -135,6 +135,10 @@ type ServerModelEntry struct {
 	// Modalities lists the model's input modalities (e.g. "text", "image").
 	// Empty means unknown (older server or non-catalog source).
 	Modalities []string `json:"modalities,omitempty"`
+	// ContextWindow is the model's context window in tokens. Zero means
+	// unknown (older server or a catalog entry without the field), and callers
+	// fall back to their own default rather than dividing by zero.
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 // ReasoningEntry holds display information for a single reasoning effort level.

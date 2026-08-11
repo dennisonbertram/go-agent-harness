@@ -324,6 +324,62 @@ func TestKeychainUnavailableIsReportedNotAssumed(t *testing.T) {
 	}
 }
 
+func TestKeychainPartsValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		target      string
+		wantService string
+		wantAccount string
+		wantErr     string
+	}{
+		{
+			name:        "service and account",
+			target:      "go-harness/openai",
+			wantService: "go-harness",
+			wantAccount: "openai",
+		},
+		{
+			name:        "account preserves remaining slashes",
+			target:      "go-harness/account/with/slash",
+			wantService: "go-harness",
+			wantAccount: "account/with/slash",
+		},
+		{
+			name:    "missing separator",
+			target:  "go-harness",
+			wantErr: "<service>/<account>",
+		},
+		{
+			name:    "missing service",
+			target:  "/openai",
+			wantErr: "<service>/<account>",
+		},
+		{
+			name:    "missing account",
+			target:  "go-harness/",
+			wantErr: "<service>/<account>",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service, account, err := keychainParts(tt.target)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("keychainParts(%q) error = %v, want containing %q", tt.target, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("keychainParts(%q) error = %v", tt.target, err)
+			}
+			if service != tt.wantService || account != tt.wantAccount {
+				t.Fatalf("keychainParts(%q) = (%q, %q), want (%q, %q)", tt.target, service, account, tt.wantService, tt.wantAccount)
+			}
+		})
+	}
+}
+
 // A nil context from start-up code must not take the daemon down.
 func TestNilContextDoesNotPanic(t *testing.T) {
 	//nolint:staticcheck // deliberately passing nil: this is the regression.

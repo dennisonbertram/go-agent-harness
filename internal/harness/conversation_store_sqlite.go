@@ -471,6 +471,42 @@ UPDATE conversations SET workspace = ?, tenant_id = ? WHERE id = ?
 	return nil
 }
 
+// PreserveConversationMeta records trusted ownership metadata without allowing
+// an empty or later caller to replace an already-established workspace or
+// tenant. Each decision happens in one SQLite UPDATE statement so a concurrent
+// no-workspace terminal run cannot race a configured mutating run and erase the
+// root needed by rewind.
+func (s *SQLiteConversationStore) PreserveConversationMeta(ctx context.Context, convID, workspace, tenantID string) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE conversations
+SET workspace = CASE WHEN workspace <> '' THEN workspace ELSE ? END,
+    tenant_id = CASE WHEN tenant_id <> '' THEN tenant_id ELSE ? END
+WHERE id = ?
+`, workspace, tenantID, convID)
+	if err != nil {
+		return fmt.Errorf("preserve conversation meta: %w", err)
+	}
+	return nil
+}
+
+// EnsureConversationMeta creates (or updates) only a conversation ownership
+// row. It intentionally does not touch message history, counters, or title so
+// it is safe to call immediately before a mutating tool captures a rewind
+// point. The workspace comes from trusted runner configuration, never a tool
+// argument or HTTP request.
+func (s *SQLiteConversationStore) EnsureConversationMeta(ctx context.Context, convID, workspace, tenantID string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO conversations (id, title, msg_count, created_at, updated_at, prompt_tokens, completion_tokens, cost_usd, pinned, workspace, tenant_id)
+VALUES (?, '', 0, ?, ?, 0, 0, 0.0, 0, ?, ?)
+ON CONFLICT(id) DO UPDATE SET workspace=excluded.workspace, tenant_id=excluded.tenant_id
+`, convID, now, now, workspace, tenantID)
+	if err != nil {
+		return fmt.Errorf("ensure conversation meta: %w", err)
+	}
+	return nil
+}
+
 // GetConversationOwner returns the Conversation metadata row for convID, or nil
 // if the conversation does not exist in the store. Only the id, tenant_id, and
 // workspace fields are guaranteed to be populated; other fields may be zero.

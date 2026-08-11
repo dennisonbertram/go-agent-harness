@@ -1,0 +1,1 @@
+Read a cron job's execution history: when it ran, whether each run succeeded, and what it printed. Use this to answer "has this job been working?" — cron_get returns only the five most recent runs, while this pages back through them with limit and offset. A job that exists and is active has not necessarily run; this is how you tell.

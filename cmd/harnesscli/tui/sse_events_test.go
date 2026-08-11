@@ -379,6 +379,109 @@ func TestSSEDropMsg_NilSseCh_NoCmdRequired(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// assistant.message — terminal full-message reconciliation (issue #1056)
+// ---------------------------------------------------------------------------
+
+func TestSSEEventMsg_AssistantMessage_FinalOnlyRendersAndFinalizesOnce(t *testing.T) {
+	m := initModel(t, 80, 24).WithCancelRun(func() {})
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-final-only"})
+	model := m2.(tui.Model)
+
+	m3, _ := model.Update(tui.SSEEventMsg{EventType: "assistant.message", Raw: []byte(`{"content":"LUNA_NONSTREAM_REPLY"}`)})
+	model = m3.(tui.Model)
+	if !model.RunActive() || model.LastAssistantText() != "LUNA_NONSTREAM_REPLY" {
+		t.Fatalf("terminal message did not remain active with final text: active=%v text=%q", model.RunActive(), model.LastAssistantText())
+	}
+	if got := strings.Count(model.View(), "LUNA_NONSTREAM_REPLY"); got != 1 {
+		t.Fatalf("terminal-only assistant message rendered %d times, want once; view=%q", got, model.View())
+	}
+	m4, _ := model.Update(tui.SSEDoneMsg{EventType: "run.completed"})
+	model = m4.(tui.Model)
+	if got := model.Transcript(); len(got) != 1 || got[0].Role != "assistant" || got[0].Content != "LUNA_NONSTREAM_REPLY" {
+		t.Fatalf("transcript = %+v, want one terminal assistant reply", got)
+	}
+}
+
+func TestSSEEventMsg_AssistantMessage_DeltaThenFinalDoesNotDuplicate(t *testing.T) {
+	m := initModel(t, 80, 24).WithCancelRun(func() {})
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-streamed-final"})
+	model := m2.(tui.Model)
+	for _, event := range []tui.SSEEventMsg{
+		{EventType: "assistant.message.delta", Raw: []byte(`{"content":"streamed reply"}`)},
+		{EventType: "assistant.message", Raw: []byte(`{"content":"streamed reply"}`)},
+	} {
+		next, _ := model.Update(event)
+		model = next.(tui.Model)
+	}
+	if got := strings.Count(model.View(), "streamed reply"); got != 1 {
+		t.Fatalf("delta-plus-final reply rendered %d times, want once; view=%q", got, model.View())
+	}
+	done, _ := model.Update(tui.SSEDoneMsg{EventType: "run.completed"})
+	if got := done.(tui.Model).Transcript(); len(got) != 1 || got[0].Content != "streamed reply" {
+		t.Fatalf("transcript = %+v, want one reconciled reply", got)
+	}
+}
+
+func TestSSEEventMsg_AssistantMessage_FinalContentIsAuthoritative(t *testing.T) {
+	m := initModel(t, 80, 24).WithCancelRun(func() {})
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-final-authoritative"})
+	model := m2.(tui.Model)
+	for _, event := range []tui.SSEEventMsg{
+		{EventType: "assistant.message.delta", Raw: []byte(`{"content":"partial"}`)},
+		{EventType: "assistant.message", Raw: []byte(`{"content":"partial response complete"}`)},
+	} {
+		next, _ := model.Update(event)
+		model = next.(tui.Model)
+	}
+	if got := model.LastAssistantText(); got != "partial response complete" {
+		t.Fatalf("LastAssistantText() = %q, want authoritative final content", got)
+	}
+	if got := strings.Count(model.View(), "partial response complete"); got != 1 {
+		t.Fatalf("authoritative final reply rendered %d times, want once; view=%q", got, model.View())
+	}
+}
+
+func TestSSEEventMsg_AssistantMessage_MixedToolStepPreservesViewportAndReplayIdempotency(t *testing.T) {
+	m := initModel(t, 120, 40).WithCancelRun(func() {})
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-mixed-terminal"})
+	model := m2.(tui.Model)
+	events := []tui.SSEEventMsg{
+		{EventType: "assistant.message.delta", Raw: []byte(`{"content":"EARLY_STREAMED_STEP"}`)},
+		{EventType: "tool.call.started", Raw: []byte(`{"tool":"bash","call_id":"call-mixed","arguments":{"command":"printf tool-card"}}`)},
+		{EventType: "tool.call.completed", Raw: []byte(`{"tool":"bash","call_id":"call-mixed","output":"TOOL_OUTPUT_SENTINEL","duration_ms":8}`)},
+		{EventType: "assistant.message", Raw: []byte(`{"content":"FINAL_ONLY_AFTER_TOOL"}`)},
+	}
+	for _, event := range events {
+		next, _ := model.Update(event)
+		model = next.(tui.Model)
+	}
+	// Replayed tool completion, terminal event, and completion must be harmless.
+	for _, event := range events[len(events)-2:] {
+		next, _ := model.Update(event)
+		model = next.(tui.Model)
+	}
+	next, _ := model.Update(tui.SSEDoneMsg{EventType: "run.completed"})
+	model = next.(tui.Model)
+	next, _ = model.Update(events[len(events)-1])
+	model = next.(tui.Model)
+	next, _ = model.Update(tui.SSEDoneMsg{EventType: "run.completed"})
+	model = next.(tui.Model)
+
+	view := model.View()
+	for _, marker := range []string{"EARLY_STREAMED_STEP", "bash(", "FINAL_ONLY_AFTER_TOOL"} {
+		if got := strings.Count(view, marker); got != 1 {
+			t.Fatalf("%q rendered %d times, want once; view=%q", marker, got, view)
+		}
+	}
+	if !(strings.Index(view, "EARLY_STREAMED_STEP") < strings.Index(view, "bash(") && strings.Index(view, "bash(") < strings.Index(view, "FINAL_ONLY_AFTER_TOOL")) {
+		t.Fatalf("mixed-step blocks out of order: view=%q", view)
+	}
+	if got := model.Transcript(); len(got) != 1 || got[0].Content != "FINAL_ONLY_AFTER_TOOL" {
+		t.Fatalf("transcript after replay = %+v, want one final assistant response", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // SSEDoneMsg for run.failed — appends formatted failure output and blank line
 // ---------------------------------------------------------------------------
 

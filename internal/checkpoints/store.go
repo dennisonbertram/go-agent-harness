@@ -63,6 +63,16 @@ type WaitResult struct {
 type Store interface {
 	Create(ctx context.Context, record *Record) error
 	Update(ctx context.Context, record *Record) error
+	// ResolvePending atomically transitions one pending record. It returns the
+	// current record and won=false when another terminal transition already
+	// committed.
+	ResolvePending(
+		ctx context.Context,
+		id string,
+		status Status,
+		resumePayload string,
+		updatedAt time.Time,
+	) (record *Record, won bool, err error)
 	Get(ctx context.Context, id string) (*Record, error)
 	PendingByRun(ctx context.Context, runID string) (*Record, error)
 	PendingByWorkflowRun(ctx context.Context, workflowRunID string) (*Record, error)

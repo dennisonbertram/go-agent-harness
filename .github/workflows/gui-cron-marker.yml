@@ -1,0 +1,10 @@
+name: gui-cron-marker
+on:
+  schedule:
+    - cron: '* * * * *'
+jobs:
+  gui-cron:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print GUI_CRON_MARKER
+        run: echo "GUI_CRON_MARKER"

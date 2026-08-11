@@ -11,6 +11,7 @@ import (
 // LLM tool catalog. *harness.Registry satisfies it.
 type toolCatalog interface {
 	DefinitionsWithMetadata() []harness.ToolMetadata
+	ToolsetResolutionSnapshot() harness.ToolsetResolutionSnapshot
 }
 
 // toolCatalogEntry is the flattened, cleanly-tagged JSON shape for one tool.
@@ -21,6 +22,8 @@ type toolCatalogEntry struct {
 	Description string         `json:"description"`
 	Tier        string         `json:"tier"`
 	Tags        []string       `json:"tags,omitempty"`
+	Owner       string         `json:"owner"`
+	Condition   string         `json:"condition"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
@@ -49,11 +52,26 @@ func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 			Description: m.Definition.Description,
 			Tier:        string(m.Tier),
 			Tags:        m.Tags,
+			Owner:       m.Owner,
+			Condition:   m.Condition,
 			Parameters:  m.Definition.Parameters,
 		})
 	}
+	resolution := s.toolCatalog.ToolsetResolutionSnapshot()
+	if resolution.Incomplete {
+		writeError(w, http.StatusServiceUnavailable, "toolset_resolution_incomplete", "tool catalog resolution is incomplete: "+resolution.IncompleteReason)
+		return
+	}
+	if resolution.ConfiguredUnavailable == nil {
+		resolution.ConfiguredUnavailable = []harness.ConfiguredUnavailableToolset{}
+	}
+	if resolution.Unavailable == nil {
+		resolution.Unavailable = []harness.UnavailableToolsetObservation{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tools": entries,
-		"count": len(entries),
+		"tools":                           entries,
+		"count":                           len(entries),
+		"configured_unavailable_toolsets": resolution.ConfiguredUnavailable,
+		"unavailable":                     resolution.Unavailable,
 	})
 }

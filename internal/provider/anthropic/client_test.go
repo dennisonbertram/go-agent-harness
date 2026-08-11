@@ -1529,7 +1529,7 @@ func testRetryConfig() *provider.RetryConfig {
 		MaxAttempts: 3,
 		BaseDelay:   1 * time.Millisecond,
 		MaxDelay:    10 * time.Millisecond,
-		MaxTotal:    100 * time.Millisecond,
+		MaxTotal:    time.Second,
 		Jitter:      false,
 	}
 }

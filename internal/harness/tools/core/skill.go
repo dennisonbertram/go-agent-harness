@@ -10,7 +10,6 @@ import (
 
 	tools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/harness/tools/descriptions"
-	"go-agent-harness/internal/skills"
 )
 
 // defaultForkTimeout is the maximum duration for a forked skill execution.
@@ -239,12 +238,16 @@ func handleVerifySkill(lister tools.SkillLister, actionArgs string) (string, err
 		return "", fmt.Errorf("skill %q has no file path (cannot verify)", skillName)
 	}
 
-	verifiedAt := time.Now().UTC().Format(time.RFC3339)
-	if err := skills.WriteVerification(info.FilePath, verifiedAt, verifiedBy); err != nil {
+	verifier, ok := lister.(tools.SkillVerifier)
+	if !ok {
+		return "", fmt.Errorf("skill verification persistence is not configured")
+	}
+	verifiedAt := time.Now().UTC()
+	if err := verifier.UpdateSkillVerification(context.Background(), skillName, true, verifiedAt, verifiedBy); err != nil {
 		return "", fmt.Errorf("writing verification for skill %q: %w", skillName, err)
 	}
 
-	return fmt.Sprintf("Skill %q verified at %s by %q.", skillName, verifiedAt, verifiedBy), nil
+	return fmt.Sprintf("Skill %q verified at %s by %q.", skillName, verifiedAt.Format(time.RFC3339), verifiedBy), nil
 }
 
 // handleConversationSkill injects the skill content into the current conversation

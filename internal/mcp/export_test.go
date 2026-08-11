@@ -1,10 +1,5 @@
 package mcp
 
-import (
-	"net/http"
-	"time"
-)
-
 // HTTPConnForTest is an alias for httpConn exported only for tests.
 type HTTPConnForTest = httpConn
 
@@ -13,7 +8,7 @@ func NewHTTPConnForTest(name, url string) *httpConn {
 	return &httpConn{
 		name:     name,
 		endpoint: url,
-		client:   &http.Client{Timeout: 30 * time.Second},
+		client:   newHTTPClient(),
 	}
 }
 

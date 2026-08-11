@@ -60,6 +60,15 @@ type SSEBridgeOptions struct {
 	// login"). When empty, no Authorization header is sent at all,
 	// preserving today's unauthenticated-local behavior.
 	APIKey string
+	// KeepAliveAfterTerminal keeps the bridge open when a run terminal event is
+	// observed. Conversation streams carry terminal events for many runs and
+	// must remain subscribed for later scheduled continuations.
+	KeepAliveAfterTerminal bool
+	// ConversationReplayBoundary opts into the additive selected-conversation
+	// history/replay handoff. The server emits a replay-complete marker after
+	// its historic page, allowing the TUI to fetch an authoritative snapshot
+	// without a GET-first live-event gap. It is ignored by ordinary run SSE.
+	ConversationReplayBoundary bool
 }
 
 // StartSSEBridge connects to the SSE endpoint at url and delivers decoded
@@ -111,6 +120,9 @@ func runBridge(ctx context.Context, url string, opts SSEBridgeOptions, ch chan<-
 	if opts.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+opts.APIKey)
 	}
+	if opts.ConversationReplayBoundary {
+		req.Header.Set("X-Harness-Conversation-Replay-Boundary", "snapshot")
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -119,6 +131,14 @@ func runBridge(ctx context.Context, url string, opts SSEBridgeOptions, ch chan<-
 			send(ctx, ch, SSEDoneMsg{EventType: "bridge.closed"})
 		}
 		return
+	}
+	if opts.ConversationReplayBoundary {
+		// Send this before status handling as well: a legacy server can reject
+		// an events-first request before exposing a streaming response.
+		send(ctx, ch, SSEConversationReplayBoundaryMsg{
+			Supported:  strings.EqualFold(strings.TrimSpace(resp.Header.Get("X-Harness-Conversation-Replay-Boundary")), "snapshot"),
+			StatusCode: resp.StatusCode,
+		})
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -145,7 +165,6 @@ func runBridge(ctx context.Context, url string, opts SSEBridgeOptions, ch chan<-
 		return
 	}
 	defer resp.Body.Close()
-
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, sseScannerInitialBufferBytes), sseScannerMaxBufferBytes)
 
@@ -210,7 +229,7 @@ func runBridge(ctx context.Context, url string, opts SSEBridgeOptions, ch chan<-
 		case line == "":
 			if len(dataParts) > 0 {
 				data := strings.Join(dataParts, "\n")
-				msg := decodeSSE(event, data, id)
+				msg := decodeSSE(event, data, id, opts.KeepAliveAfterTerminal)
 				if _, ok := msg.(SSEDoneMsg); ok {
 					flushPending()
 					send(ctx, ch, msg)
@@ -226,7 +245,7 @@ func runBridge(ctx context.Context, url string, opts SSEBridgeOptions, ch chan<-
 	// may close the connection abruptly; deliver whatever data was pending.
 	if len(dataParts) > 0 && ctx.Err() == nil {
 		data := strings.Join(dataParts, "\n")
-		deliver(decodeSSE(event, data, id))
+		deliver(decodeSSE(event, data, id, opts.KeepAliveAfterTerminal))
 	}
 	flushPending()
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
@@ -294,12 +313,12 @@ type sseEnvelope struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
-func decodeSSE(event, data, id string) tea.Msg {
+func decodeSSE(event, data, id string, keepAliveAfterTerminal bool) tea.Msg {
 	var env sseEnvelope
 	if err := json.Unmarshal([]byte(data), &env); err != nil {
 		return SSEErrorMsg{Err: err}
 	}
-	if env.Type == "run.completed" || env.Type == "run.failed" {
+	if (env.Type == "run.completed" || env.Type == "run.failed") && !keepAliveAfterTerminal {
 		// Extract error message from run.failed payload so the TUI can display it.
 		var errMsg string
 		if env.Type == "run.failed" {
@@ -310,7 +329,7 @@ func decodeSSE(event, data, id string) tea.Msg {
 				errMsg = p.Error
 			}
 		}
-		return SSEDoneMsg{EventType: env.Type, Error: errMsg}
+		return SSEDoneMsg{EventType: env.Type, Error: errMsg, RunID: env.RunID}
 	}
 	// Unknown event types are forwarded as SSEEventMsg so that consumers
 	// can inspect EventType and Raw. No silent discard.

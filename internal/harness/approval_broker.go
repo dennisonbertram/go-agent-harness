@@ -74,24 +74,35 @@ type approvalDecision struct {
 type pendingApprovalEntry struct {
 	pending    PendingApproval
 	decisionCh chan approvalDecision // buffered(1), closed on decision
+	decision   *approvalDecision     // guarded by InMemoryApprovalBroker.mu
 }
 
 // ApprovalBroker is the interface for pausing/resuming tool calls that require
 // operator approval.
 //
-// Ask() is called by the runner's execute() loop to pause a tool call pending
-// approval. It blocks until Approve(), ApproveWithOption(), Deny(), context
-// cancellation, or timeout. The returned option ID is the operator's selected
-// plan approach option ("" when none was offered or chosen). Approve() and
-// Deny() are called by HTTP handlers for POST /v1/runs/{id}/approve and
-// POST /v1/runs/{id}/deny; ApproveWithOption is used when the operator picked
-// one of the presented plan approach options.
+// Register() makes an approval resolvable before the runner publishes the
+// corresponding approval-required event. The returned waiter blocks until
+// Approve(), ApproveWithOption(), Deny(), context cancellation, or timeout.
+// Ask() retains the direct register-and-wait lifecycle for callers that do not
+// publish an event between those phases. The returned option ID is the
+// operator's selected plan approach option ("" when none was offered or
+// chosen). Approve() and Deny() are called by HTTP handlers for POST
+// /v1/runs/{id}/approve and POST /v1/runs/{id}/deny; ApproveWithOption is used
+// when the operator picked one of the presented plan approach options.
 type ApprovalBroker interface {
+	Register(ctx context.Context, req ApprovalRequest) (ApprovalWaiter, error)
 	Ask(ctx context.Context, req ApprovalRequest) (approved bool, selectedOption string, err error)
 	Pending(runID string) (PendingApproval, bool)
 	Approve(runID string) error
 	ApproveWithOption(runID, option string) error
 	Deny(runID string) error
+}
+
+// ApprovalWaiter owns the blocking phase of an already-registered approval.
+// A resolution may arrive before Wait is called and must still be observed.
+type ApprovalWaiter interface {
+	Pending() PendingApproval
+	Wait(ctx context.Context) (approved bool, selectedOption string, err error)
 }
 
 // InMemoryApprovalBroker implements ApprovalBroker using in-process channels.
@@ -114,7 +125,7 @@ func NewInMemoryApprovalBroker() *InMemoryApprovalBroker {
 // option is the ID of the operator's selected plan approach option, or "" for
 // a plain approve — (false, "", nil) on denial, and (false, "", err) on
 // timeout or context cancellation.
-func (b *InMemoryApprovalBroker) Ask(ctx context.Context, req ApprovalRequest) (bool, string, error) {
+func (b *InMemoryApprovalBroker) Register(_ context.Context, req ApprovalRequest) (ApprovalWaiter, error) {
 	if req.Timeout <= 0 {
 		req.Timeout = 5 * time.Minute
 	}
@@ -135,27 +146,73 @@ func (b *InMemoryApprovalBroker) Ask(ctx context.Context, req ApprovalRequest) (
 	b.mu.Lock()
 	if _, exists := b.pending[req.RunID]; exists {
 		b.mu.Unlock()
-		return false, "", fmt.Errorf("pending approval already exists for run %q", req.RunID)
+		return nil, fmt.Errorf("pending approval already exists for run %q", req.RunID)
 	}
 	b.pending[req.RunID] = entry
 	b.mu.Unlock()
+	return &inMemoryApprovalWaiter{broker: b, req: req, entry: entry}, nil
+}
 
-	timer := time.NewTimer(req.Timeout)
+// Ask registers a pending approval and waits for its resolution. Runner paths
+// that publish an approval event call Register before publication and Wait
+// afterwards so the event is immediately actionable.
+func (b *InMemoryApprovalBroker) Ask(ctx context.Context, req ApprovalRequest) (bool, string, error) {
+	waiter, err := b.Register(ctx, req)
+	if err != nil {
+		return false, "", err
+	}
+	return waiter.Wait(ctx)
+}
+
+type inMemoryApprovalWaiter struct {
+	broker *InMemoryApprovalBroker
+	req    ApprovalRequest
+	entry  *pendingApprovalEntry
+}
+
+func (w *inMemoryApprovalWaiter) Pending() PendingApproval {
+	return w.entry.pending
+}
+
+func (w *inMemoryApprovalWaiter) Wait(ctx context.Context) (bool, string, error) {
+	remaining := time.Until(w.entry.pending.DeadlineAt)
+	if remaining <= 0 {
+		return w.resolveOrExpire()
+	}
+
+	timer := time.NewTimer(remaining)
 	defer timer.Stop()
 
 	select {
-	case decision := <-entry.decisionCh:
+	case decision := <-w.entry.decisionCh:
 		return decision.approved, decision.option, nil
 	case <-timer.C:
-		b.clearPendingIfMatch(req.RunID, entry)
-		return false, "", &ApprovalTimeoutError{
-			RunID:      req.RunID,
-			CallID:     req.CallID,
-			DeadlineAt: deadlineAt,
-		}
+		return w.resolveOrExpire()
 	case <-ctx.Done():
-		b.clearPendingIfMatch(req.RunID, entry)
+		w.broker.clearPendingIfMatch(w.req.RunID, w.entry)
 		return false, "", ctx.Err()
+	}
+}
+
+// resolveOrExpire linearizes deadline expiry against Approve/Deny using the
+// same mutex as resolve. A decision that won is returned even when Wait was
+// scheduled late; an expiry that wins removes the entry before returning so a
+// later HTTP resolution receives ErrNoPendingApproval.
+func (w *inMemoryApprovalWaiter) resolveOrExpire() (bool, string, error) {
+	w.broker.mu.Lock()
+	if w.entry.decision != nil {
+		decision := *w.entry.decision
+		w.broker.mu.Unlock()
+		return decision.approved, decision.option, nil
+	}
+	if current, ok := w.broker.pending[w.req.RunID]; ok && current == w.entry {
+		delete(w.broker.pending, w.req.RunID)
+	}
+	w.broker.mu.Unlock()
+	return false, "", &ApprovalTimeoutError{
+		RunID:      w.req.RunID,
+		CallID:     w.req.CallID,
+		DeadlineAt: w.entry.pending.DeadlineAt,
 	}
 }
 
@@ -196,10 +253,11 @@ func (b *InMemoryApprovalBroker) resolve(runID string, approved bool, option str
 		b.mu.Unlock()
 		return ErrNoPendingApproval
 	}
+	decision := approvalDecision{approved: approved, option: option}
+	entry.decision = &decision
+	entry.decisionCh <- decision
 	delete(b.pending, runID)
 	b.mu.Unlock()
-
-	entry.decisionCh <- approvalDecision{approved: approved, option: option}
 	return nil
 }
 

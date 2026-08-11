@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"go-agent-harness/internal/forensics/redaction"
 	runstore "go-agent-harness/internal/store"
 )
 
@@ -39,25 +41,496 @@ func TestRunner_PruneCompletedRunsFromMemory(t *testing.T) {
 }
 
 func TestRunner_PruneWaitsForTerminalEventPersistence(t *testing.T) {
-	runner := NewRunner(staticContentProvider{content: "done"}, NewRegistry(), RunnerConfig{
+	release := make(chan struct{})
+	runner := NewRunner(&blockingProvider{blocker: release}, NewRegistry(), RunnerConfig{
 		DefaultModel:          "test-model",
 		MaxSteps:              1,
 		MaxCompletedRetention: 1,
 		Store:                 &terminalAppendFailStore{Store: runstore.NewMemoryStore()},
 	})
 
+	runIDs := make([]string, 0, 3)
 	for i := 0; i < 3; i++ {
 		run, err := runner.StartRun(RunRequest{Prompt: fmt.Sprintf("unpersisted %d", i)})
 		if err != nil {
 			t.Fatalf("StartRun: %v", err)
 		}
-		waitForStatus(t, runner, run.ID, RunStatusCompleted)
+		runIDs = append(runIDs, run.ID)
+	}
+	close(release)
+	for _, runID := range runIDs {
+		waitForStatus(t, runner, runID, RunStatusCompleted)
 	}
 
 	runner.mu.RLock()
-	defer runner.mu.RUnlock()
 	if got := len(runner.runs); got != 3 {
+		runner.mu.RUnlock()
 		t.Fatalf("pruned terminal runs before terminal events persisted: got %d, want 3", got)
+	}
+	runner.mu.RUnlock()
+
+	_, err := runner.StartRun(RunRequest{Prompt: "must fail closed"})
+	requireTerminalDurabilityBackpressure(t, err, 3, 1)
+	_, err = runner.ContinueRun(runIDs[0], "valid source must also fail closed")
+	requireTerminalDurabilityBackpressure(t, err, 3, 1)
+	runner.mu.RLock()
+	reservations := runner.runs[runIDs[0]].continuationReservations
+	runner.mu.RUnlock()
+	if reservations != 0 {
+		t.Fatalf("continuation reservations after backpressure=%d, want 0", reservations)
+	}
+
+	runner.mu.Lock()
+	runner.runs["noncompleted-source"] = &runState{
+		run:         Run{ID: "noncompleted-source", Status: RunStatusRunning},
+		subscribers: make(map[chan Event]struct{}),
+	}
+	runner.mu.Unlock()
+	if _, err := runner.ContinueRun("missing-source", "continue"); !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("ContinueRun missing source error=%v, want ErrRunNotFound before backpressure", err)
+	}
+	if _, err := runner.ContinueRun("noncompleted-source", "continue"); !errors.Is(err, ErrRunNotCompleted) {
+		t.Fatalf("ContinueRun noncompleted source error=%v, want ErrRunNotCompleted before backpressure", err)
+	}
+}
+
+func TestRunner_PruneWaitsForTerminalStatusPersistence(t *testing.T) {
+	release := make(chan struct{})
+	store := &terminalFailureStore{
+		Store:         runstore.NewMemoryStore(),
+		failUpdateRun: true,
+	}
+	runner := NewRunner(&blockingProvider{blocker: release}, NewRegistry(), RunnerConfig{
+		DefaultModel:          "test-model",
+		MaxSteps:              1,
+		MaxCompletedRetention: 1,
+		Store:                 store,
+	})
+
+	runIDs := make([]string, 0, 3)
+	for i := 0; i < 3; i++ {
+		run, err := runner.StartRun(RunRequest{Prompt: fmt.Sprintf("status pending %d", i)})
+		if err != nil {
+			t.Fatalf("StartRun: %v", err)
+		}
+		runIDs = append(runIDs, run.ID)
+	}
+	close(release)
+	for _, runID := range runIDs {
+		waitForStatus(t, runner, runID, RunStatusCompleted)
+	}
+
+	runner.mu.RLock()
+	if got := len(runner.runs); got != 3 {
+		runner.mu.RUnlock()
+		t.Fatalf("pruned terminal runs before terminal statuses persisted: got %d, want 3", got)
+	}
+	runner.mu.RUnlock()
+
+	for _, runID := range runIDs {
+		stored, err := store.Store.GetRun(context.Background(), runID)
+		if err != nil {
+			t.Fatalf("GetRun(%s): %v", runID, err)
+		}
+		if isTerminalStoreStatus(stored.Status) {
+			t.Fatalf("durable run %s status=%s, want non-terminal after UpdateRun failure", runID, stored.Status)
+		}
+	}
+
+	_, err := runner.StartRun(RunRequest{Prompt: "must fail closed"})
+	requireTerminalDurabilityBackpressure(t, err, 3, 1)
+}
+
+func TestRunner_TerminalStatusPersistenceRecoveryAllowsConcurrentAdmissions(t *testing.T) {
+	store := &recoveringTerminalStatusStore{Store: runstore.NewMemoryStore()}
+	store.fail.Store(true)
+	runner := NewRunner(staticContentProvider{content: "done"}, NewRegistry(), RunnerConfig{
+		DefaultModel:          "test-model",
+		MaxSteps:              1,
+		MaxCompletedRetention: 1,
+		Store:                 store,
+	})
+
+	first, err := runner.StartRun(RunRequest{Prompt: "create pending terminal status"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatus(t, runner, first.ID, RunStatusCompleted)
+
+	const callers = 16
+	rejectStart := make(chan struct{})
+	rejectErrs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func(i int) {
+			<-rejectStart
+			_, err := runner.StartRun(RunRequest{Prompt: fmt.Sprintf("still unavailable %d", i)})
+			rejectErrs <- err
+		}(i)
+	}
+	close(rejectStart)
+	for i := 0; i < callers; i++ {
+		requireTerminalDurabilityBackpressure(t, <-rejectErrs, 1, 1)
+	}
+
+	store.fail.Store(false)
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func(i int) {
+			<-start
+			_, err := runner.StartRun(RunRequest{Prompt: fmt.Sprintf("recovered %d", i)})
+			errs <- err
+		}(i)
+	}
+	close(start)
+	for i := 0; i < callers; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent recovered StartRun %d: %v", i, err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	if err := runner.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if got := store.successfulTerminalUpdates.Load(); got == 0 {
+		t.Fatal("recovery never persisted a pending terminal status")
+	}
+}
+
+func TestRunner_TerminalStatusRecoveryImmediatelyRestoresRetentionWindow(t *testing.T) {
+	release := make(chan struct{})
+	store := &recoveringTerminalStatusStore{Store: runstore.NewMemoryStore()}
+	store.fail.Store(true)
+	runner := NewRunner(&blockingProvider{blocker: release}, NewRegistry(), RunnerConfig{
+		DefaultModel:          "test-model",
+		MaxSteps:              1,
+		MaxCompletedRetention: 1,
+		Store:                 store,
+	})
+
+	runIDs := make([]string, 0, 3)
+	for i := 0; i < 3; i++ {
+		run, err := runner.StartRun(RunRequest{Prompt: fmt.Sprintf("recover and prune %d", i)})
+		if err != nil {
+			t.Fatalf("StartRun: %v", err)
+		}
+		runIDs = append(runIDs, run.ID)
+	}
+	close(release)
+	for _, runID := range runIDs {
+		waitForStatus(t, runner, runID, RunStatusCompleted)
+	}
+
+	store.fail.Store(false)
+	if err := runner.ensureTerminalDurabilityCapacity(""); err != nil {
+		t.Fatalf("ensureTerminalDurabilityCapacity after recovery: %v", err)
+	}
+	runner.mu.RLock()
+	retained := len(runner.runs)
+	runner.mu.RUnlock()
+	if retained != 1 {
+		t.Fatalf("recovered terminal states retained=%d, want exact retention window 1", retained)
+	}
+	for _, runID := range runIDs {
+		stored, err := store.GetRun(context.Background(), runID)
+		if err != nil {
+			t.Fatalf("store.GetRun(%s): %v", runID, err)
+		}
+		if stored.Status != runstore.RunStatusCompleted {
+			t.Fatalf("stored run %s status=%s, want completed after recovery", runID, stored.Status)
+		}
+	}
+
+	if _, err := runner.StartRun(RunRequest{Prompt: "admitted after bounded recovery"}); err != nil {
+		t.Fatalf("StartRun after recovery: %v", err)
+	}
+}
+
+func TestRunner_TerminalStatusRecoveryPreservesContinuationSource(t *testing.T) {
+	release := make(chan struct{})
+	store := &recoveringTerminalStatusStore{Store: runstore.NewMemoryStore()}
+	store.fail.Store(true)
+	runner := NewRunner(&blockingProvider{blocker: release}, NewRegistry(), RunnerConfig{
+		DefaultModel:          "test-model",
+		MaxSteps:              1,
+		MaxCompletedRetention: 1,
+		Store:                 store,
+	})
+
+	runIDs := make([]string, 0, 3)
+	for i := 0; i < 3; i++ {
+		run, err := runner.StartRun(RunRequest{Prompt: fmt.Sprintf("continuation recovery %d", i)})
+		if err != nil {
+			t.Fatalf("StartRun: %v", err)
+		}
+		runIDs = append(runIDs, run.ID)
+	}
+	close(release)
+	for _, runID := range runIDs {
+		waitForStatus(t, runner, runID, RunStatusCompleted)
+	}
+
+	store.fail.Store(false)
+	continued, err := runner.ContinueRun(runIDs[0], "continue after persistence recovery")
+	if err != nil {
+		t.Fatalf("ContinueRun after recovery: %v", err)
+	}
+	if continued.ID == "" {
+		t.Fatal("ContinueRun returned an empty run ID")
+	}
+}
+
+func TestRunner_ConcurrentStartRecoveryCannotPruneValidatedContinuationSource(t *testing.T) {
+	releaseProvider := make(chan struct{})
+	store := &recoveringTerminalStatusStore{Store: runstore.NewMemoryStore()}
+	store.fail.Store(true)
+	runner := NewRunner(&blockingProvider{blocker: releaseProvider}, NewRegistry(), RunnerConfig{
+		DefaultModel:          "test-model",
+		MaxSteps:              1,
+		MaxCompletedRetention: 1,
+		Store:                 store,
+	})
+
+	runIDs := make([]string, 0, 3)
+	for i := 0; i < 3; i++ {
+		run, err := runner.StartRun(RunRequest{Prompt: fmt.Sprintf("concurrent continuation recovery %d", i)})
+		if err != nil {
+			t.Fatalf("StartRun: %v", err)
+		}
+		runIDs = append(runIDs, run.ID)
+	}
+	close(releaseProvider)
+	for _, runID := range runIDs {
+		waitForStatus(t, runner, runID, RunStatusCompleted)
+	}
+
+	// Make the continuation source the deterministic first prune candidate.
+	base := time.Now().UTC().Add(-time.Hour)
+	runner.mu.Lock()
+	for i, runID := range runIDs {
+		runner.runs[runID].run.UpdatedAt = base.Add(time.Duration(i) * time.Minute)
+	}
+	runner.mu.Unlock()
+
+	validated := make(chan struct{})
+	releaseContinue := make(chan struct{})
+	runner.continuationAfterValidationHook = func(gotRunID string) {
+		if gotRunID != runIDs[0] {
+			return
+		}
+		close(validated)
+		<-releaseContinue
+	}
+	store.fail.Store(false)
+
+	type continueResult struct {
+		run Run
+		err error
+	}
+	continueDone := make(chan continueResult, 1)
+	go func() {
+		run, err := runner.ContinueRun(runIDs[0], "continue after concurrent recovery")
+		continueDone <- continueResult{run: run, err: err}
+	}()
+	select {
+	case <-validated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ContinueRun did not reach the post-validation boundary")
+	}
+
+	if _, err := runner.StartRun(RunRequest{Prompt: "concurrent recovery admission"}); err != nil {
+		close(releaseContinue)
+		t.Fatalf("concurrent StartRun recovery: %v", err)
+	}
+	close(releaseContinue)
+
+	select {
+	case result := <-continueDone:
+		if result.err != nil {
+			t.Fatalf("ContinueRun after concurrent Start recovery: %v", result.err)
+		}
+		if result.run.ID == "" {
+			t.Fatal("ContinueRun returned an empty run ID")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ContinueRun did not finish after concurrent recovery")
+	}
+}
+
+func TestRunner_TerminalDurabilityAdmissionRetryUsesSingleUnlockedDeadline(t *testing.T) {
+	release := make(chan struct{})
+	store := &blockingAdmissionRecoveryStore{
+		Store:   runstore.NewMemoryStore(),
+		started: make(chan struct{}),
+	}
+	runner := NewRunner(&blockingProvider{blocker: release}, NewRegistry(), RunnerConfig{
+		DefaultModel:          "test-model",
+		MaxSteps:              1,
+		MaxCompletedRetention: 1,
+		Store:                 store,
+	})
+	runner.terminalStoreTimeout = 200 * time.Millisecond
+
+	runIDs := make([]string, 0, 3)
+	for i := 0; i < 3; i++ {
+		run, err := runner.StartRun(RunRequest{Prompt: fmt.Sprintf("deadline pending %d", i)})
+		if err != nil {
+			t.Fatalf("StartRun: %v", err)
+		}
+		runIDs = append(runIDs, run.ID)
+	}
+	close(release)
+	for _, runID := range runIDs {
+		waitForStatus(t, runner, runID, RunStatusCompleted)
+	}
+
+	const unrelatedID = "admission-lock-control"
+	runner.mu.Lock()
+	runner.runs[unrelatedID] = &runState{
+		run: Run{
+			ID:             unrelatedID,
+			ConversationID: "admission-lock-control-conversation",
+			Status:         RunStatusRunning,
+		},
+		subscribers: make(map[chan Event]struct{}),
+	}
+	runner.mu.Unlock()
+	runner.storeCreateRun(Run{ID: unrelatedID, ConversationID: "admission-lock-control-conversation", Status: RunStatusRunning})
+
+	store.block.Store(true)
+	admissionDone := make(chan error, 1)
+	startedAt := time.Now()
+	go func() {
+		_, err := runner.StartRun(RunRequest{Prompt: "bounded blocked retry"})
+		admissionDone <- err
+	}()
+	select {
+	case <-store.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("admission recovery did not reach UpdateRun")
+	}
+
+	runner.mu.RLock()
+	pendingStates := make([]*runState, 0, len(runIDs))
+	for _, runID := range runIDs {
+		pendingStates = append(pendingStates, runner.runs[runID])
+	}
+	runner.mu.RUnlock()
+	for i, state := range pendingStates {
+		if state == nil || !state.statusMu.TryLock() {
+			t.Fatalf("pending status lock %d held during admission store I/O", i)
+		}
+		state.statusMu.Unlock()
+	}
+
+	getDone := make(chan struct{})
+	go func() {
+		_, _ = runner.GetRun(unrelatedID)
+		close(getDone)
+	}()
+	select {
+	case <-getDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("GetRun blocked behind admission recovery store I/O")
+	}
+
+	emitDone := make(chan struct{})
+	go func() {
+		runner.emit(unrelatedID, EventAssistantMessage, map[string]any{"content": "unrelated"})
+		close(emitDone)
+	}()
+	select {
+	case <-emitDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("conversation event journal blocked behind admission recovery store I/O")
+	}
+
+	select {
+	case err := <-admissionDone:
+		requireTerminalDurabilityBackpressure(t, err, 3, 1)
+		if elapsed := time.Since(startedAt); elapsed >= 500*time.Millisecond {
+			t.Fatalf("admission retry took %s, want one shared 200ms deadline rather than per-run waits", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("admission retry exceeded its shared deadline")
+	}
+}
+
+func TestRunner_PruneTreatsStorageModeNoneAsIntentionalEventSuppression(t *testing.T) {
+	pipeline := redaction.NewPipeline(
+		redaction.NewRedactor(nil),
+		redaction.EventClassConfig{string(EventRunCompleted): redaction.StorageModeNone},
+	)
+	store := runstore.NewMemoryStore()
+	runner := NewRunner(staticContentProvider{content: "done"}, NewRegistry(), RunnerConfig{
+		DefaultModel:          "test-model",
+		MaxSteps:              1,
+		MaxCompletedRetention: 1,
+		RedactionPipeline:     pipeline,
+		Store:                 store,
+	})
+
+	for i := 0; i < 3; i++ {
+		run, err := runner.StartRun(RunRequest{Prompt: fmt.Sprintf("suppressed %d", i)})
+		if err != nil {
+			t.Fatalf("StartRun %d: %v", i, err)
+		}
+		waitForStatus(t, runner, run.ID, RunStatusCompleted)
+		stored, err := store.GetRun(context.Background(), run.ID)
+		if err != nil {
+			t.Fatalf("store.GetRun(%s): %v", run.ID, err)
+		}
+		if stored.Status != runstore.RunStatusCompleted {
+			t.Fatalf("stored status=%s, want completed", stored.Status)
+		}
+	}
+
+	waitForRunnerPrune(t, runner, func() bool {
+		runner.mu.RLock()
+		defer runner.mu.RUnlock()
+		return len(runner.runs) <= 1
+	})
+}
+
+func TestRunner_NoStorePreservesInMemoryTerminalRunsWithoutBackpressure(t *testing.T) {
+	runner := NewRunner(staticContentProvider{content: "done"}, NewRegistry(), RunnerConfig{
+		DefaultModel:          "test-model",
+		MaxSteps:              1,
+		MaxCompletedRetention: 1,
+	})
+
+	for i := 0; i < 3; i++ {
+		run, err := runner.StartRun(RunRequest{Prompt: fmt.Sprintf("memory only %d", i)})
+		if err != nil {
+			t.Fatalf("StartRun %d: %v", i, err)
+		}
+		waitForStatus(t, runner, run.ID, RunStatusCompleted)
+	}
+	runner.mu.RLock()
+	retained := len(runner.runs)
+	runner.mu.RUnlock()
+	if retained != 3 {
+		t.Fatalf("no-store retained runs=%d, want 3", retained)
+	}
+	if _, err := runner.StartRun(RunRequest{Prompt: "no-store remains available"}); err != nil {
+		t.Fatalf("no-store StartRun unexpectedly backpressured: %v", err)
+	}
+}
+
+func requireTerminalDurabilityBackpressure(
+	t *testing.T,
+	err error,
+	wantPending, wantLimit int,
+) {
+	t.Helper()
+	var backpressure *TerminalDurabilityBackpressureError
+	if !errors.As(err, &backpressure) {
+		t.Fatalf("error=%v, want TerminalDurabilityBackpressureError", err)
+	}
+	if backpressure.Pending != wantPending || backpressure.Limit != wantLimit {
+		t.Fatalf("backpressure=%+v, want pending=%d limit=%d", backpressure, wantPending, wantLimit)
 	}
 }
 
@@ -68,6 +541,41 @@ func (s *terminalAppendFailStore) AppendEvent(_ context.Context, event *runstore
 		return errors.New("terminal event store unavailable")
 	}
 	return s.Store.AppendEvent(context.Background(), event)
+}
+
+type recoveringTerminalStatusStore struct {
+	runstore.Store
+	fail                      atomic.Bool
+	successfulTerminalUpdates atomic.Int64
+}
+
+func (s *recoveringTerminalStatusStore) UpdateRun(ctx context.Context, run *runstore.Run) error {
+	if isTerminalStoreStatus(run.Status) {
+		if s.fail.Load() {
+			return errors.New("terminal status store unavailable")
+		}
+		s.successfulTerminalUpdates.Add(1)
+	}
+	return s.Store.UpdateRun(ctx, run)
+}
+
+type blockingAdmissionRecoveryStore struct {
+	runstore.Store
+	block       atomic.Bool
+	started     chan struct{}
+	startedOnce sync.Once
+}
+
+func (s *blockingAdmissionRecoveryStore) UpdateRun(ctx context.Context, run *runstore.Run) error {
+	if !isTerminalStoreStatus(run.Status) {
+		return s.Store.UpdateRun(ctx, run)
+	}
+	if s.block.Load() {
+		s.startedOnce.Do(func() { close(s.started) })
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return errors.New("terminal status store unavailable")
 }
 
 func TestRunner_PruneKeepsCompletedRunWithActiveSubscriber(t *testing.T) {
@@ -96,22 +604,37 @@ func TestRunner_PruneKeepsCompletedRunWithActiveSubscriber(t *testing.T) {
 		}
 	}
 
+	extraRunIDs := make([]string, 0, 3)
 	for i := 0; i < 3; i++ {
 		run, err := runner.StartRun(RunRequest{Prompt: fmt.Sprintf("extra %d", i)})
 		if err != nil {
 			t.Fatalf("start extra run %d: %v", i, err)
 		}
+		extraRunIDs = append(extraRunIDs, run.ID)
 		if _, err := collectRunEvents(t, runner, run.ID); err != nil {
 			t.Fatalf("collect extra run %d events: %v", i, err)
 		}
 	}
 
-	runner.mu.RLock()
-	_, ok := runner.runs[pinned.ID]
-	runner.mu.RUnlock()
-	if !ok {
-		t.Fatal("completed run with an active subscriber was pruned")
-	}
+	waitForRunnerPrune(t, runner, func() bool {
+		runner.mu.RLock()
+		defer runner.mu.RUnlock()
+		if len(runner.runs) != 2 {
+			return false
+		}
+		if _, ok := runner.runs[pinned.ID]; !ok {
+			return false
+		}
+		if _, ok := runner.runs[extraRunIDs[len(extraRunIDs)-1]]; !ok {
+			return false
+		}
+		for _, runID := range extraRunIDs[:len(extraRunIDs)-1] {
+			if _, ok := runner.runs[runID]; ok {
+				return false
+			}
+		}
+		return true
+	})
 
 	cancelPinned()
 

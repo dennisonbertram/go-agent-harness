@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -112,6 +111,146 @@ INSERT INTO cron_jobs (
 	}
 }
 
+// Legacy dumps used multiple identifier quoting styles for the same global
+// UNIQUE(name) policy. Every spelling must rebuild without losing durable jobs
+// or execution history.
+func TestMigrate_RebuildsLegacyGlobalNameConstraintAndPreservesHistory(t *testing.T) {
+	variants := map[string]string{
+		"bare":      `CONSTRAINT cron_jobs_name_unique UNIQUE (name)`,
+		"quoted":    `CONSTRAINT cron_jobs_name_unique UNIQUE ("name")`,
+		"bracketed": `CONSTRAINT cron_jobs_name_unique UNIQUE ([name])`,
+		"backtick":  "CONSTRAINT cron_jobs_name_unique UNIQUE (`name`)",
+		"collated":  `CONSTRAINT cron_jobs_name_unique UNIQUE (name COLLATE NOCASE)`,
+	}
+	for variant, constraint := range variants {
+		t.Run(variant, func(t *testing.T) {
+			store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "legacy_unique.db"))
+			if err != nil {
+				t.Fatalf("NewSQLiteStore: %v", err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			ctx := context.Background()
+			jobsDDL := fmt.Sprintf(`CREATE TABLE cron_jobs (
+				job_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', conversation_id TEXT NOT NULL DEFAULT '', agent_id TEXT NOT NULL DEFAULT '',
+				name TEXT NOT NULL, schedule TEXT NOT NULL, execution_type TEXT NOT NULL, execution_config TEXT NOT NULL DEFAULT '{}',
+				status TEXT NOT NULL DEFAULT 'active', timeout_seconds INTEGER NOT NULL DEFAULT 30, tags TEXT NOT NULL DEFAULT '',
+				next_run_at TIMESTAMP NOT NULL, last_run_at TIMESTAMP, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL,
+				%s
+			)`, constraint)
+			if _, err := store.db.ExecContext(ctx, jobsDDL); err != nil {
+				t.Fatalf("create legacy jobs: %v", err)
+			}
+			if _, err := store.db.ExecContext(ctx, `CREATE TABLE cron_executions (execution_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, started_at TIMESTAMP NOT NULL, finished_at TIMESTAMP, status TEXT NOT NULL, run_id TEXT NOT NULL DEFAULT '', output_summary TEXT NOT NULL DEFAULT '', error_text TEXT NOT NULL DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (job_id) REFERENCES cron_jobs(job_id))`); err != nil {
+				t.Fatalf("create legacy executions: %v", err)
+			}
+
+			created := time.Date(2026, 7, 30, 10, 11, 12, 123456789, time.UTC)
+			updated := created.Add(7 * time.Minute)
+			lastRun := created.Add(3 * time.Minute)
+			for i, name := range []string{"legacy-a", "legacy-b"} {
+				id := fmt.Sprintf("legacy-%d", i)
+				if _, err := store.db.ExecContext(ctx, `INSERT INTO cron_jobs (job_id, tenant_id, conversation_id, agent_id, name, schedule, execution_type, execution_config, status, timeout_seconds, tags, next_run_at, last_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, fmt.Sprintf("tenant-%d", i), "conversation", "agent", name, "*/5 * * * *", ExecTypeShell, `{"command":"echo ok"}`, StatusActive, 30, "legacy", nowString(updated.Add(time.Hour)), nowString(lastRun), nowString(created), nowString(updated)); err != nil {
+					t.Fatalf("insert legacy job %d: %v", i, err)
+				}
+				started, finished := created.Add(time.Duration(i)*time.Minute), created.Add(time.Duration(i)*time.Minute+15*time.Second)
+				if _, err := store.db.ExecContext(ctx, `INSERT INTO cron_executions (execution_id, job_id, started_at, finished_at, status, run_id, output_summary, error_text, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, fmt.Sprintf("exec-%d", i), id, nowString(started), nowString(finished), ExecStatusSuccess, fmt.Sprintf("run-%d", i), "preserved", "", 15000); err != nil {
+					t.Fatalf("insert legacy execution %d: %v", i, err)
+				}
+			}
+
+			if err := store.Migrate(ctx); err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			if err := store.Migrate(ctx); err != nil {
+				t.Fatalf("second Migrate: %v", err)
+			}
+			var jobCount, executionCount int
+			if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cron_jobs`).Scan(&jobCount); err != nil {
+				t.Fatalf("count jobs: %v", err)
+			}
+			if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cron_executions`).Scan(&executionCount); err != nil {
+				t.Fatalf("count executions: %v", err)
+			}
+			if jobCount != 2 || executionCount != 2 {
+				t.Fatalf("post-migration counts jobs=%d executions=%d, want 2/2", jobCount, executionCount)
+			}
+			job, err := store.GetJob(ctx, "legacy-0")
+			if err != nil {
+				t.Fatalf("GetJob: %v", err)
+			}
+			if !job.CreatedAt.Equal(created) || !job.UpdatedAt.Equal(updated) || !job.LastRunAt.Equal(lastRun) {
+				t.Fatalf("job timestamps changed: %+v", job)
+			}
+			executions, err := store.ListExecutions(ctx, job.ID, 10, 0)
+			if err != nil || len(executions) != 1 || executions[0].ID != "exec-0" || executions[0].RunID != "run-0" || executions[0].DurationMs != 15000 {
+				t.Fatalf("history after migration = %#v, %v", executions, err)
+			}
+
+			first, second := testJob("scope-shared"), testJob("scope-shared")
+			first.ID, second.ID = "scope-a", "scope-b"
+			first.TenantID, first.ConversationID, first.AgentID = "tenant-a", "conversation", "agent"
+			second.TenantID, second.ConversationID, second.AgentID = "tenant-b", "conversation", "agent"
+			if _, err := store.CreateJob(ctx, first); err != nil {
+				t.Fatalf("create first scope: %v", err)
+			}
+			if _, err := store.CreateJob(ctx, second); err != nil {
+				t.Fatalf("create second scope: %v", err)
+			}
+			duplicate := testJob("scope-shared")
+			duplicate.ID = "scope-a-duplicate"
+			duplicate.TenantID, duplicate.ConversationID, duplicate.AgentID = first.TenantID, first.ConversationID, first.AgentID
+			if _, err := store.CreateJob(ctx, duplicate); err == nil {
+				t.Fatal("same-scope duplicate name was accepted")
+			}
+			var integrity string
+			if err := store.db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
+				t.Fatalf("integrity_check = %q, %v", integrity, err)
+			}
+			rows, err := store.db.QueryContext(ctx, `PRAGMA foreign_key_check`)
+			if err != nil {
+				t.Fatalf("foreign_key_check: %v", err)
+			}
+			defer rows.Close()
+			if rows.Next() {
+				t.Fatal("foreign_key_check reported a violation")
+			}
+		})
+	}
+}
+
+func TestLegacyGlobalNameUniqueMetadataIgnoresCompositeAndPartialIndexes(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "index_metadata.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	if _, err := store.db.ExecContext(ctx, `CREATE TABLE cron_jobs (
+		job_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
+		agent_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL,
+		UNIQUE (tenant_id, conversation_id, agent_id, name COLLATE NOCASE)
+	)`); err != nil {
+		t.Fatalf("create jobs: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `CREATE UNIQUE INDEX active_name_only ON cron_jobs(name COLLATE NOCASE) WHERE status != 'deleted'`); err != nil {
+		t.Fatalf("create partial index: %v", err)
+	}
+	legacy, err := store.hasLegacyGlobalNameUnique(ctx)
+	if err != nil {
+		t.Fatalf("inspect uniqueness: %v", err)
+	}
+	if legacy {
+		t.Fatal("composite and partial scoped indexes were misclassified as legacy global UNIQUE(name)")
+	}
+	if _, err := store.db.ExecContext(ctx, `CREATE UNIQUE INDEX legacy_global_name ON cron_jobs(name COLLATE NOCASE)`); err != nil {
+		t.Fatalf("create legacy global index: %v", err)
+	}
+	legacy, err = store.hasLegacyGlobalNameUnique(ctx)
+	if err != nil || !legacy {
+		t.Fatalf("global single-name index detected=%v, err=%v, want true", legacy, err)
+	}
+}
+
 func TestCreateJob_GetJob(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -207,6 +346,22 @@ func TestGetJobByName(t *testing.T) {
 	}
 	if got.ID != job.ID {
 		t.Fatalf("expected ID %s, got %s", job.ID, got.ID)
+	}
+}
+
+func TestGetJobByName_AmbiguousAcrossScopes(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	for i, tenant := range []string{"tenant-a", "tenant-b"} {
+		job := testJob("shared-name")
+		job.ID = fmt.Sprintf("shared-%d", i)
+		job.TenantID, job.ConversationID, job.AgentID = tenant, "conversation", "agent"
+		if _, err := store.CreateJob(ctx, job); err != nil {
+			t.Fatalf("CreateJob(%s): %v", tenant, err)
+		}
+	}
+	if _, err := store.GetJobByName(ctx, "shared-name"); !IsJobAmbiguous(err) {
+		t.Fatalf("GetJobByName error = %v, want ErrJobAmbiguous", err)
 	}
 }
 
@@ -335,6 +490,113 @@ func TestTouchJobRun_NotFound(t *testing.T) {
 	err := store.TouchJobRun(context.Background(), "missing-job", time.Now(), time.Now(), time.Now())
 	if !IsJobNotFound(err) {
 		t.Fatalf("expected job not found, got %v", err)
+	}
+}
+
+func TestTouchJobRun_DoesNotRegressNewerTrackingOrMutationVersion(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	job := testJob("monotonic-run-tracking")
+	if _, err := store.CreateJob(ctx, job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	newer := time.Date(2025, 3, 1, 10, 2, 0, 0, time.UTC)
+	if err := store.TouchJobRun(ctx, job.ID, newer, newer.Add(time.Minute), newer.Add(time.Nanosecond)); err != nil {
+		t.Fatalf("newer TouchJobRun: %v", err)
+	}
+	if err := store.TouchJobRun(ctx, job.ID, newer.Add(-time.Minute), newer, newer); err != nil {
+		t.Fatalf("late older TouchJobRun: %v", err)
+	}
+	got, err := store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if !got.LastRunAt.Equal(newer) || !got.NextRunAt.Equal(newer.Add(time.Minute)) || !got.UpdatedAt.Equal(newer.Add(time.Nanosecond)) {
+		t.Fatalf("late completion regressed authoritative tracking: %#v", got)
+	}
+}
+
+func TestTouchJobRun_DoesNotRegressEqualRunWithOlderTrackingClocks(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	job := testJob("equal-run-monotonic-tracking")
+	if _, err := store.CreateJob(ctx, job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	runAt := time.Date(2025, 3, 1, 10, 2, 0, 0, time.UTC)
+	nextAt := runAt.Add(5 * time.Minute)
+	updatedAt := runAt.Add(time.Minute)
+	if err := store.TouchJobRun(ctx, job.ID, runAt, nextAt, updatedAt); err != nil {
+		t.Fatalf("authoritative TouchJobRun: %v", err)
+	}
+	if err := store.TouchJobRun(ctx, job.ID, runAt, nextAt.Add(-time.Minute), updatedAt.Add(-time.Nanosecond)); err != nil {
+		t.Fatalf("late equal-run TouchJobRun: %v", err)
+	}
+	got, err := store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if !got.LastRunAt.Equal(runAt) || !got.NextRunAt.Equal(nextAt) || !got.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("equal-run late completion regressed authoritative tracking: %#v", got)
+	}
+}
+
+func TestAdmitExecution_DurableScopeLeaseAcrossSQLiteStores(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shared-cron.db")
+	first, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore first: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore second: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	ctx := context.Background()
+	if err := first.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	job := testJob("durable-scope-lease")
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	if _, err := first.CreateJob(ctx, job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	start := make(chan struct{})
+	type result struct {
+		admitted bool
+		err      error
+	}
+	results := make(chan result, 2)
+	admit := func(store *SQLiteStore, id string) {
+		<-start
+		_, admitted, err := store.AdmitExecution(ctx, job, Execution{ID: id, JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued})
+		results <- result{admitted: admitted, err: err}
+	}
+	go admit(first, "first")
+	go admit(second, "second")
+	close(start)
+	admitted := 0
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("AdmitExecution: %v", result.err)
+		}
+		if result.admitted {
+			admitted++
+		}
+	}
+	if admitted != 1 {
+		t.Fatalf("durable scoped admission count = %d, want exactly one", admitted)
+	}
+	executions, err := first.ListExecutions(ctx, job.ID, 10, 0)
+	if err != nil {
+		t.Fatalf("ListExecutions: %v", err)
+	}
+	if len(executions) != 2 || executions[0].Status != ExecStatusSkipped && executions[1].Status != ExecStatusSkipped {
+		t.Fatalf("durable contention did not persist skipped history: %#v", executions)
 	}
 }
 
@@ -586,6 +848,40 @@ func TestUpdateExecution(t *testing.T) {
 	}
 }
 
+func TestListActiveExecutions_OnlyReturnsNonterminalRows(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	job := testJob("active-execution-list")
+	if _, err := store.CreateJob(ctx, job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	base := time.Now().UTC()
+	for i, exec := range []Execution{
+		{ID: "queued", JobID: job.ID, Status: ExecStatusQueued},
+		{ID: "legacy-pending", JobID: job.ID, Status: "pending"},
+		{ID: "starting", JobID: job.ID, Status: ExecStatusStarting},
+		{ID: "running", JobID: job.ID, Status: ExecStatusRunning, RunID: "run-linked"},
+		{ID: "finished", JobID: job.ID, Status: ExecStatusSucceeded},
+		{ID: "skipped", JobID: job.ID, Status: ExecStatusSkipped},
+	} {
+		exec.StartedAt = base.Add(time.Duration(i) * time.Nanosecond)
+		if _, err := store.CreateExecution(ctx, exec); err != nil {
+			t.Fatalf("CreateExecution(%s): %v", exec.ID, err)
+		}
+	}
+	active, err := store.ListActiveExecutions(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveExecutions: %v", err)
+	}
+	ids := make(map[string]bool, len(active))
+	for _, exec := range active {
+		ids[exec.ID] = true
+	}
+	if len(active) != 4 || !ids["queued"] || !ids["legacy-pending"] || !ids["starting"] || !ids["running"] {
+		t.Fatalf("active executions = %#v", active)
+	}
+}
+
 func TestListExecutions_Offset(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -661,17 +957,14 @@ func TestSQLiteStore_DeleteAndRecreateSameName(t *testing.T) {
 		t.Fatalf("expected name 'backup', got %q", created2.Name)
 	}
 
-	// 4. Verify the old deleted job's name was changed.
+	// 4. Scoped active-name uniqueness preserves historical display names.
 	var oldName string
 	row := store.db.QueryRowContext(ctx, `SELECT name FROM cron_jobs WHERE job_id = ?`, created1.ID)
 	if err := row.Scan(&oldName); err != nil {
 		t.Fatalf("scan old job name: %v", err)
 	}
-	if oldName == "backup" {
-		t.Fatal("expected deleted job's name to be changed, but it is still 'backup'")
-	}
-	if !strings.Contains(oldName, "backup_deleted_") {
-		t.Fatalf("expected deleted job name to contain 'backup_deleted_', got %q", oldName)
+	if oldName != "backup" {
+		t.Fatalf("expected deleted job name to be preserved, got %q", oldName)
 	}
 }
 

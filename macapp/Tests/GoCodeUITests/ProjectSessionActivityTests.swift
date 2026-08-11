@@ -82,6 +82,13 @@ struct ProjectSessionActivityTests {
         }
     }
 
+    private final class Paths: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [String] = []
+        func append(_ value: String) { lock.withLock { values.append(value) } }
+        var snapshot: [String] { lock.withLock { values } }
+    }
+
     @Test("a genuine 501 stays nil with no error, but a real failure surfaces via statusMessage")
     func distinguishesTransportErrorFromNoStoreSignal() async throws {
         let project = makeProject()
@@ -214,5 +221,120 @@ struct ProjectSessionActivityTests {
                 return false
             },
             "persisted scheduled reply did not appear when Chat re-entered")
+    }
+
+    @Test("a stale task action surfaces the server error and reconciles its authoritative row")
+    func staleTaskActionReconcilesAuthoritativeRow() async throws {
+        let project = makeProject()
+        let active = Data(
+            #"{"tasks":[{"id":"cron-1","type":"cron","status":"active","label":"watch","started_at":"2026-08-04T12:00:00Z","age_seconds":0,"actions":["pause","delete"]}]}"#
+                .utf8)
+        let paused = Data(
+            #"{"tasks":[{"id":"cron-1","type":"cron","status":"paused","label":"watch","started_at":"2026-08-04T12:00:00Z","age_seconds":0,"actions":["resume","delete"]}]}"#
+                .utf8)
+        ActivityStubProtocol.set { request in
+            switch request.url?.path {
+            case "/v1/tasks": return .init(body: active)
+            default: return .init(body: Data("{}".utf8))
+            }
+        }
+        await project.start()
+        await project.refreshActivity()
+        let task = try #require(project.tasks.first)
+        let paths = Paths()
+        ActivityStubProtocol.set { request in
+            let path = request.url?.path ?? ""
+            paths.append(path)
+            switch path {
+            case "/v1/cron/jobs/cron-1/pause":
+                return .init(
+                    status: 409,
+                    body: Data(#"{"error":{"code":"conflict","message":"already paused"}}"#.utf8))
+            case "/v1/tasks": return .init(body: paused)
+            default: return .init(body: Data("{}".utf8))
+            }
+        }
+
+        await project.performTaskAction(.pause, for: task)
+
+        #expect(paths.snapshot.contains("/v1/cron/jobs/cron-1/pause"))
+        #expect(paths.snapshot.contains("/v1/tasks"))
+        #expect(project.tasks.first?.status == .paused)
+        #expect(project.statusMessage == "already paused")
+    }
+
+    @Test("scheduled lifecycle labels expose result, timing, run link, and safe error")
+    func lifecycleLabelsAreAccessible() throws {
+        let task = TaskInfo(
+            id: "cron-1", type: .cron, status: .active, label: "watch deploy",
+            lastExecutionStatus: .failed, runID: "run-1", lastError: "deployment unavailable")
+        let label = TaskLifecycleText.accessibilityLabel(for: task)
+        #expect(label.contains("cron"))
+        #expect(label.contains("watch deploy"))
+        #expect(label.contains("Last result: failed"))
+        #expect(label.contains("Run: run-1"))
+        #expect(label.contains("Error: deployment unavailable"))
+    }
+
+    @Test("opening a linked scheduled task loads its chat and attaches only active run evidence")
+    func opensLinkedScheduledTaskWithActiveRun() async throws {
+        let project = makeProject()
+        ActivityStubProtocol.set { request in
+            switch request.url?.path {
+            case "/v1/conversations/conv-linked/messages":
+                return .init(
+                    body: Data(
+                        #"{"messages":[{"role":"user","content":"watch deploy","step":0}]}"#.utf8))
+            case "/v1/runs/run-linked/events":
+                return .init(
+                    body: Data(
+                        "event: run.started\ndata: {\"id\":\"run-linked:0\",\"run_id\":\"run-linked\",\"type\":\"run.started\",\"payload\":{}}\n\n"
+                            .utf8))
+            default:
+                return .init(body: Data("{}".utf8))
+            }
+        }
+        await project.start()
+        let opened = await project.openScheduledTask(
+            TaskInfo(
+                id: "cron-1", type: .cron, status: .active, label: "watch deploy",
+                conversationID: "conv-linked", runID: "run-linked"))
+        #expect(opened)
+        #expect(project.run?.conversationID == "conv-linked")
+        #expect(project.run?.currentRunID == "run-linked")
+    }
+
+    @Test("terminal or missing task links never manufacture live run controls")
+    func terminalAndMissingTaskLinksDoNotCreateLiveControls() async throws {
+        let project = makeProject()
+        ActivityStubProtocol.set { request in
+            switch request.url?.path {
+            case "/v1/conversations/conv-terminal/messages":
+                return .init(
+                    body: Data(
+                        #"{"messages":[{"role":"assistant","content":"done","step":0}]}"#.utf8))
+            case "/v1/runs/run-terminal/events":
+                return .init(
+                    body: Data(
+                        "event: run.completed\ndata: {\"id\":\"run-terminal:1\",\"run_id\":\"run-terminal\",\"type\":\"run.completed\",\"payload\":{}}\n\n"
+                            .utf8))
+            default:
+                return .init(body: Data("{}".utf8))
+            }
+        }
+        await project.start()
+        let terminalOpened = await project.openScheduledTask(
+            TaskInfo(
+                id: "cron-1", type: .cron, status: .active, label: "watch deploy",
+                conversationID: "conv-terminal", runID: "run-terminal"))
+        #expect(terminalOpened)
+        #expect(project.run?.conversationID == "conv-terminal")
+        #expect(project.run?.currentRunID == nil)
+
+        let missingOpened = await project.openScheduledTask(
+            TaskInfo(
+                id: "orphan", type: .cron, status: .active, label: "orphan", runID: "run-orphan"))
+        #expect(!missingOpened)
+        #expect(project.run?.currentRunID == nil)
     }
 }

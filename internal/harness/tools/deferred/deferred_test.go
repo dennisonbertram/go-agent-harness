@@ -9,7 +9,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	tools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/profiles"
@@ -61,6 +64,9 @@ func (m *mockCronClient) GetJob(_ context.Context, id string) (tools.CronJob, er
 	return tools.CronJob{ID: id}, nil
 }
 func (m *mockCronClient) DeleteJob(_ context.Context, id string) error { return nil }
+func (m *mockCronClient) DeleteJobCAS(_ context.Context, id string, _ time.Time) error {
+	return nil
+}
 func (m *mockCronClient) UpdateJob(_ context.Context, id string, req tools.CronUpdateJobRequest) (tools.CronJob, error) {
 	return tools.CronJob{ID: id}, nil
 }
@@ -68,6 +74,16 @@ func (m *mockCronClient) ListExecutions(_ context.Context, id string, limit, off
 	return nil, nil
 }
 func (m *mockCronClient) Health(_ context.Context) error { return nil }
+
+type routingCronClient struct {
+	mockCronClient
+	created tools.CronCreateJobRequest
+}
+
+func (m *routingCronClient) CreateJob(_ context.Context, req tools.CronCreateJobRequest) (tools.CronJob, error) {
+	m.created = req
+	return tools.CronJob{ID: "routing", Name: req.Name}, nil
+}
 
 type mockMCPRegistry struct{}
 
@@ -455,16 +471,59 @@ func TestCronCreateTool_Definition(t *testing.T) {
 	assertHasTags(t, tool, "cron")
 }
 
+// TestCronCreateTool_SchemaIsAcceptedByOpenAICompatibleProviders guards the
+// provider boundary: OpenAI-compatible function schemas require an object at
+// the top level and reject composition keywords there. Shell-versus-harness
+// argument pairing is enforced by CronCreateTool's handler instead.
+func TestCronCreateTool_SchemaIsAcceptedByOpenAICompatibleProviders(t *testing.T) {
+	parameters := CronCreateTool(&mockCronClient{}).Definition.Parameters
+	if got := parameters["type"]; got != "object" {
+		t.Fatalf("cron_create schema type = %#v, want object", got)
+	}
+	for _, forbidden := range []string{"oneOf", "anyOf", "allOf", "enum", "const", "not"} {
+		if _, found := parameters[forbidden]; found {
+			t.Fatalf("cron_create schema has forbidden top-level %q: %#v", forbidden, parameters)
+		}
+	}
+}
+
 // TestCronCreateTool_Handler_Success verifies cron_create creates a job.
 func TestCronCreateTool_Handler_Success(t *testing.T) {
 	tool := CronCreateTool(&mockCronClient{})
-	args := `{"name":"test","schedule":"* * * * *","command":"echo hi"}`
+	args := `{"name":"test","schedule":"* * * * *","execution_type":"shell","command":"echo hi"}`
 	result, err := tool.Handler(context.Background(), json.RawMessage(args))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result == "" {
 		t.Fatal("expected non-empty result")
+	}
+}
+
+func TestCronCreateToolPreservesOriginRoutingInHarnessConfig(t *testing.T) {
+	client := &routingCronClient{}
+	tool := CronCreateTool(client)
+	ctx := context.WithValue(context.Background(), tools.ContextKeyRunMetadata, tools.RunMetadata{
+		RunID: "origin", TenantID: "tenant", ConversationID: "conversation", AgentID: "agent",
+		Model: "fixture-model", ProviderName: "missing-primary", AllowFallback: true,
+		FallbackProviders: []string{"secondary", "tertiary"},
+	})
+	_, err := tool.Handler(ctx, json.RawMessage(`{"name":"continue","schedule":"* * * * *","execution_type":"harness","prompt":"later"}`))
+	if err != nil {
+		t.Fatalf("cron_create: %v", err)
+	}
+	var config struct {
+		Model             string   `json:"model"`
+		ProviderName      string   `json:"provider_name"`
+		AllowFallback     bool     `json:"allow_fallback"`
+		FallbackProviders []string `json:"fallback_providers"`
+	}
+	if err := json.Unmarshal([]byte(client.created.ExecConfig), &config); err != nil {
+		t.Fatalf("decode execution config: %v", err)
+	}
+	if config.Model != "fixture-model" || config.ProviderName != "missing-primary" ||
+		!config.AllowFallback || !slices.Equal(config.FallbackProviders, []string{"secondary", "tertiary"}) {
+		t.Fatalf("cron routing config = %#v", config)
 	}
 }
 
@@ -968,18 +1027,16 @@ func TestStrPtr(t *testing.T) {
 // TestCronPauseTool_Handler_MissingID verifies cron_pause returns error when id is missing.
 func TestCronPauseTool_Handler_MissingID(t *testing.T) {
 	tool := CronPauseTool(&mockCronClient{})
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
-	// The handler parses args but "id" is empty string, not an unmarshal error.
-	// The UpdateJob mock doesn't fail on empty id, so we just check it returns without panic.
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"expected_updated_at":"2026-03-08T11:00:00Z"}`))
+	if err == nil || !strings.Contains(err.Error(), "id is required") {
+		t.Fatalf("error = %v, want id is required", err)
 	}
 }
 
 // TestCronPauseTool_Handler_Success verifies cron_pause calls UpdateJob.
 func TestCronPauseTool_Handler_Success(t *testing.T) {
 	tool := CronPauseTool(&mockCronClient{})
-	result, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1"}`))
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1002,7 +1059,7 @@ func TestCronPauseTool_Handler_InvalidJSON(t *testing.T) {
 // TestCronResumeTool_Handler_Success verifies cron_resume calls UpdateJob.
 func TestCronResumeTool_Handler_Success(t *testing.T) {
 	tool := CronResumeTool(&mockCronClient{})
-	result, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-2"}`))
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-2","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1047,7 +1104,7 @@ func TestCancelDelayedCallbackTool_Handler_NotFound(t *testing.T) {
 // TestCronDeleteTool_Handler_Success verifies cron_delete calls DeleteJob.
 func TestCronDeleteTool_Handler_Success(t *testing.T) {
 	tool := CronDeleteTool(&mockCronClient{})
-	result, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"j1"}`))
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"j1","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

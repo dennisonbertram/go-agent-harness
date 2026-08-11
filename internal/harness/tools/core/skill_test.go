@@ -7,8 +7,10 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/skills"
 )
 
 type skillTranscriptReaderStub struct{}
@@ -50,6 +52,24 @@ func (m *mockSkillLister) ResolveSkill(_ context.Context, name, args, workspace 
 		return "", fmt.Errorf("skill not found: %s", name)
 	}
 	return body, nil
+}
+
+func (m *mockSkillLister) GetSkillFilePath(name string) (string, bool) {
+	s, ok := m.skills[name]
+	return s.FilePath, ok && s.FilePath != ""
+}
+
+func (m *mockSkillLister) UpdateSkillVerification(_ context.Context, name string, _ bool, at time.Time, by string) error {
+	s, ok := m.skills[name]
+	if !ok {
+		return fmt.Errorf("skill not found: %s", name)
+	}
+	if err := skills.WriteVerification(s.FilePath, at.UTC().Format(time.RFC3339), by); err != nil {
+		return err
+	}
+	s.Verified, s.VerifiedAt, s.VerifiedBy = true, at.UTC().Format(time.RFC3339), by
+	m.skills[name] = s
+	return nil
 }
 
 func newMockSkillLister() *mockSkillLister {

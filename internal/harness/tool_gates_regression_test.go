@@ -199,6 +199,10 @@ func TestDeniedAskUserQuestionDoesNotStrandRunStatus(t *testing.T) {
 // times out or whose transport dies.
 type erroringApprovalBroker struct{ err error }
 
+func (b *erroringApprovalBroker) Register(context.Context, ApprovalRequest) (ApprovalWaiter, error) {
+	return nil, b.err
+}
+
 func (b *erroringApprovalBroker) Ask(context.Context, ApprovalRequest) (bool, string, error) {
 	return false, "", b.err
 }

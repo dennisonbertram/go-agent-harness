@@ -76,9 +76,13 @@ func TestT2_ToolsList(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
+	// The original five tools must keep their schemas; the surface has since
+	// grown (issue #1316), so this asserts these are present rather than that
+	// they are the only ones. TestEveryAdvertisedToolIsDispatchable covers the
+	// full set against the dispatcher.
 	expectedTools := []string{"start_run", "get_run_status", "wait_for_run", "continue_run", "list_runs"}
-	if len(result.Tools) != len(expectedTools) {
-		t.Errorf("got %d tools, want %d", len(result.Tools), len(expectedTools))
+	if len(result.Tools) != len(toolDefs()) {
+		t.Errorf("got %d tools, want %d from toolDefs", len(result.Tools), len(toolDefs()))
 	}
 
 	toolsByName := make(map[string]Tool)

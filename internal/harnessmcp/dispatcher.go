@@ -20,6 +20,29 @@ func NewDispatcher(client *HarnessClient, clock Clock) *Dispatcher {
 			"wait_for_run":   newWaitForRunHandler(client, clock),
 			"continue_run":   newContinueRunHandler(client),
 			"list_runs":      newListRunsHandler(client),
+			"cancel_run":     newCancelRunHandler(client),
+			"approve_run":    newApproveRunHandler(client),
+			"deny_run":       newDenyRunHandler(client),
+			"steer_run":      newSteerRunHandler(client),
+			"list_models":    newListModelsHandler(client),
+			"list_providers": newListProvidersHandler(client),
+			// Discovery for arguments start_run already accepts (issue #1324).
+			"list_profiles": newListProfilesHandler(client),
+			"list_tools":    newListToolsHandler(client),
+			"list_skills":   newListSkillsHandler(client),
+			// Parity with the HTTP surface /mcp replaced (issue #1317).
+			"list_conversations":   newListConversationsHandler(client),
+			"get_conversation":     newGetConversationHandler(client),
+			"search_conversations": newSearchConversationsHandler(client),
+			"compact_conversation": newCompactConversationHandler(client),
+			// Observability: progress and the ask/answer loop (issue #1323).
+			"tail_run_events":   newTailRunEventsHandler(client),
+			"get_run_input":     newGetRunInputHandler(client),
+			"submit_user_input": newSubmitUserInputHandler(client),
+			"get_run_todos":     newGetRunTodosHandler(client),
+			"get_run_summary":   newGetRunSummaryHandler(client),
+			"get_run_context":   newGetRunContextHandler(client),
+			"compact_run":       newCompactRunHandler(client),
 		},
 	}
 	return d

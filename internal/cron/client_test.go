@@ -11,15 +11,18 @@ import (
 
 func TestClientHealth(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/healthz" {
+		if r.URL.Path != "/readyz" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-ingress-secret" {
+			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
 		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL)
+	client := NewClient(srv.URL, WithAPIKey("test-ingress-secret"))
 	if err := client.Health(context.Background()); err != nil {
 		t.Fatalf("health: %v", err)
 	}
@@ -108,6 +111,9 @@ func TestClientCreateJobError(t *testing.T) {
 	_, err := client.CreateJob(context.Background(), CreateJobRequest{})
 	if err == nil {
 		t.Fatalf("expected error")
+	}
+	if !IsValidationError(err) {
+		t.Fatalf("CreateJob error = %v, want typed validation error", err)
 	}
 }
 

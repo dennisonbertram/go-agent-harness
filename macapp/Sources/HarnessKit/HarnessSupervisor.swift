@@ -90,6 +90,13 @@ public actor HarnessSupervisor {
         if env["HARNESS_AUTH_DISABLED"] == nil {
             env["HARNESS_AUTH_DISABLED"] = "true"
         }
+        // Ask the daemon to exit if this app goes away. stop() covers a clean
+        // quit, but nothing covered being killed or crashing — and each of
+        // those left a daemon running, reparented to init, still holding its
+        // port and SQLite stores. One session of restarts accumulated 31.
+        if env["HARNESS_EXIT_WITH_PARENT"] == nil {
+            env["HARNESS_EXIT_WITH_PARENT"] = "true"
+        }
         // harnessd resolves its prompts and model catalog relative to its
         // *working directory* and workspace — both of which are the user's
         // project here, and neither contains those files. Without pinning them
