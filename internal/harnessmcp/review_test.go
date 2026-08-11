@@ -255,3 +255,48 @@ func (b *lockedBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+// TestPostAcceptsEmptyResponseBody is the regression test for a break I shipped
+// in #1315.
+//
+// That change made postRun return a decode error instead of discarding it, which
+// is right for continue_run — it must yield a run ID. But cancel, approve, and
+// deny are fire-and-forget: an empty 200 or a 204 is a legitimate success, and
+// treating it as a decode failure broke internal/harnessacp against main.
+func TestPostAcceptsEmptyResponseBody(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"empty 200", http.StatusOK, ""},
+		{"204 no content", http.StatusNoContent, ""},
+		{"whitespace only", http.StatusOK, "   \n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			if err := NewHarnessClient(srv.URL).CancelRun(context.Background(), "run-1"); err != nil {
+				t.Errorf("cancel with %s must succeed, got: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestPostStillRejectsMalformedBody is the false-positive control: tolerating an
+// empty body must not mean tolerating garbage, or continue_run goes back to
+// reporting success with no run ID to track.
+func TestPostStillRejectsMalformedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"run_id":`))
+	}))
+	defer srv.Close()
+
+	if _, err := NewHarnessClient(srv.URL).ContinueRun(context.Background(), "r", "go on"); err == nil {
+		t.Error("a truncated body must still be an error")
+	}
+}
