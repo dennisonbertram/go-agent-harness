@@ -29,6 +29,11 @@ func NewDispatcher(client *HarnessClient, clock Clock) *Dispatcher {
 			// Discovery for arguments start_run already accepts (issue #1324).
 			"list_profiles": newListProfilesHandler(client),
 			"list_tools":    newListToolsHandler(client),
+			// Parity with the HTTP surface /mcp replaced (issue #1317).
+			"list_conversations":   newListConversationsHandler(client),
+			"get_conversation":     newGetConversationHandler(client),
+			"search_conversations": newSearchConversationsHandler(client),
+			"compact_conversation": newCompactConversationHandler(client),
 			// Observability: progress and the ask/answer loop (issue #1323).
 			"tail_run_events":   newTailRunEventsHandler(client),
 			"get_run_input":     newGetRunInputHandler(client),

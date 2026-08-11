@@ -144,9 +144,10 @@ never a tool argument, so a model cannot set or read it.
 }
 ```
 
-The stdio binary exposes 20 tools: `start_run`, `get_run_status`, `wait_for_run`,
+The stdio binary exposes 24 tools: `start_run`, `get_run_status`, `wait_for_run`,
 `continue_run`, `list_runs`, `cancel_run`, `approve_run`, `deny_run`, `steer_run`,
-`list_models`, `list_providers`, `list_profiles`, `list_tools`, `tail_run_events`, `get_run_input`,
+`list_models`, `list_providers`, `list_profiles`, `list_tools`, `list_conversations`, `get_conversation`,
+`search_conversations`, `compact_conversation`, `tail_run_events`, `get_run_input`,
 `submit_user_input`, `get_run_todos`, `get_run_summary`, `get_run_context`, and
 `compact_run`.
 
