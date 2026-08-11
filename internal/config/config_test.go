@@ -20,8 +20,11 @@ func TestDefaultValues(t *testing.T) {
 	if cfg.MaxSteps != 0 {
 		t.Errorf("MaxSteps: got %d, want 0", cfg.MaxSteps)
 	}
-	if cfg.Addr != ":8080" {
-		t.Errorf("Addr: got %q, want %q", cfg.Addr, ":8080")
+	// Loopback, not ":8080": a wildcard bind plus implicitly-disabled auth made a
+	// default daemon an open agent-execution service on the local network
+	// (issue #1328).
+	if cfg.Addr != "127.0.0.1:8080" {
+		t.Errorf("Addr: got %q, want %q", cfg.Addr, "127.0.0.1:8080")
 	}
 	if cfg.Cost.MaxPerRunUSD != 0.0 {
 		t.Errorf("Cost.MaxPerRunUSD: got %f, want 0.0", cfg.Cost.MaxPerRunUSD)
@@ -76,8 +79,11 @@ func TestUserConfigOverridesDefaults(t *testing.T) {
 		t.Errorf("Model: got %q, want %q", cfg.Model, "gpt-4o")
 	}
 	// addr should still be the default
-	if cfg.Addr != ":8080" {
-		t.Errorf("Addr: got %q, want %q", cfg.Addr, ":8080")
+	// Loopback, not ":8080": a wildcard bind plus implicitly-disabled auth made a
+	// default daemon an open agent-execution service on the local network
+	// (issue #1328).
+	if cfg.Addr != "127.0.0.1:8080" {
+		t.Errorf("Addr: got %q, want %q", cfg.Addr, "127.0.0.1:8080")
 	}
 }
 

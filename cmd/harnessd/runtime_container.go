@@ -206,6 +206,12 @@ func (h *subagentRunnerHandoff) ParentRunID(runID string) (string, bool) {
 }
 
 func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
+	// Fail closed before anything is built or bound: an unauthenticated daemon
+	// listening beyond loopback is an open agent-execution service (issue #1328).
+	if err := checkBindSafety(opts.addr, opts.authDisabled, opts.runStore != nil); err != nil {
+		return httpRuntime{}, err
+	}
+
 	handoff := &subagentRunnerHandoff{}
 
 	// registryOpts carries the subagent manager so the TOP-LEVEL registry
@@ -326,7 +332,12 @@ func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 	}
 
 	modelSettings := buildModelSettings(modelSettingsPath(), opts.modelCatalog, nil)
+	// Built here and handed to the server so it mounts at /mcp *behind* the auth
+	// middleware. Mounting it alongside the main handler left it outside every
+	// middleware and therefore unauthenticated (issue #1328).
+	mcpSrv := mcpserver.NewServer(&mcpRunnerAdapter{runner: runner, store: opts.runStore})
 	mainHandler := server.NewWithOptions(buildServerOptions(serverBootstrapOptions{
+		mcpHandler:       mcpSrv.Handler(),
 		modelSettings:    modelSettings,
 		runner:           runner,
 		modelCatalog:     opts.modelCatalog,
@@ -355,11 +366,7 @@ func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 		profilesUser:     opts.profilesUser,
 	}))
 
-	// Mount the MCP server at /mcp so external MCP clients can drive the harness.
-	mcpSrv := mcpserver.NewServer(&mcpRunnerAdapter{runner: runner, store: opts.runStore})
-
 	topMux := http.NewServeMux()
-	topMux.Handle("/mcp", mcpSrv.Handler())
 	topMux.Handle("/", mainHandler)
 
 	httpServer := &http.Server{

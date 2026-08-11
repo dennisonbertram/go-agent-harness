@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -638,6 +639,8 @@ func buildTriggerRuntime(getenv func(string) string, logger func(string, ...any)
 }
 
 type serverBootstrapOptions struct {
+	// mcpHandler is mounted at /mcp behind the auth middleware (issue #1328).
+	mcpHandler       http.Handler
 	authDisabled     bool
 	runner           *harness.Runner
 	modelCatalog     *catalog.Catalog
@@ -676,6 +679,7 @@ func buildServerOptions(opts serverBootstrapOptions) server.ServerOptions {
 	// unset — the credential is present and unusable at the same time.
 	applyStoreCredentials(context.Background(), opts.modelSettings, opts.providerRegistry)
 	return server.ServerOptions{
+		MCPHandler:       opts.mcpHandler,
 		AuthDisabled:     opts.authDisabled,
 		Runner:           opts.runner,
 		Catalog:          opts.modelCatalog,
