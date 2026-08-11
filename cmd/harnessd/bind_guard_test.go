@@ -19,25 +19,41 @@ func TestPublicBindWithoutAuthIsRefused(t *testing.T) {
 	}
 }
 
+// TestPublicBindWithImplicitlyDisabledAuthIsRefused is the case the first version
+// of this guard missed.
+//
+// harnessd sets its authDisabled flag automatically when it auto-creates a run
+// store without an explicit HARNESS_RUN_DB, so that default local installs do not
+// suddenly require API keys. Passing that derived flag in as "the operator opted
+// out" meant the guard never fired on a default configuration — the daemon
+// started wide open on 0.0.0.0 exactly as before. Only an explicit
+// HARNESS_AUTH_DISABLED counts as consent.
+func TestPublicBindWithImplicitlyDisabledAuthIsRefused(t *testing.T) {
+	// explicitOptOut=false, authEnforced=false: auth is off, but nobody asked for it.
+	if err := checkBindSafety("0.0.0.0:8080", false, false); err == nil {
+		t.Fatal("a public bind with implicitly-disabled auth must be refused")
+	}
+}
+
 // The remaining cases are the false-positive controls: the guard must block only
 // the genuinely dangerous configuration.
 func TestBindSafetyAllowsEverythingElse(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		addr         string
-		authDisabled bool
-		hasStore     bool
+		name           string
+		addr           string
+		explicitOptOut bool
+		authEnforced   bool
 	}{
 		{"loopback without auth is normal local development", "127.0.0.1:8080", false, false},
 		{"loopback with the explicit opt-out", "127.0.0.1:8080", true, false},
-		{"public bind with auth configured", "0.0.0.0:8080", false, true},
+		{"public bind with auth actually enforced", "0.0.0.0:8080", false, true},
 		{"public bind with an explicit opt-out", "0.0.0.0:8080", true, false},
 		{"localhost by name", "localhost:8080", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := checkBindSafety(tc.addr, tc.authDisabled, tc.hasStore); err != nil {
-				t.Errorf("checkBindSafety(%q, authDisabled=%v, hasStore=%v) = %v, want nil",
-					tc.addr, tc.authDisabled, tc.hasStore, err)
+			if err := checkBindSafety(tc.addr, tc.explicitOptOut, tc.authEnforced); err != nil {
+				t.Errorf("checkBindSafety(%q, explicitOptOut=%v, authEnforced=%v) = %v, want nil",
+					tc.addr, tc.explicitOptOut, tc.authEnforced, err)
 			}
 		})
 	}

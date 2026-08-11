@@ -208,7 +208,10 @@ func (h *subagentRunnerHandoff) ParentRunID(runID string) (string, bool) {
 func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 	// Fail closed before anything is built or bound: an unauthenticated daemon
 	// listening beyond loopback is an open agent-execution service (issue #1328).
-	if err := checkBindSafety(opts.addr, opts.authDisabled, opts.runStore != nil); err != nil {
+	// opts.authDisabled is derived (set when the run store is implicit), so it is
+	// not consent. Read the operator's own opt-out, and treat auth as enforced
+	// only when a store exists AND the flag is not set.
+	if err := checkBindSafety(opts.addr, explicitAuthOptOut(), opts.runStore != nil && !opts.authDisabled); err != nil {
 		return httpRuntime{}, err
 	}
 
