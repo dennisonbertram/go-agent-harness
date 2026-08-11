@@ -12,6 +12,7 @@ import (
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/harness/tools/deferred"
+	"go-agent-harness/internal/harnessmcp"
 	"go-agent-harness/internal/hooks"
 	"go-agent-harness/internal/mcpserver"
 	"go-agent-harness/internal/networks"
@@ -130,7 +131,6 @@ type httpRuntime struct {
 	runner          *harness.Runner
 	tools           *harness.Registry
 	subagentManager subagents.Manager
-	mcpServer       *mcpserver.Server
 	handler         http.Handler
 	httpServer      *http.Server
 }
@@ -335,12 +335,21 @@ func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 	}
 
 	modelSettings := buildModelSettings(modelSettingsPath(), opts.modelCatalog, nil)
-	// Built here and handed to the server so it mounts at /mcp *behind* the auth
-	// middleware. Mounting it alongside the main handler left it outside every
-	// middleware and therefore unauthenticated (issue #1328).
-	mcpSrv := mcpserver.NewServer(&mcpRunnerAdapter{runner: runner, store: opts.runStore})
+	// One MCP implementation, two transports: /mcp now serves the same tool
+	// definitions and handlers as the stdio harness-mcp binary, rather than a
+	// second delegation API whose start_run could not even select a model
+	// (issue #1317). It runs inside harnessd and reaches the REST API over
+	// loopback, carrying the caller's own bearer token so an authenticated
+	// daemon stays authenticated end to end.
+	//
+	// Mounted behind the auth middleware by the server, not alongside it
+	// (issue #1328).
+	mcpSelfURL := selfBaseURL(opts.addr)
+	mcpHandler := harnessmcp.NewHTTPHandler(func(token string) *harnessmcp.HarnessClient {
+		return harnessmcp.NewHarnessClientWithToken(mcpSelfURL, token)
+	})
 	mainHandler := server.NewWithOptions(buildServerOptions(serverBootstrapOptions{
-		mcpHandler:       mcpSrv.Handler(),
+		mcpHandler:       mcpHandler,
 		modelSettings:    modelSettings,
 		runner:           runner,
 		modelCatalog:     opts.modelCatalog,
@@ -385,7 +394,6 @@ func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 		runner:          runner,
 		tools:           tools,
 		subagentManager: subagentMgr,
-		mcpServer:       mcpSrv,
 		handler:         topMux,
 		httpServer:      httpServer,
 	}, nil

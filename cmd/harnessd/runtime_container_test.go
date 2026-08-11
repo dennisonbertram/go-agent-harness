@@ -173,11 +173,9 @@ func TestBuildHTTPRuntimeAssemblesRunnerSubagentsAndHTTPServer(t *testing.T) {
 	if runtime.httpServer.MaxHeaderBytes != 1<<20 {
 		t.Fatalf("MaxHeaderBytes: got %d want %d", runtime.httpServer.MaxHeaderBytes, 1<<20)
 	}
-	if runtime.mcpServer == nil {
-		t.Fatal("expected mcp server to be initialized")
-	}
-
-	// Verify the /mcp endpoint is reachable via the top-level mux.
+	// /mcp is now served by the shared harnessmcp dispatcher rather than a
+	// separate mcpserver.Server, so there is no second server object to check —
+	// the route's behaviour below is the assertion that matters (issue #1317).
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"initialize","id":1}`))
 	runtime.handler.ServeHTTP(rec, req)
