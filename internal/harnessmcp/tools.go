@@ -183,7 +183,10 @@ func newGetRunStatusHandler(client *HarnessClient) ToolHandler {
 		}
 
 		result, err := json.Marshal(map[string]any{
-			"status":   status.Status,
+			"status": status.Status,
+			// output is the run's result text — the whole point of delegating.
+			// It was previously dropped entirely (issue #1314).
+			"output":   status.Output,
 			"messages": status.Messages,
 			"cost_usd": status.CostUSD,
 			"error":    status.Error,
@@ -225,7 +228,9 @@ func newWaitForRunHandler(client *HarnessClient, clock Clock) ToolHandler {
 			switch status.Status {
 			case "completed", "failed", "waiting_for_user":
 				result, err := json.Marshal(map[string]any{
-					"status":   status.Status,
+					"status": status.Status,
+					// output is the run's result text (issue #1314).
+					"output":   status.Output,
 					"messages": status.Messages,
 					"cost_usd": status.CostUSD,
 					"error":    status.Error,
