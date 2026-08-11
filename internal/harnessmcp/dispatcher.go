@@ -26,6 +26,9 @@ func NewDispatcher(client *HarnessClient, clock Clock) *Dispatcher {
 			"steer_run":      newSteerRunHandler(client),
 			"list_models":    newListModelsHandler(client),
 			"list_providers": newListProvidersHandler(client),
+			// Discovery for arguments start_run already accepts (issue #1324).
+			"list_profiles": newListProfilesHandler(client),
+			"list_tools":    newListToolsHandler(client),
 			// Observability: progress and the ask/answer loop (issue #1323).
 			"tail_run_events":   newTailRunEventsHandler(client),
 			"get_run_input":     newGetRunInputHandler(client),

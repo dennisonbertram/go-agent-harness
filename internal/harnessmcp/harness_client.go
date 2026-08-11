@@ -614,3 +614,47 @@ func (c *HarnessClient) getRunSubresource(ctx context.Context, runID, name strin
 	}
 	return out, nil
 }
+
+// CatalogProfile is one entry from GET /v1/profiles. start_run accepts a profile
+// name, so a caller needs to be able to see the valid ones (issue #1324).
+type CatalogProfile struct {
+	Name         string   `json:"name"`
+	Description  string   `json:"description,omitempty"`
+	Model        string   `json:"model,omitempty"`
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+	SourceTier   string   `json:"source_tier,omitempty"`
+}
+
+// CatalogTool is one entry from GET /v1/tools, projected down to what a caller
+// filling allowed_tools or denied_tools needs.
+//
+// The server also returns each tool's full JSON Schema. With ~67 tools that is a
+// large payload to push into an agent's context for a question that is really
+// "what are the names?", so the schemas are deliberately dropped here.
+type CatalogTool struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Tier        string `json:"tier,omitempty"`
+}
+
+// ListProfiles calls GET /v1/profiles.
+func (c *HarnessClient) ListProfiles(ctx context.Context) ([]CatalogProfile, error) {
+	var body struct {
+		Profiles []CatalogProfile `json:"profiles"`
+	}
+	if err := c.getJSON(ctx, "/v1/profiles", &body); err != nil {
+		return nil, err
+	}
+	return body.Profiles, nil
+}
+
+// ListTools calls GET /v1/tools.
+func (c *HarnessClient) ListTools(ctx context.Context) ([]CatalogTool, error) {
+	var body struct {
+		Tools []CatalogTool `json:"tools"`
+	}
+	if err := c.getJSON(ctx, "/v1/tools", &body); err != nil {
+		return nil, err
+	}
+	return body.Tools, nil
+}
