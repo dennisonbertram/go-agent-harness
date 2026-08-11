@@ -106,7 +106,13 @@ func (m Model) View() string {
 		segs = append(segs, segment{styles.Bold.Render(truncate(m.title, 24)), 2})
 	}
 	if m.ctxUsed > 0 && m.ctxTotal > 0 {
+		// Clamped because this meter reports occupancy, which cannot exceed the
+		// window. The /context overlay already clamps (contextgrid.View), so
+		// without this the two surfaces disagree (issue #1307).
 		pct := int(float64(m.ctxUsed)/float64(m.ctxTotal)*100 + 0.5)
+		if pct > 100 {
+			pct = 100
+		}
 		text := fmt.Sprintf("◫ %d%%/%s", pct, formatCompactTokens(m.ctxTotal))
 		style := styles.Dim
 		if pct >= 80 {
