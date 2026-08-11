@@ -317,7 +317,11 @@ func newWaitForRunHandler(client *HarnessClient, clock Clock) ToolHandler {
 			}
 
 			switch status.Status {
-			case "completed", "failed", "waiting_for_user":
+			// Terminal per the runner (isTerminalRunStatus: completed, failed,
+			// cancelled) plus waiting_for_user, which blocks on input and so
+			// ends a blocking wait. "cancelled" was missing, so cancelling a run
+			// left this polling until its timeout (issue #1319).
+			case "completed", "failed", "cancelled", "waiting_for_user":
 				result, err := json.Marshal(map[string]any{
 					"status": status.Status,
 					// output is the run's result text (issue #1314).

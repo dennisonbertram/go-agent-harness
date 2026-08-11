@@ -10,13 +10,27 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
+	"time"
 )
 
 // HarnessClient is an HTTP client for the harnessd REST API.
 type HarnessClient struct {
 	baseURL    string
 	httpClient *http.Client
+	// token is an optional bearer credential. harnessd enforces Bearer auth
+	// unless explicitly disabled, so without this the proxy can only reach an
+	// auth-disabled daemon (issue #1319). It is never logged or echoed into an
+	// error, and never accepted as a tool argument — a model must not be able to
+	// set or read a credential.
+	token string
 }
+
+// defaultRequestTimeout bounds every request. Zero (the previous behavior) means
+// a wedged daemon blocks a tool call forever, and a stdio caller has no side
+// channel to cancel with. It is generous because a run can legitimately take a
+// while to start; wait_for_run owns the long poll and applies its own deadline.
+const defaultRequestTimeout = 60 * time.Second
 
 // RunEvent is the typed payload delivered by harnessd's existing SSE endpoint.
 type RunEvent struct {
@@ -55,16 +69,21 @@ func (c *HarnessClient) postRun(ctx context.Context, path string, bodyValue any)
 	if bodyValue != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	c.authorize(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return StartRunResponse{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return StartRunResponse{}, fmt.Errorf("harness_client: post %s: status %d", path, resp.StatusCode)
+		return StartRunResponse{}, errorFromResponse("post "+path, resp)
 	}
 	var result StartRunResponse
-	_ = json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		// Previously discarded, which reported success while returning no run
+		// ID for the caller to track (issue #1319).
+		return StartRunResponse{}, fmt.Errorf("harness_client: decode post %s response: %w", path, err)
+	}
 	return result, nil
 }
 
@@ -74,7 +93,12 @@ func (c *HarnessClient) StreamRunEvents(ctx context.Context, runID string, recei
 	if err != nil {
 		return err
 	}
-	resp, err := c.httpClient.Do(req)
+	c.authorize(req)
+	// An SSE stream is long-lived by design, so it must NOT use the client's
+	// per-request timeout — that would sever a healthy stream after a minute.
+	// The caller's context remains the cancellation path.
+	streamClient := &http.Client{Transport: c.httpClient.Transport}
+	resp, err := streamClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -113,10 +137,45 @@ func (c *HarnessClient) StreamRunEvents(ctx context.Context, runID string, recei
 
 // NewHarnessClient creates a new HarnessClient pointing at baseURL.
 func NewHarnessClient(baseURL string) *HarnessClient {
+	return NewHarnessClientWithToken(baseURL, "")
+}
+
+// NewHarnessClientWithToken builds a client that authenticates with a bearer
+// token. An empty token sends no Authorization header at all, so an
+// auth-disabled daemon behaves exactly as before.
+func NewHarnessClientWithToken(baseURL, token string) *HarnessClient {
 	return &HarnessClient{
 		baseURL:    baseURL,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Timeout: defaultRequestTimeout},
+		token:      token,
 	}
+}
+
+// authorize attaches the bearer credential when one is configured.
+func (c *HarnessClient) authorize(req *http.Request) {
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+}
+
+// errorFromResponse builds an error carrying the server's own message. A bare
+// status code does not say why a call failed, which is exactly what a caller
+// needs for cancel/steer/continue.
+func errorFromResponse(path string, resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+	var parsed struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Error.Message != "" {
+		return fmt.Errorf("harness_client: %s: status %d: %s", path, resp.StatusCode, parsed.Error.Message)
+	}
+	if trimmed := strings.TrimSpace(string(body)); trimmed != "" {
+		return fmt.Errorf("harness_client: %s: status %d: %s", path, resp.StatusCode, trimmed)
+	}
+	return fmt.Errorf("harness_client: %s: status %d", path, resp.StatusCode)
 }
 
 // StartRunRequest is the request body for POST /v1/runs.
@@ -217,6 +276,7 @@ func (c *HarnessClient) StartRun(ctx context.Context, req StartRunRequest) (Star
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	c.authorize(httpReq)
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return StartRunResponse{}, fmt.Errorf("harness_client: post /v1/runs: %w", err)
@@ -243,6 +303,7 @@ func (c *HarnessClient) GetRun(ctx context.Context, runID string) (RunStatus, er
 		return RunStatus{}, fmt.Errorf("harness_client: create request: %w", err)
 	}
 
+	c.authorize(httpReq)
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return RunStatus{}, fmt.Errorf("harness_client: get /v1/runs/%s: %w", runID, err)
@@ -285,6 +346,7 @@ func (c *HarnessClient) ListRuns(ctx context.Context, params ListRunsParams) ([]
 		return nil, fmt.Errorf("harness_client: create request: %w", err)
 	}
 
+	c.authorize(httpReq)
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("harness_client: get /v1/runs: %w", err)
@@ -374,6 +436,7 @@ func (c *HarnessClient) getJSON(ctx context.Context, path string, out any) error
 	if err != nil {
 		return fmt.Errorf("harness_client: create request: %w", err)
 	}
+	c.authorize(httpReq)
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("harness_client: get %s: %w", path, err)

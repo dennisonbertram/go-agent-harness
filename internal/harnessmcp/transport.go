@@ -45,10 +45,13 @@ func (t *StdioTransport) Run(ctx context.Context) error {
 			continue
 		}
 
-		// Check context before dispatching.
+		// Stop on cancellation. This was a bare `break` inside the select, which
+		// leaves the select rather than the loop, so cancellation was silently a
+		// no-op and dispatch continued (issue #1319).
 		select {
 		case <-ctx.Done():
-			break
+			wg.Wait()
+			return ctx.Err()
 		default:
 		}
 
