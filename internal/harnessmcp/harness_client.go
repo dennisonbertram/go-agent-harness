@@ -134,13 +134,29 @@ type StartRunResponse struct {
 }
 
 // RunStatus is the full run state returned by GET /v1/runs/{id}.
+//
+// The JSON tags mirror what the server actually emits. They previously named
+// fields the server does not send (run_id, cost_usd, messages), and because
+// encoding/json leaves absent fields at their zero value, the proxy silently
+// dropped every run's output and reported every run as free (issue #1314).
 type RunStatus struct {
-	RunID          string    `json:"run_id"`
-	Status         string    `json:"status"`
-	ConversationID string    `json:"conversation_id"`
-	Messages       []Message `json:"messages"`
-	CostUSD        float64   `json:"cost_usd"`
-	Error          string    `json:"error,omitempty"`
+	RunID          string `json:"id"`
+	Status         string `json:"status"`
+	ConversationID string `json:"conversation_id"`
+	// Output is the run's result text. The server sends a single string, not a
+	// message list.
+	Output   string    `json:"output"`
+	Messages []Message `json:"messages"`
+	// CostTotals carries the run's spend; CostUSD is projected from it after
+	// decoding, since the server nests it rather than exposing a flat field.
+	CostTotals runCostTotals `json:"cost_totals"`
+	CostUSD    float64       `json:"-"`
+	Error      string        `json:"error,omitempty"`
+}
+
+// runCostTotals is the server's nested cost object.
+type runCostTotals struct {
+	CostUSDTotal float64 `json:"cost_usd_total"`
 }
 
 // Message is a single message in a run's conversation.
@@ -151,9 +167,9 @@ type Message struct {
 
 // RunSummary is a summary of a run, as returned by list_runs.
 type RunSummary struct {
-	RunID   string  `json:"run_id"`
+	RunID   string  `json:"id"`
 	Status  string  `json:"status"`
-	CostUSD float64 `json:"cost_usd"`
+	CostUSD float64 `json:"-"`
 }
 
 // ListRunsParams are the query parameters for GET /v1/runs.
@@ -217,6 +233,8 @@ func (c *HarnessClient) GetRun(ctx context.Context, runID string) (RunStatus, er
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return RunStatus{}, fmt.Errorf("harness_client: decode run status: %w", err)
 	}
+	// The server nests cost; flatten it so callers keep one field to read.
+	result.CostUSD = result.CostTotals.CostUSDTotal
 	return result, nil
 }
 
@@ -257,9 +275,9 @@ func (c *HarnessClient) ListRuns(ctx context.Context, params ListRunsParams) ([]
 	// We project each to a RunSummary.
 	var result struct {
 		Runs []struct {
-			RunID   string  `json:"run_id"`
-			Status  string  `json:"status"`
-			CostUSD float64 `json:"cost_usd"`
+			RunID      string        `json:"id"`
+			Status     string        `json:"status"`
+			CostTotals runCostTotals `json:"cost_totals"`
 		} `json:"runs"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -271,7 +289,7 @@ func (c *HarnessClient) ListRuns(ctx context.Context, params ListRunsParams) ([]
 		summaries = append(summaries, RunSummary{
 			RunID:   r.RunID,
 			Status:  r.Status,
-			CostUSD: r.CostUSD,
+			CostUSD: r.CostTotals.CostUSDTotal,
 		})
 	}
 	return summaries, nil
