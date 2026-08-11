@@ -459,6 +459,10 @@ type Model struct {
 	pluginWarnings []string
 	pluginBrowser  pluginBrowserState
 
+	// startupNotices holds non-plugin notices raised while building the model
+	// (currently divergent provider keys), surfaced on the status bar by Init.
+	startupNotices []string
+
 	// swarm tracks the current run's agent_swarm call (epic #808 slice 4) so
 	// the /subagents view can group and live-update swarm members.
 	swarm swarmTracker
@@ -517,16 +521,15 @@ func New(cfg TUIConfig) Model {
 	// replayed to the server on Init() because the server already reads its own
 	// environment variables.
 	m.envAPIKeys = make(map[string]string)
-	envKeyVars := map[string]string{
-		"openrouter": "OPENROUTER_API_KEY",
-		"openai":     "OPENAI_API_KEY",
-		"anthropic":  "ANTHROPIC_API_KEY",
-	}
-	for provider, envVar := range envKeyVars {
+	for provider, envVar := range providerEnvKeyVars {
 		if key := os.Getenv(envVar); key != "" {
 			m.envAPIKeys[provider] = key
 		}
 	}
+	// Both key sources are populated now, so this is where they can be compared.
+	// Divergent keys otherwise collapse into one "configured" mark and surface
+	// later as an unattributable provider 401 (issue #1297).
+	m.startupNotices = divergentKeyNotices(m.pendingAPIKeys, m.envAPIKeys)
 	// Subscription credentials are harness-owned local files, not environment
 	// variables. Store only a non-secret availability marker in the TUI.
 	if _, err := codex.DefaultStore().Load(); err == nil {
@@ -2557,11 +2560,17 @@ func (m Model) Init() tea.Cmd {
 	for provider, providerKey := range m.pendingAPIKeys {
 		cmds = append(cmds, setProviderKeyCmd(m.config.BaseURL, provider, providerKey, m.config.APIKey))
 	}
-	// Schedule a status message when plugin warnings were collected at startup.
+	// Schedule a status message for anything collected at startup. Key
+	// divergence goes last so it wins the status bar over a plugin count: it is
+	// the more actionable of the two.
+	notices := m.startupNotices
 	if len(m.pluginWarnings) > 0 {
-		msg := fmt.Sprintf("%d plugin warning(s) at startup", len(m.pluginWarnings))
+		notices = append([]string{fmt.Sprintf("%d plugin warning(s) at startup", len(m.pluginWarnings))}, notices...)
+	}
+	for _, notice := range notices {
+		text := notice
 		cmds = append(cmds, func() tea.Msg {
-			return pluginWarningMsg{text: msg}
+			return startupNoticeMsg{text: text}
 		})
 	}
 	if len(cmds) > 0 {
@@ -2670,9 +2679,9 @@ func (m *Model) markRunTerminal(runID string) {
 	m.terminalRunIDs[runID] = true
 }
 
-// pluginWarningMsg is a tea.Msg that triggers a status-bar notification for
-// plugin load errors discovered at startup.
-type pluginWarningMsg struct {
+// startupNoticeMsg is a tea.Msg that puts a startup notice on the status bar.
+// Producers today are plugin load errors and divergent provider keys.
+type startupNoticeMsg struct {
 	text string
 }
 
@@ -5149,8 +5158,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, spinnerTickCmd())
 		}
 
-	case pluginWarningMsg:
-		// Show a transient notice that some plugins failed to load.
+	case startupNoticeMsg:
+		// Show a transient notice collected while building the model.
 		cmds = append(cmds, m.setStatusMsg(msg.text))
 
 	case ProfilesLoadedMsg:
@@ -5776,7 +5785,18 @@ func (m Model) viewAPIKeysOverlay() string {
 		}
 		status := unsetStyle.Render("\u25cb unset")
 		if p.Configured {
-			status = configuredStyle.Render("\u25cf set")
+			// Attribute the key to its source so a failing request can be traced
+			// to a credential. Never render key material here (issue #1297).
+			label := "\u25cf set"
+			switch src := m.providerKeySource(p.Name); src {
+			case keySourceConflict:
+				label += " (" + src.label() + ")"
+				status = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(label)
+			case keySourceNone:
+				status = configuredStyle.Render(label)
+			default:
+				status = configuredStyle.Render(label + " (" + src.label() + ")")
+			}
 		}
 		detail := p.APIKeyEnv
 		if p.AuthType == "subscription" {
