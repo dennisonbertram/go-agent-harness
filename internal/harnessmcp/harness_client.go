@@ -81,10 +81,19 @@ func (c *HarnessClient) postRun(ctx context.Context, path string, bodyValue any)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return StartRunResponse{}, errorFromResponse("post "+path, resp)
 	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return StartRunResponse{}, fmt.Errorf("harness_client: read post %s response: %w", path, err)
+	}
+	// cancel, approve, and deny are fire-and-forget: an empty 200 or a 204 is a
+	// legitimate success and carries no run ID. Only a non-empty body that fails
+	// to parse is an error — discarding that was what let continue_run report
+	// success while returning nothing to track (issue #1319).
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return StartRunResponse{}, nil
+	}
 	var result StartRunResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		// Previously discarded, which reported success while returning no run
-		// ID for the caller to track (issue #1319).
+	if err := json.Unmarshal(raw, &result); err != nil {
 		return StartRunResponse{}, fmt.Errorf("harness_client: decode post %s response: %w", path, err)
 	}
 	return result, nil
