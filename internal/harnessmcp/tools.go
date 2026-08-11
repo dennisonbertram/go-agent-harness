@@ -200,6 +200,77 @@ func toolDefs() []Tool {
 			},
 		},
 		{
+			Name:        "tail_run_events",
+			Description: "Poll a run's event stream for progress. Pass last_event_id back as after_event_id to get only newer events. Returns promptly when the run is quiet.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"run_id":         {Type: "string", Description: "Run ID to tail"},
+					"after_event_id": {Type: "string", Description: "Cursor from the previous poll's last_event_id; omit to start from the beginning"},
+					"max_events":     {Type: "integer", Description: "Max events to return (default 100)"},
+					"wait_seconds":   {Type: "integer", Description: "How long to wait for events before returning (default 2)"},
+				},
+				Required: []string{"run_id"},
+			},
+		},
+		{
+			Name:        "get_run_input",
+			Description: "Read the question a run is waiting on when its status is waiting_for_user.",
+			InputSchema: InputSchema{
+				Type:       "object",
+				Properties: map[string]Property{"run_id": {Type: "string", Description: "Run ID"}},
+				Required:   []string{"run_id"},
+			},
+		},
+		{
+			Name:        "submit_user_input",
+			Description: "Answer a run waiting on a question, so it resumes instead of being cancelled.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"run_id":  {Type: "string", Description: "Run ID"},
+					"answers": {Type: "object", Description: "Map of question id to answer"},
+				},
+				Required: []string{"run_id", "answers"},
+			},
+		},
+		{
+			Name:        "get_run_todos",
+			Description: "Read a run's todo list — what it has done and what it plans to do next.",
+			InputSchema: InputSchema{
+				Type:       "object",
+				Properties: map[string]Property{"run_id": {Type: "string", Description: "Run ID"}},
+				Required:   []string{"run_id"},
+			},
+		},
+		{
+			Name:        "get_run_summary",
+			Description: "Read a run's summary.",
+			InputSchema: InputSchema{
+				Type:       "object",
+				Properties: map[string]Property{"run_id": {Type: "string", Description: "Run ID"}},
+				Required:   []string{"run_id"},
+			},
+		},
+		{
+			Name:        "get_run_context",
+			Description: "Read a run's context-window usage.",
+			InputSchema: InputSchema{
+				Type:       "object",
+				Properties: map[string]Property{"run_id": {Type: "string", Description: "Run ID"}},
+				Required:   []string{"run_id"},
+			},
+		},
+		{
+			Name:        "compact_run",
+			Description: "Compact a run's context to free space.",
+			InputSchema: InputSchema{
+				Type:       "object",
+				Properties: map[string]Property{"run_id": {Type: "string", Description: "Run ID"}},
+				Required:   []string{"run_id"},
+			},
+		},
+		{
 			Name:        "list_models",
 			Description: "List models this daemon can route to, with provider and context window.",
 			InputSchema: InputSchema{Type: "object", Properties: map[string]Property{}},
@@ -513,4 +584,127 @@ func jsonResult(v any) (ToolResult, error) {
 		return errorResult(err.Error()), nil
 	}
 	return ToolResult{Content: []ContentBlock{{Type: "text", Text: string(b)}}}, nil
+}
+
+// newTailRunEventsHandler returns a ToolHandler for the tail_run_events tool.
+//
+// Polling with a cursor is how a delegating agent sees progress: an MCP tool call
+// is request/response, so it cannot stream into an in-flight call (issue #1323).
+func newTailRunEventsHandler(client *HarnessClient) ToolHandler {
+	return func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+		var params struct {
+			RunID        string `json:"run_id"`
+			AfterEventID string `json:"after_event_id,omitempty"`
+			MaxEvents    int    `json:"max_events,omitempty"`
+			WaitSeconds  int    `json:"wait_seconds,omitempty"`
+		}
+		if err := json.Unmarshal(args, &params); err != nil {
+			return errorResult(fmt.Sprintf("invalid arguments: %v", err)), nil
+		}
+		if params.RunID == "" {
+			return errorResult("run_id is required"), nil
+		}
+		window := time.Duration(params.WaitSeconds) * time.Second
+		events, cursor, err := client.TailRunEvents(ctx, params.RunID, params.AfterEventID, params.MaxEvents, window)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(map[string]any{
+			"events": events,
+			// Pass this back as after_event_id next poll to avoid replaying.
+			"last_event_id": cursor,
+			"count":         len(events),
+		})
+	}
+}
+
+// newGetRunInputHandler returns a ToolHandler for the get_run_input tool.
+func newGetRunInputHandler(client *HarnessClient) ToolHandler {
+	return func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+		runID, errRes := requireRunID(args)
+		if errRes != nil {
+			return *errRes, nil
+		}
+		pending, err := client.PendingInput(ctx, runID)
+		if err != nil {
+			// "not waiting for input" is an ordinary state, not a fault; the
+			// server's message already says so, so pass it through plainly.
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(pending)
+	}
+}
+
+// newSubmitUserInputHandler returns a ToolHandler for the submit_user_input tool.
+func newSubmitUserInputHandler(client *HarnessClient) ToolHandler {
+	return func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+		var params struct {
+			RunID   string            `json:"run_id"`
+			Answers map[string]string `json:"answers"`
+		}
+		if err := json.Unmarshal(args, &params); err != nil {
+			return errorResult(fmt.Sprintf("invalid arguments: %v", err)), nil
+		}
+		if params.RunID == "" {
+			return errorResult("run_id is required"), nil
+		}
+		if len(params.Answers) == 0 {
+			return errorResult("answers is required — map each question id to its answer"), nil
+		}
+		if err := client.SubmitInput(ctx, params.RunID, params.Answers); err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(map[string]any{"run_id": params.RunID, "ok": true})
+	}
+}
+
+// newGetRunTodosHandler returns a ToolHandler for the get_run_todos tool.
+func newGetRunTodosHandler(client *HarnessClient) ToolHandler {
+	return runSubresourceHandler(client.RunTodos)
+}
+
+// newGetRunSummaryHandler returns a ToolHandler for the get_run_summary tool.
+func newGetRunSummaryHandler(client *HarnessClient) ToolHandler {
+	return runSubresourceHandler(client.RunSummary)
+}
+
+// newGetRunContextHandler returns a ToolHandler for the get_run_context tool.
+func newGetRunContextHandler(client *HarnessClient) ToolHandler {
+	return runSubresourceHandler(client.RunContext)
+}
+
+// newCompactRunHandler returns a ToolHandler for the compact_run tool.
+func newCompactRunHandler(client *HarnessClient) ToolHandler {
+	return runControlHandler(client.CompactRun)
+}
+
+// runSubresourceHandler adapts a run subresource fetch into a ToolHandler.
+func runSubresourceHandler(fetch func(context.Context, string) (any, error)) ToolHandler {
+	return func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+		runID, errRes := requireRunID(args)
+		if errRes != nil {
+			return *errRes, nil
+		}
+		out, err := fetch(ctx, runID)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(out)
+	}
+}
+
+// requireRunID parses and validates the common {"run_id": "..."} argument shape.
+func requireRunID(args json.RawMessage) (string, *ToolResult) {
+	var params struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		res := errorResult(fmt.Sprintf("invalid arguments: %v", err))
+		return "", &res
+	}
+	if params.RunID == "" {
+		res := errorResult("run_id is required")
+		return "", &res
+	}
+	return params.RunID, nil
 }
