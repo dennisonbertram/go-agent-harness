@@ -691,3 +691,26 @@ func (c *HarnessClient) CompactConversation(ctx context.Context, id string) erro
 	_, err := c.postRun(ctx, "/v1/conversations/"+url.PathEscape(id)+"/compact", nil)
 	return err
 }
+
+// CatalogSkill is one entry from GET /v1/skills, projected to what a caller
+// writing a delegate's prompt needs.
+//
+// The server also returns each skill's file_path. That is of no use to a remote
+// caller and leaks the daemon host's filesystem layout, so it is dropped.
+type CatalogSkill struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Context     string `json:"context,omitempty"`
+}
+
+// ListSkills calls GET /v1/skills.
+func (c *HarnessClient) ListSkills(ctx context.Context) ([]CatalogSkill, error) {
+	var body struct {
+		Skills []CatalogSkill `json:"skills"`
+	}
+	if err := c.getJSON(ctx, "/v1/skills", &body); err != nil {
+		return nil, err
+	}
+	return body.Skills, nil
+}

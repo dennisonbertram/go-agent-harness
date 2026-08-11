@@ -314,6 +314,11 @@ func toolDefs() []Tool {
 			},
 		},
 		{
+			Name:        "list_skills",
+			Description: "List skills available to a delegated run, so a prompt can name one.",
+			InputSchema: InputSchema{Type: "object", Properties: map[string]Property{}},
+		},
+		{
 			Name:        "list_models",
 			Description: "List models this daemon can route to, with provider and context window.",
 			InputSchema: InputSchema{Type: "object", Properties: map[string]Property{}},
@@ -848,4 +853,15 @@ func requireConversationID(args json.RawMessage) (string, *ToolResult) {
 		return "", &res
 	}
 	return params.ConversationID, nil
+}
+
+// newListSkillsHandler returns a ToolHandler for the list_skills tool.
+func newListSkillsHandler(client *HarnessClient) ToolHandler {
+	return func(ctx context.Context, _ json.RawMessage) (ToolResult, error) {
+		skills, err := client.ListSkills(ctx)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(map[string]any{"skills": skills})
+	}
 }
