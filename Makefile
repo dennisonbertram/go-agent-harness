@@ -1,7 +1,7 @@
 PREFIX ?= $(HOME)/.local
 
 # Packages exercised by the race detector: the concurrency-critical core.
-RACE_PKGS := ./internal/harness/... ./internal/server/... ./internal/workflow/... ./cmd/harnessd/... ./cmd/harnesscli/...
+RACE_PKGS := ./internal/harness/... ./internal/harnessacp/... ./internal/harnessmcp/... ./internal/server/... ./internal/workflow/... ./cmd/harnessd/... ./cmd/harnesscli/... ./cmd/harness-mcp/...
 
 .PHONY: build install install-system uninstall clean test test-race test-e2e
 
