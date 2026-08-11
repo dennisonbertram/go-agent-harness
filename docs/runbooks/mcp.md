@@ -118,7 +118,17 @@ go build -o bin/harness-mcp ./cmd/harness-mcp
 
 The binary reads JSON-RPC from stdin and writes responses to stdout. It proxies all calls to `harnessd` via HTTP.
 
-Configure `HARNESS_ADDR` (default: `http://localhost:8080`).
+Configure via environment:
+
+| Variable | Meaning |
+|---|---|
+| `HARNESS_ADDR` | harnessd base URL (default `http://localhost:8080`) |
+| `HARNESS_API_KEY` | Bearer token, when the daemon requires auth |
+
+`harnessd` enforces Bearer authentication unless it was started with
+`HARNESS_AUTH_DISABLED=true`. Without `HARNESS_API_KEY` the stdio server can only
+reach an auth-disabled daemon. The token is read from the environment only — it is
+never a tool argument, so a model cannot set or read it.
 
 **Register with Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 ```json
@@ -134,7 +144,19 @@ Configure `HARNESS_ADDR` (default: `http://localhost:8080`).
 }
 ```
 
-The stdio binary exposes 5 tools: `start_run`, `get_run_status`, `wait_for_run`, `continue_run`, `list_runs`.
+The stdio binary exposes 11 tools: `start_run`, `get_run_status`, `wait_for_run`,
+`continue_run`, `list_runs`, `cancel_run`, `approve_run`, `deny_run`, `steer_run`,
+`list_models`, and `list_providers`.
+
+`start_run` forwards the full run surface — `model`, `workspace_type`,
+`extra_dirs`, `allowed_tools`, `denied_tools`, `profile`, `system_prompt`,
+`provider_name`, `reasoning_effort`, `max_steps`, `max_turns`, `max_cost_usd`,
+`plan_mode`, `plan_file`, `agent_intent`, `task_context`, `conversation_id`. Every
+field except `prompt` is optional and omitted when unset, so a prompt-only call
+behaves as it always did.
+
+Use `workspace_type: "worktree"` for anything that writes: the run is provisioned a
+git worktree and the caller's checkout is untouched.
 
 ---
 
