@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"go-agent-harness/internal/config"
 )
@@ -19,11 +21,15 @@ import (
 // switched off, leaving operators worse off — this asks for one only when it
 // matters. Loopback development is untouched; a public bind must either
 // configure auth or opt out on purpose.
-func checkBindSafety(addr string, authDisabled, hasAuthStore bool) error {
+// explicitAuthOptOut must be the operator's own HARNESS_AUTH_DISABLED, not
+// harnessd's derived authDisabled flag: that flag is set automatically when a run
+// store is auto-created, so treating it as consent made this guard a no-op on the
+// default configuration. authEnforced means requests are actually challenged.
+func checkBindSafety(addr string, explicitAuthOptOut, authEnforced bool) error {
 	if !config.IsPubliclyReachableAddr(addr) {
 		return nil
 	}
-	if authDisabled || hasAuthStore {
+	if explicitAuthOptOut || authEnforced {
 		return nil
 	}
 	return fmt.Errorf(
@@ -33,4 +39,11 @@ func checkBindSafety(addr string, authDisabled, hasAuthStore bool) error {
 			"deliberately, or set HARNESS_ADDR=127.0.0.1:8080 to listen locally only",
 		addr,
 	)
+}
+
+// explicitAuthOptOut reports whether the operator set HARNESS_AUTH_DISABLED
+// themselves. This is deliberately read here rather than taken from the derived
+// authDisabled flag, which harnessd also sets on its own.
+func explicitAuthOptOut() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("HARNESS_AUTH_DISABLED")), "true")
 }
