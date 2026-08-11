@@ -658,3 +658,36 @@ func (c *HarnessClient) ListTools(ctx context.Context) ([]CatalogTool, error) {
 	}
 	return body.Tools, nil
 }
+
+// ListConversations calls GET /v1/conversations/.
+func (c *HarnessClient) ListConversations(ctx context.Context) (any, error) {
+	var out any
+	if err := c.getJSON(ctx, "/v1/conversations/", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetConversation calls GET /v1/conversations/{id}.
+func (c *HarnessClient) GetConversation(ctx context.Context, id string) (any, error) {
+	var out any
+	if err := c.getJSON(ctx, "/v1/conversations/"+url.PathEscape(id), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SearchConversations calls GET /v1/conversations/search?q=...
+func (c *HarnessClient) SearchConversations(ctx context.Context, query string) (any, error) {
+	var out any
+	if err := c.getJSON(ctx, "/v1/conversations/search?q="+url.QueryEscape(query), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CompactConversation calls POST /v1/conversations/{id}/compact.
+func (c *HarnessClient) CompactConversation(ctx context.Context, id string) error {
+	_, err := c.postRun(ctx, "/v1/conversations/"+url.PathEscape(id)+"/compact", nil)
+	return err
+}

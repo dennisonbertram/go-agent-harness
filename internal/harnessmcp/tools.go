@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -279,6 +280,38 @@ func toolDefs() []Tool {
 			Name:        "list_tools",
 			Description: "List tool names for start_run's allowed_tools and denied_tools arguments.",
 			InputSchema: InputSchema{Type: "object", Properties: map[string]Property{}},
+		},
+		{
+			Name:        "list_conversations",
+			Description: "List recent conversations.",
+			InputSchema: InputSchema{Type: "object", Properties: map[string]Property{}},
+		},
+		{
+			Name:        "get_conversation",
+			Description: "Read a conversation's full message history.",
+			InputSchema: InputSchema{
+				Type:       "object",
+				Properties: map[string]Property{"conversation_id": {Type: "string", Description: "Conversation ID"}},
+				Required:   []string{"conversation_id"},
+			},
+		},
+		{
+			Name:        "search_conversations",
+			Description: "Full-text search across conversations.",
+			InputSchema: InputSchema{
+				Type:       "object",
+				Properties: map[string]Property{"query": {Type: "string", Description: "Search query"}},
+				Required:   []string{"query"},
+			},
+		},
+		{
+			Name:        "compact_conversation",
+			Description: "Compact a conversation's history to free context.",
+			InputSchema: InputSchema{
+				Type:       "object",
+				Properties: map[string]Property{"conversation_id": {Type: "string", Description: "Conversation ID"}},
+				Required:   []string{"conversation_id"},
+			},
 		},
 		{
 			Name:        "list_models",
@@ -739,4 +772,80 @@ func newListToolsHandler(client *HarnessClient) ToolHandler {
 		}
 		return jsonResult(map[string]any{"tools": catalogTools})
 	}
+}
+
+// The conversation tools restore parity with the HTTP surface that /mcp replaced
+// in #1317: it exposed these four and the converged dispatcher did not, so HTTP
+// callers briefly lost capability in a change meant to add it.
+
+func newListConversationsHandler(client *HarnessClient) ToolHandler {
+	return func(ctx context.Context, _ json.RawMessage) (ToolResult, error) {
+		out, err := client.ListConversations(ctx)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(out)
+	}
+}
+
+func newGetConversationHandler(client *HarnessClient) ToolHandler {
+	return func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+		id, errRes := requireConversationID(args)
+		if errRes != nil {
+			return *errRes, nil
+		}
+		out, err := client.GetConversation(ctx, id)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(out)
+	}
+}
+
+func newSearchConversationsHandler(client *HarnessClient) ToolHandler {
+	return func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+		var params struct {
+			Query string `json:"query"`
+		}
+		if err := json.Unmarshal(args, &params); err != nil {
+			return errorResult(fmt.Sprintf("invalid arguments: %v", err)), nil
+		}
+		if strings.TrimSpace(params.Query) == "" {
+			return errorResult("query is required"), nil
+		}
+		out, err := client.SearchConversations(ctx, params.Query)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(out)
+	}
+}
+
+func newCompactConversationHandler(client *HarnessClient) ToolHandler {
+	return func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+		id, errRes := requireConversationID(args)
+		if errRes != nil {
+			return *errRes, nil
+		}
+		if err := client.CompactConversation(ctx, id); err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(map[string]any{"conversation_id": id, "ok": true})
+	}
+}
+
+// requireConversationID parses the common {"conversation_id": "..."} shape.
+func requireConversationID(args json.RawMessage) (string, *ToolResult) {
+	var params struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		res := errorResult(fmt.Sprintf("invalid arguments: %v", err))
+		return "", &res
+	}
+	if strings.TrimSpace(params.ConversationID) == "" {
+		res := errorResult("conversation_id is required")
+		return "", &res
+	}
+	return params.ConversationID, nil
 }
