@@ -4,6 +4,8 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -75,6 +77,110 @@ func runContractTests(t *testing.T, factory storeFactory) {
 		}
 	})
 
+	t.Run("CronRunStartClaimIsTenantScopedAndStable", func(t *testing.T) {
+		s := factory(t)
+		cronStarts, ok := s.(store.CronRunStartStore)
+		if !ok {
+			t.Fatalf("%T does not implement CronRunStartStore", s)
+		}
+		ctx := context.Background()
+		first := store.CronRunStart{
+			TenantID:       "tenant-a",
+			IdempotencyKey: "cron/job-1/execution-1",
+			Fingerprint:    "fingerprint-1",
+			RunID:          "run-reserved-1",
+			CreatedAt:      time.Now().UTC().Truncate(time.Second),
+		}
+		got, claimed, err := cronStarts.ClaimCronRunStart(ctx, first)
+		if err != nil || !claimed || got.RunID != first.RunID {
+			t.Fatalf("first claim = %+v, claimed=%t, err=%v", got, claimed, err)
+		}
+
+		replay := first
+		replay.RunID = "run-must-not-replace"
+		got, claimed, err = cronStarts.ClaimCronRunStart(ctx, replay)
+		if err != nil || claimed || got.RunID != first.RunID || got.Accepted {
+			t.Fatalf("replay claim = %+v, claimed=%t, err=%v", got, claimed, err)
+		}
+		leaseNow := time.Now().UTC()
+		got, acquired, err := cronStarts.AcquireCronRunStartDispatchLease(ctx, first.TenantID, first.IdempotencyKey, "owner-a", leaseNow, leaseNow.Add(time.Minute))
+		if err != nil || !acquired || got.DispatchOwner != "owner-a" {
+			t.Fatalf("AcquireCronRunStartDispatchLease: got=%+v acquired=%t err=%v", got, acquired, err)
+		}
+		if err := cronStarts.MarkCronRunStartAccepted(ctx, first.TenantID, first.IdempotencyKey, "owner-a"); err != nil {
+			t.Fatalf("MarkCronRunStartAccepted: %v", err)
+		}
+		got, claimed, err = cronStarts.ClaimCronRunStart(ctx, replay)
+		if err != nil || claimed || !got.Accepted || got.RunID != first.RunID {
+			t.Fatalf("accepted replay = %+v, claimed=%t, err=%v", got, claimed, err)
+		}
+
+		otherTenant := first
+		otherTenant.TenantID = "tenant-b"
+		otherTenant.RunID = "run-reserved-tenant-b"
+		got, claimed, err = cronStarts.ClaimCronRunStart(ctx, otherTenant)
+		if err != nil || !claimed || got.RunID != otherTenant.RunID {
+			t.Fatalf("other tenant claim = %+v, claimed=%t, err=%v", got, claimed, err)
+		}
+	})
+
+	t.Run("CronRunDispatchLeaseFencesRenewsAndExpires", func(t *testing.T) {
+		s := factory(t)
+		cronStarts, ok := s.(store.CronRunStartStore)
+		if !ok {
+			t.Fatalf("%T does not implement CronRunStartStore", s)
+		}
+		ctx := context.Background()
+		now := time.Unix(1_700_000_000, 0).UTC()
+		start := store.CronRunStart{
+			TenantID:       "tenant-lease",
+			IdempotencyKey: "cron/job-lease/execution-lease",
+			Fingerprint:    "fingerprint-lease",
+			RunID:          "run-lease",
+			CreatedAt:      now,
+		}
+		if _, claimed, err := cronStarts.ClaimCronRunStart(ctx, start); err != nil || !claimed {
+			t.Fatalf("ClaimCronRunStart: claimed=%t err=%v", claimed, err)
+		}
+		got, acquired, err := cronStarts.AcquireCronRunStartDispatchLease(ctx, start.TenantID, start.IdempotencyKey, "owner-a", now, now.Add(10*time.Second))
+		if err != nil || !acquired || got.DispatchOwner != "owner-a" {
+			t.Fatalf("first lease = %+v, acquired=%t, err=%v", got, acquired, err)
+		}
+		got, acquired, err = cronStarts.AcquireCronRunStartDispatchLease(ctx, start.TenantID, start.IdempotencyKey, "owner-b", now.Add(5*time.Second), now.Add(15*time.Second))
+		if err != nil || acquired || got.DispatchOwner != "owner-a" {
+			t.Fatalf("unexpired competing lease = %+v, acquired=%t, err=%v", got, acquired, err)
+		}
+		got, renewed, err := cronStarts.RenewCronRunStartDispatchLease(ctx, start.TenantID, start.IdempotencyKey, "owner-b", now.Add(5*time.Second), now.Add(15*time.Second))
+		if err != nil || renewed || got.DispatchOwner != "owner-a" {
+			t.Fatalf("competing renewal = %+v, renewed=%t, err=%v", got, renewed, err)
+		}
+		got, renewed, err = cronStarts.RenewCronRunStartDispatchLease(ctx, start.TenantID, start.IdempotencyKey, "owner-a", now.Add(5*time.Second), now.Add(15*time.Second))
+		if err != nil || !renewed || got.DispatchOwner != "owner-a" {
+			t.Fatalf("owner renewal = %+v, renewed=%t, err=%v", got, renewed, err)
+		}
+		_, isMemory := s.(*store.MemoryStore)
+		if !isMemory {
+			got, acquired, err = cronStarts.AcquireCronRunStartDispatchLease(ctx, start.TenantID, start.IdempotencyKey, "owner-b", now.Add(24*time.Hour), now.Add(24*time.Hour+10*time.Second))
+			if err != nil || acquired || got.DispatchOwner != "owner-a" {
+				t.Fatalf("clock-skewed competing lease = %+v, acquired=%t, err=%v", got, acquired, err)
+			}
+		}
+		if isMemory {
+			got, acquired, err = cronStarts.AcquireCronRunStartDispatchLease(ctx, start.TenantID, start.IdempotencyKey, "owner-b", now.Add(16*time.Second), now.Add(26*time.Second))
+			if err != nil || !acquired || got.DispatchOwner != "owner-b" {
+				t.Fatalf("expired memory lease takeover = %+v, acquired=%t, err=%v", got, acquired, err)
+			}
+			if err := cronStarts.MarkCronRunStartAccepted(ctx, start.TenantID, start.IdempotencyKey, "owner-a"); !errors.Is(err, store.ErrCronRunDispatchLeaseLost) {
+				t.Fatalf("stale owner mark error = %v, want ErrCronRunDispatchLeaseLost", err)
+			}
+			if err := cronStarts.MarkCronRunStartAccepted(ctx, start.TenantID, start.IdempotencyKey, "owner-b"); err != nil {
+				t.Fatalf("current owner mark: %v", err)
+			}
+		} else if err := cronStarts.MarkCronRunStartAccepted(ctx, start.TenantID, start.IdempotencyKey, "owner-a"); err != nil {
+			t.Fatalf("current SQLite owner mark: %v", err)
+		}
+	})
+
 	t.Run("CreateRun_DuplicateID", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()
@@ -90,6 +196,67 @@ func runContractTests(t *testing.T, factory storeFactory) {
 		}
 		if err := s.CreateRun(ctx, run); err == nil {
 			t.Fatal("expected error on duplicate CreateRun, got nil")
+		}
+	})
+
+	t.Run("CreateRun_AtomicallyClaimsConversationOwner", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		now := time.Now().UTC()
+		owner := &store.Run{
+			ID:             "owner-a",
+			ConversationID: "shared-conversation",
+			TenantID:       "tenant-shared",
+			AgentID:        "agent-a",
+			Status:         store.RunStatusQueued,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}
+		if err := s.CreateRun(ctx, owner); err != nil {
+			t.Fatalf("CreateRun owner: %v", err)
+		}
+		sameOwner := *owner
+		sameOwner.ID = "owner-a-continuation"
+		if err := s.CreateRun(ctx, &sameOwner); err != nil {
+			t.Fatalf("CreateRun same owner continuation: %v", err)
+		}
+		conflict := *owner
+		conflict.ID = "owner-b-conflict"
+		conflict.AgentID = "agent-b"
+		err := s.CreateRun(ctx, &conflict)
+		if !errors.Is(err, store.ErrConversationOwnerConflict) {
+			t.Fatalf("CreateRun conflicting owner error = %v, want ErrConversationOwnerConflict", err)
+		}
+		if _, err := s.GetRun(ctx, conflict.ID); !store.IsNotFound(err) {
+			t.Fatalf("conflicting run persisted: %v", err)
+		}
+	})
+
+	t.Run("CreateRun_RollsBackOwnerClaimWhenRunInsertFails", func(t *testing.T) {
+		s := factory(t)
+		ctx := context.Background()
+		now := time.Now().UTC()
+		original := &store.Run{ID: "duplicate-owner-rollback", Status: store.RunStatusQueued, CreatedAt: now, UpdatedAt: now}
+		if err := s.CreateRun(ctx, original); err != nil {
+			t.Fatalf("CreateRun original: %v", err)
+		}
+		failed := &store.Run{
+			ID:             original.ID,
+			ConversationID: "conversation-owner-rollback",
+			TenantID:       "tenant-shared",
+			AgentID:        "agent-a",
+			Status:         store.RunStatusQueued,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}
+		if err := s.CreateRun(ctx, failed); err == nil {
+			t.Fatal("expected duplicate run insert to fail")
+		}
+		realOwner := *failed
+		realOwner.ID = "real-owner-after-rollback"
+		realOwner.AgentID = "agent-b"
+		if err := s.CreateRun(ctx, &realOwner); err != nil {
+			t.Fatalf("owner claim leaked from failed run insert: %v", err)
 		}
 	})
 
@@ -463,7 +630,7 @@ func runContractTests(t *testing.T, factory storeFactory) {
 				Status: store.RunStatusCompleted, CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second),
 			},
 			{
-				ID: "conv-run-other-tenant", ConversationID: "conv-shared", TenantID: "tenant-b",
+				ID: "conv-run-other-tenant", ConversationID: "conv-other-tenant", TenantID: "tenant-b",
 				Status: store.RunStatusCompleted, CreatedAt: now.Add(2 * time.Second), UpdatedAt: now.Add(2 * time.Second),
 			},
 		}
@@ -471,6 +638,14 @@ func runContractTests(t *testing.T, factory storeFactory) {
 			if err := s.CreateRun(ctx, run); err != nil {
 				t.Fatalf("CreateRun %s: %v", run.ID, err)
 			}
+		}
+		// Preserve defense-in-depth coverage for a legacy database that already
+		// contains a cross-tenant conversation row. New CreateRun calls cannot
+		// construct this state after the atomic owner-claim migration.
+		legacyOtherTenant := *runs[2]
+		legacyOtherTenant.ConversationID = "conv-shared"
+		if err := s.UpdateRun(ctx, &legacyOtherTenant); err != nil {
+			t.Fatalf("seed legacy cross-tenant run: %v", err)
 		}
 		events := []*store.Event{
 			{Seq: 0, RunID: "conv-run-a", EventID: "conv-run-a:0", EventType: "run.started", Timestamp: now},
@@ -850,4 +1025,53 @@ func TestMemoryStore(t *testing.T) {
 		t.Helper()
 		return store.NewMemoryStore()
 	})
+}
+
+func TestSQLiteStoreMigrateAddsCronDispatchLeaseColumns(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "legacy-cron-runs.db")
+	legacy, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy sqlite: %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `
+CREATE TABLE cron_run_starts (
+	tenant_id TEXT NOT NULL,
+	idempotency_key TEXT NOT NULL,
+	fingerprint TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	accepted INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (tenant_id, idempotency_key)
+)`); err != nil {
+		_ = legacy.Close()
+		t.Fatalf("create legacy cron_run_starts: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy sqlite: %v", err)
+	}
+
+	s, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate legacy store: %v", err)
+	}
+	now := time.Unix(1_700_000_000, 0).UTC()
+	start := store.CronRunStart{
+		TenantID:       "tenant-migration",
+		IdempotencyKey: "cron/job-migration/execution-migration",
+		Fingerprint:    "fingerprint-migration",
+		RunID:          "run-migration",
+		CreatedAt:      now,
+	}
+	if _, claimed, err := s.ClaimCronRunStart(ctx, start); err != nil || !claimed {
+		t.Fatalf("ClaimCronRunStart after migration: claimed=%t err=%v", claimed, err)
+	}
+	got, acquired, err := s.AcquireCronRunStartDispatchLease(ctx, start.TenantID, start.IdempotencyKey, "owner-migration", now, now.Add(time.Minute))
+	if err != nil || !acquired || got.DispatchOwner != "owner-migration" {
+		t.Fatalf("AcquireCronRunStartDispatchLease after migration: got=%+v acquired=%t err=%v", got, acquired, err)
+	}
 }

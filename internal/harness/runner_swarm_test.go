@@ -227,13 +227,32 @@ func TestAgentSwarmDeniedForMemberRuns(t *testing.T) {
 	}
 
 	// Control: an unrestricted run sees the activated definition.
-	run2, err := runner.StartRun(RunRequest{Prompt: "parent"})
+	releaseControl := make(chan struct{})
+	var releaseControlOnce sync.Once
+	release := func() {
+		releaseControlOnce.Do(func() { close(releaseControl) })
+	}
+	t.Cleanup(release)
+	controlProvider := &funcProvider{fn: func(ctx context.Context, _ CompletionRequest) (CompletionResult, error) {
+		select {
+		case <-releaseControl:
+			return CompletionResult{Content: "done"}, nil
+		case <-ctx.Done():
+			return CompletionResult{}, ctx.Err()
+		}
+	}}
+	controlRunner := NewRunner(controlProvider, registry, RunnerConfig{
+		DefaultModel:        "test",
+		DefaultSystemPrompt: "sys",
+		Activations:         activations,
+	})
+	run2, err := controlRunner.StartRun(RunRequest{Prompt: "parent"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	activations.Activate(run2.ID, "agent_swarm")
 	seen := false
-	for _, def := range runner.filteredToolsForRun(run2.ID) {
+	for _, def := range controlRunner.filteredToolsForRun(run2.ID) {
 		if def.Name == "agent_swarm" {
 			seen = true
 		}
@@ -241,7 +260,10 @@ func TestAgentSwarmDeniedForMemberRuns(t *testing.T) {
 	if !seen {
 		t.Fatal("agent_swarm missing from unrestricted run definitions after activation")
 	}
-	waitForStatus(t, runner, run2.ID, RunStatusCompleted, RunStatusFailed)
+	release()
+	if got := waitForStatus(t, controlRunner, run2.ID, RunStatusCompleted, RunStatusFailed); got != RunStatusCompleted {
+		t.Fatalf("control run status = %q, want completed", got)
+	}
 }
 
 func TestAgentSwarmApprovalFlowSurfacesMutatingCall(t *testing.T) {

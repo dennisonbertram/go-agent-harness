@@ -71,7 +71,7 @@ Fix these before placing a skill in a watched directory. The harness logs the er
 
 The harness scans two directories at startup:
 
-1. **Global**: `$HARNESS_GLOBAL_DIR/skills/` — defaults to `~/.go-harness/skills/`
+1. **Global**: `$HARNESS_SKILLS_DIR/` when set, otherwise `$HARNESS_GLOBAL_DIR/skills/` — defaults to `~/.go-harness/skills/`. The override must be an absolute path.
 2. **Workspace**: `<workspace>/.go-harness/skills/`
 
 **Precedence**: if a local (workspace) skill and a global skill share the same `name`, the local skill wins. The global entry is only kept when no skill with that name has already been loaded from the workspace directory.
@@ -88,6 +88,7 @@ When both `HARNESS_WATCH_ENABLED=true` (default) and `HARNESS_SKILLS_ENABLED=tru
 |---|---|---|
 | `HARNESS_SKILLS_ENABLED` | `true` | Disables the entire skills system when `false` |
 | `HARNESS_GLOBAL_DIR` | `~/.go-harness` | Root for global skills and workflow directories |
+| `HARNESS_SKILLS_DIR` | `$HARNESS_GLOBAL_DIR/skills` | Absolute global skill-root override used by loading, authoring, verification, watcher reload, and workflow skill discovery |
 | `HARNESS_WATCH_ENABLED` | `true` | Enables hot-reload polling |
 | `HARNESS_WATCH_INTERVAL_SECONDS` | `5` | Poll interval in seconds |
 
@@ -198,7 +199,7 @@ The tool description is **dynamically generated** to include an `<available_skil
 </CardHeader>
 <CardContent>
 
-Allows the agent to author a new `SKILL.md` at runtime. Registered when `SkillsDir` is configured (set to `$HARNESS_GLOBAL_DIR/skills/` by default).
+Allows the agent to author a new `SKILL.md` at runtime. Registered when `SkillsDir` is configured (set to `HARNESS_SKILLS_DIR`, or `$HARNESS_GLOBAL_DIR/skills/` by default).
 
 **Required parameters**: `name`, `description`, `trigger`, `content`. Optional: `tags` (accepted in the schema but not persisted — the generated `SKILL.md` frontmatter contains only `name`, `description`, and `version: 1`).
 

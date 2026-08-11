@@ -45,6 +45,9 @@ public struct AssistantMessage: Sendable, Hashable {
 
 /// A tool call blocked awaiting the operator's decision.
 public struct PendingApproval: Sendable, Hashable {
+    /// The exact run whose event requested this decision. A visible approval
+    /// must never be resolved against a later selected continuation.
+    public let runID: String
     public let callID: String
     public let tool: String
     public let arguments: String
@@ -58,6 +61,8 @@ public struct PendingPlan: Sendable, Hashable {
         public let description: String?
     }
 
+    /// The exact run whose event requested this plan decision.
+    public let runID: String
     public let plan: String
     /// Approaches parsed out of the plan; approving sends the chosen id.
     public let options: [Approach]
@@ -127,7 +132,7 @@ public struct Transcript: Sendable {
         runState = .queued
     }
 
-    public mutating func apply(_ event: HarnessEvent) {
+    public mutating func apply(_ event: HarnessEvent, includingAccounting: Bool = true) {
         lastEventID = event.id
         let payload = event.payload
 
@@ -137,15 +142,18 @@ public struct Transcript: Sendable {
         case .runStarted, .runResumed:
             runState = .running
         case .runCompleted:
+            if includingAccounting { applyTerminalAccounting(payload) }
             finishStreaming()
             runState = .completed
         case .runFailed:
+            if includingAccounting { applyTerminalAccounting(payload) }
             finishStreaming()
             runState = .failed
             if let message = payload["error"]?.stringValue, !message.isEmpty {
                 items.append(.init(id: UUID(), kind: .error(message)))
             }
         case .runCancelled:
+            if includingAccounting { applyTerminalAccounting(payload) }
             finishStreaming()
             runState = .cancelled
 
@@ -217,6 +225,7 @@ public struct Transcript: Sendable {
         case .toolApprovalRequired:
             guard let callID = payload["call_id"]?.stringValue else { break }
             pendingApproval = PendingApproval(
+                runID: event.runID,
                 callID: callID,
                 tool: payload["tool"]?.stringValue ?? "tool",
                 arguments: payload["arguments"]?.stringValue ?? "")
@@ -224,6 +233,7 @@ public struct Transcript: Sendable {
 
         case .planApprovalRequired:
             pendingPlan = PendingPlan(
+                runID: event.runID,
                 plan: payload["plan"]?.stringValue ?? "",
                 options: (payload["options"]?.arrayValue ?? []).compactMap { entry in
                     guard let id = entry["id"]?.stringValue,
@@ -256,11 +266,20 @@ public struct Transcript: Sendable {
                             ?? payload["removed"]?.intValue ?? 0)))
 
         case .usageDelta:
-            applyUsage(payload)
+            if includingAccounting { applyUsage(payload) }
 
         default:
             break
         }
+    }
+
+    /// Drops affordances belonging to a run that is no longer the visible
+    /// action owner. It intentionally does not change lifecycle state: a
+    /// terminal still renders as terminal and a newly selected lifecycle
+    /// frame supplies its own active state.
+    public mutating func clearPendingInteractions() {
+        pendingApproval = nil
+        pendingPlan = nil
     }
 
     // MARK: - Helpers
@@ -318,6 +337,41 @@ public struct Transcript: Sendable {
             usage.costStatus = status
         }
     }
+
+    /// Every terminal harness event contains the final accounting snapshot.
+    /// A live subscriber normally sees earlier `usage.delta` events, but a
+    /// reconnect or stream teardown can leave the terminal frame as the only
+    /// available accounting source. Reconcile its differently named totals
+    /// before making the terminal state visible, while preserving values when
+    /// an older server omits a field.
+    private mutating func applyTerminalAccounting(_ payload: [String: JSONValue]) {
+        if let totals = payload["usage_totals"]?.objectValue {
+            if let promptTokens = totals["prompt_tokens_total"]?.intValue {
+                usage.promptTokens = promptTokens
+            }
+            if let completionTokens = totals["completion_tokens_total"]?.intValue {
+                usage.completionTokens = completionTokens
+            }
+            if let totalTokens = totals["total_tokens"]?.intValue {
+                usage.totalTokens = totalTokens
+            }
+        }
+        if let totals = payload["cost_totals"]?.objectValue {
+            if let costUSD = totals["cost_usd_total"]?.doubleValue {
+                usage.costUSD = costUSD
+            }
+            if let status = totals["cost_status"]?.stringValue {
+                usage.costStatus = status
+            }
+        }
+    }
+
+    /// Accounting belongs to one run, while a transcript can contain many
+    /// completed turns. `RunSession` calls this at each admitted run boundary
+    /// so an incomplete successor cannot inherit a prior run's totals.
+    public mutating func clearUsage() {
+        usage = UsageTotals()
+    }
 }
 
 extension Transcript {
@@ -369,14 +423,27 @@ extension Transcript {
     /// cancelled terminal event into a successful run. Failure detail exists
     /// only on the event stream, so retain those rows across the persisted
     /// message rebuild as well.
-    public mutating func reconcile(messages: [StoredMessage]) {
+    public mutating func reconcile(
+        messages: [StoredMessage], preservingUsage: Bool = false,
+        preservingRunState: Bool = false
+    ) {
         let terminalState = runState
+        // Durable message rows intentionally contain conversational content,
+        // not per-run accounting. Keep the authoritative SSE totals that led
+        // to this terminal reconciliation rather than resetting the usage UI
+        // to its default pending state in `load`.
+        let terminalUsage = usage
         let terminalErrors = items.compactMap { item -> String? in
             if case .error(let message) = item.kind { return message }
             return nil
         }
 
         load(messages: messages)
+        if preservingUsage { usage = terminalUsage }
+
+        if preservingRunState {
+            runState = terminalState
+        }
 
         switch terminalState {
         case .failed:
@@ -394,6 +461,16 @@ extension Transcript {
         default:
             break
         }
+    }
+
+    /// Keeps the single visual lifecycle active when a different concurrent
+    /// run remains selected after another run's terminal event. The session
+    /// owns which run that is; Transcript only clears interaction state that
+    /// belonged to the terminated visual run.
+    public mutating func resumeActiveRun() {
+        pendingApproval = nil
+        pendingPlan = nil
+        runState = .running
     }
 
     /// Clears everything for a new conversation.

@@ -208,6 +208,65 @@ func TestConversationEvents_ReceivesRunSubscriberDidNotStart(t *testing.T) {
 	}
 }
 
+func TestConversationEvents_OptInReplayBoundaryFollowsHistoricReplay(t *testing.T) {
+	runner, ts := newConversationEventsTestServer(t, []fakeprovider.Turn{{Content: "historic boundary output"}})
+	const convID = "conv-replay-boundary"
+	run, err := runner.StartRun(harness.RunRequest{Prompt: "historic", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	pollUntilRunTerminal(t, runner, run.ID)
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/v1/conversations/"+convID+"/events", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Harness-Conversation-Replay-Boundary", "snapshot")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body=%s", resp.StatusCode, body)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	var types []string
+	for scanner.Scan() {
+		data, ok := strings.CutPrefix(scanner.Text(), "data: ")
+		if !ok {
+			continue
+		}
+		var event conversationSSEEvent
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			t.Fatalf("decode SSE event: %v; data=%s", err, data)
+		}
+		types = append(types, event.Type)
+		if event.Type == "conversation.replay.completed" {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan SSE: %v", err)
+	}
+	marker := -1
+	historic := -1
+	for i, typ := range types {
+		if typ == "assistant.message" {
+			historic = i
+		}
+		if typ == "conversation.replay.completed" {
+			marker = i
+		}
+	}
+	if historic < 0 || marker < 0 || historic >= marker {
+		t.Fatalf("SSE types = %v, want historic assistant.message before replay-complete marker", types)
+	}
+}
+
 // BT-002: a second run on the same conversation also reaches the same
 // subscriber (proves the conversation stream is not a one-shot delivery).
 func TestConversationEvents_SecondRunAlsoReachesSameSubscriber(t *testing.T) {

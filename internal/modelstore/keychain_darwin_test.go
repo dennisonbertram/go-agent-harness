@@ -12,10 +12,8 @@ import (
 // never appear in the process list — that is the reason this path exists
 // rather than passing it as a command argument.
 func TestKeychainRoundTripAgainstRealKeychain(t *testing.T) {
-	if !KeychainAvailable() {
-		t.Skip("security(1) not available")
-	}
-	ref := KeychainRef("modelstore-selftest")
+	requireRealKeychainMutation(t)
+	ref := KeychainRef(realKeychainAccount(t, "round-trip"))
 	t.Cleanup(func() { _ = DeleteCredential(context.Background(), ref) })
 
 	const secret = "sk-test-value-do-not-reuse"

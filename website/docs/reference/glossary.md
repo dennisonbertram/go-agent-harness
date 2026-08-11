@@ -250,7 +250,7 @@ See: [Symphony guide](/docs/workflows/symphony)
 <Card>
 <CardHeader><CardTitle>cron</CardTitle></CardHeader>
 <CardContent>
-The embedded scheduler that runs recurring agent jobs on a 5-field UTC cron schedule. When `HARNESS_CRON_URL` is empty (the default), `harnessd` starts an embedded SQLite-backed cron scheduler at `<workspace>/.harness/cron.db`. The agent can create, list, pause, and delete jobs using the `cron_create`, `cron_list`, `cron_pause`, and `cron_delete` deferred tools. The HTTP API is at `/v1/cron/jobs`.
+The embedded scheduler that runs recurring agent jobs on a 5-field UTC cron schedule. When `HARNESS_CRON_URL` is empty (the default), `harnessd` starts an embedded SQLite-backed cron scheduler at `<workspace>/.harness/cron.db`. When a cron client is configured, agents receive all eight initial-turn **core** tools: `cron_create`, `cron_list`, `cron_get`, `cron_update`, `cron_history`, `cron_delete`, `cron_pause`, and `cron_resume`. They call those tools directly rather than selecting them through `find_tool`. The HTTP API is at `/v1/cron/jobs`.
 
 See: [Cron scheduling guide](/docs/integrations/cron-scheduling)
 </CardContent>

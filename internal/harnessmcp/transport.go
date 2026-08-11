@@ -32,24 +32,50 @@ func NewStdioTransport(in io.Reader, out io.Writer, d *Dispatcher) *StdioTranspo
 // Run reads JSON-RPC messages from in until EOF or ctx cancellation.
 // Each message is dispatched in its own goroutine.
 func (t *StdioTransport) Run(ctx context.Context) error {
-	scanner := bufio.NewScanner(t.in)
-	// Allow large payloads (up to 4MB per line).
-	const maxTokenSize = 4 * 1024 * 1024
-	scanner.Buffer(make([]byte, maxTokenSize), maxTokenSize)
-
 	var wg sync.WaitGroup
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.TrimSpace(line) == "" {
-			continue
+	// Reading happens on its own goroutine so the loop below can select on
+	// cancellation. scanner.Scan blocks inside a read, so a context check placed
+	// in the loop body can only fire after a line has already arrived — which
+	// left the process ignoring SIGINT whenever it was idle (issue #1321).
+	//
+	// The reader stays parked in Read until stdin closes. That is deliberate: on
+	// the cancellation path the process is on its way out, and there is no way to
+	// interrupt a blocking read on stdin portably.
+	lines := make(chan string)
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(t.in)
+		// Allow large payloads (up to 4MB per line).
+		const maxTokenSize = 4 * 1024 * 1024
+		scanner.Buffer(make([]byte, maxTokenSize), maxTokenSize)
+		for scanner.Scan() {
+			select {
+			case lines <- scanner.Text():
+			case <-ctx.Done():
+				return
+			}
 		}
+	}()
 
-		// Check context before dispatching.
+	for {
+		var line string
 		select {
 		case <-ctx.Done():
-			break
-		default:
+			// Let accepted work finish and respond before returning.
+			wg.Wait()
+			return ctx.Err()
+		case l, ok := <-lines:
+			if !ok {
+				// EOF: the host closed stdin. This is the common shutdown path.
+				wg.Wait()
+				return nil
+			}
+			line = l
+		}
+
+		if strings.TrimSpace(line) == "" {
+			continue
 		}
 
 		var req Request
@@ -77,17 +103,8 @@ func (t *StdioTransport) Run(ctx context.Context) error {
 			}
 		}(req)
 	}
-
-	// Wait for all in-flight dispatches to complete.
-	wg.Wait()
-
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("stdio transport: scanner: %w", err)
-	}
-	return nil
 }
 
-// writeResponse serializes resp as JSON + newline, serialized by mu.
 func (t *StdioTransport) writeResponse(resp Response) error {
 	data, err := json.Marshal(resp)
 	if err != nil {

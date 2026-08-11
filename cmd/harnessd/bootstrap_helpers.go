@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -396,7 +397,8 @@ func cronSchedulerConfig(resolved config.CronConfig) cron.SchedulerConfig {
 
 func buildCronBootstrap(
 	workspace,
-	cronURL string,
+	cronURL,
+	cronAPIKey string,
 	resolved config.CronConfig,
 	logger func(string, ...any),
 	harnessStarter cron.RunStarter,
@@ -405,8 +407,11 @@ func buildCronBootstrap(
 		logger = func(string, ...any) {}
 	}
 	if strings.TrimSpace(cronURL) != "" {
+		if strings.TrimSpace(cronAPIKey) == "" {
+			return cronBootstrap{}, fmt.Errorf("HARNESS_CRON_API_KEY is required when HARNESS_CRON_URL is configured")
+		}
 		return cronBootstrap{
-			client: &cronClientAdapter{client: cron.NewClient(strings.TrimSpace(cronURL))},
+			client: &cronClientAdapter{client: cron.NewClient(strings.TrimSpace(cronURL), cron.WithAPIKey(strings.TrimSpace(cronAPIKey)))},
 		}, nil
 	}
 
@@ -422,14 +427,23 @@ func buildCronBootstrap(
 	clock := cron.RealClock{}
 	// Route by declared execution type. Handing every job to the shell
 	// executor meant a harness job could never succeed, however well formed.
-	executor := &cron.DispatchExecutor{
-		Shell:   &cron.ShellExecutor{},
-		Harness: &cron.HarnessExecutor{Starter: harnessStarter},
+	harnessExecutor := &cron.HarnessExecutor{Starter: harnessStarter}
+	if observer, ok := harnessStarter.(cron.RunObserver); ok {
+		harnessExecutor.Observer = observer
 	}
+	executor := &cron.DispatchExecutor{Shell: &cron.ShellExecutor{}, Harness: harnessExecutor}
 	scheduler := cron.NewScheduler(store, executor, clock, cronSchedulerConfig(resolved))
 	if err := scheduler.Start(context.Background()); err != nil {
 		store.Close()
 		return cronBootstrap{}, fmt.Errorf("start cron scheduler: %w", err)
+	}
+	// The embedded runner is assembled after this scheduler has restored its
+	// durable active rows. Once that bridge is bound, retry observation in the
+	// background; never make boot wait for a previously accepted conversation.
+	if embeddedStarter, ok := harnessStarter.(*cronRunStarter); ok {
+		embeddedStarter.setOnBind(func() {
+			scheduler.ReconcileAfterExecutorBound(context.Background())
+		})
 	}
 	logger("embedded cron scheduler started (db: %s)", cronDBPath)
 	return cronBootstrap{
@@ -442,17 +456,23 @@ func buildCronBootstrap(
 type persistenceBootstrapOptions struct {
 	workspace         string
 	getenv            func(string) string
+	callbacksEnabled  bool
 	convRetentionDays int
 	logger            func(string, ...any)
 	newCleaner        func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter
 }
 
 type persistenceBootstrap struct {
-	runStore          istore.Store
+	runStore istore.Store
+	// implicitRunStore records a callback-required store that harnessd created
+	// without an explicit HARNESS_RUN_DB. It must back reserved callback IDs,
+	// but must not silently turn on HTTP API-key authentication for existing
+	// default local installations.
+	implicitRunStore  bool
 	conversationStore harness.ConversationStore
 	relayWorkerStore  relay.WorkerStore
 	relayControl      *relay.ControlPlane
-	convCleanerCancel context.CancelFunc
+	convCleaner       *conversationCleanerLifecycle
 }
 
 func buildPersistenceBootstrap(opts persistenceBootstrapOptions) (_ persistenceBootstrap, err error) {
@@ -473,8 +493,8 @@ func buildPersistenceBootstrap(opts persistenceBootstrapOptions) (_ persistenceB
 		if err == nil {
 			return
 		}
-		if bootstrap.convCleanerCancel != nil {
-			bootstrap.convCleanerCancel()
+		if bootstrap.convCleaner != nil {
+			bootstrap.convCleaner.Shutdown()
 		}
 		if bootstrap.conversationStore != nil {
 			_ = bootstrap.conversationStore.Close()
@@ -487,7 +507,13 @@ func buildPersistenceBootstrap(opts persistenceBootstrapOptions) (_ persistenceB
 		}
 	}()
 
-	if runDBPath := strings.TrimSpace(opts.getenv("HARNESS_RUN_DB")); runDBPath != "" {
+	runDBPath := strings.TrimSpace(opts.getenv("HARNESS_RUN_DB"))
+	implicitRunStore := false
+	if runDBPath == "" && opts.callbacksEnabled {
+		runDBPath = filepath.Join(".harness", "runs.db")
+		implicitRunStore = true
+	}
+	if runDBPath != "" {
 		if !filepath.IsAbs(runDBPath) {
 			runDBPath = filepath.Join(opts.workspace, runDBPath)
 		}
@@ -501,8 +527,18 @@ func buildPersistenceBootstrap(opts persistenceBootstrapOptions) (_ persistenceB
 			err = fmt.Errorf("migrate run store: %w", migrateErr)
 			return persistenceBootstrap{}, err
 		}
+		if migrateErr := runStore.MigrateAPIKeys(context.Background()); migrateErr != nil {
+			_ = runStore.Close()
+			err = fmt.Errorf("migrate run store API keys: %w", migrateErr)
+			return persistenceBootstrap{}, err
+		}
 		bootstrap.runStore = runStore
-		opts.logger("run persistence enabled: %s", runDBPath)
+		bootstrap.implicitRunStore = implicitRunStore
+		if implicitRunStore {
+			opts.logger("callback run persistence enabled: %s", runDBPath)
+		} else {
+			opts.logger("run persistence enabled: %s", runDBPath)
+		}
 	}
 
 	if dbPath := strings.TrimSpace(opts.getenv("HARNESS_CONVERSATION_DB")); dbPath != "" {
@@ -525,8 +561,11 @@ func buildPersistenceBootstrap(opts persistenceBootstrapOptions) (_ persistenceB
 		if opts.convRetentionDays > 0 {
 			opts.logger("conversation retention policy: %d days", opts.convRetentionDays)
 			cleanerCtx, cleanerCancel := context.WithCancel(context.Background())
-			opts.newCleaner(convStore, opts.convRetentionDays).Start(cleanerCtx, 24*time.Hour)
-			bootstrap.convCleanerCancel = cleanerCancel
+			cleanerDone := opts.newCleaner(convStore, opts.convRetentionDays).Start(cleanerCtx, 24*time.Hour)
+			bootstrap.convCleaner = &conversationCleanerLifecycle{
+				cancel: cleanerCancel,
+				done:   cleanerDone,
+			}
 		}
 	}
 
@@ -600,6 +639,9 @@ func buildTriggerRuntime(getenv func(string) string, logger func(string, ...any)
 }
 
 type serverBootstrapOptions struct {
+	// mcpHandler is mounted at /mcp behind the auth middleware (issue #1328).
+	mcpHandler       http.Handler
+	authDisabled     bool
 	runner           *harness.Runner
 	modelCatalog     *catalog.Catalog
 	skillLister      htools.SkillLister
@@ -623,6 +665,8 @@ type serverBootstrapOptions struct {
 	jobTracker       *harness.JobTracker
 	configReloader   *configReloader
 	modelSettings    *modelstore.Service
+	profilesProject  string
+	profilesUser     string
 }
 
 func buildServerOptions(opts serverBootstrapOptions) server.ServerOptions {
@@ -635,6 +679,8 @@ func buildServerOptions(opts serverBootstrapOptions) server.ServerOptions {
 	// unset — the credential is present and unusable at the same time.
 	applyStoreCredentials(context.Background(), opts.modelSettings, opts.providerRegistry)
 	return server.ServerOptions{
+		MCPHandler:       opts.mcpHandler,
+		AuthDisabled:     opts.authDisabled,
 		Runner:           opts.runner,
 		Catalog:          opts.modelCatalog,
 		AgentRunner:      opts.runner,
@@ -663,6 +709,9 @@ func buildServerOptions(opts serverBootstrapOptions) server.ServerOptions {
 		CallbackCanceler: opts.callbackMgr,
 		JobTracker:       opts.jobTracker,
 		ConfigReload:     configReloadFunc(opts.configReloader),
+		ProfilesProject:  opts.profilesProject,
+		ProfilesUser:     opts.profilesUser,
+		ProfilesDir:      opts.profilesUser,
 	}
 }
 

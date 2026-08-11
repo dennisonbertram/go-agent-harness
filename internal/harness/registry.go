@@ -19,33 +19,120 @@ type registeredTool struct {
 	tags         []string
 	parallelSafe bool
 	mutating     bool
+	action       htools.Action
 	inflight     *sync.WaitGroup
 	mcpServer    string
+	owner        string
+	condition    string
 }
 
 type ToolMetadata struct {
 	Definition ToolDefinition
 	Tier       htools.ToolTier
 	Tags       []string
+	Owner      string
+	Condition  string
+}
+
+// ToolsetResolverProvenance identifies the runtime resolver that determined a
+// configured dynamic toolset was unavailable. It intentionally contains no
+// credentials, endpoints, or raw upstream errors.
+type ToolsetResolverProvenance struct {
+	Source               string `json:"source"`
+	Provider             string `json:"provider"`
+	IndividualNamesKnown bool   `json:"individual_names_known"`
+}
+
+type ConfiguredUnavailableToolset struct {
+	Name       string                    `json:"name"`
+	Owner      string                    `json:"owner"`
+	Condition  string                    `json:"condition"`
+	Provenance ToolsetResolverProvenance `json:"provenance"`
+}
+
+type UnavailableToolsetObservation struct {
+	Kind       string                    `json:"kind"`
+	Name       string                    `json:"name"`
+	Owner      string                    `json:"owner"`
+	Condition  string                    `json:"condition"`
+	Reason     string                    `json:"reason"`
+	Provenance ToolsetResolverProvenance `json:"provenance"`
+}
+
+// ToolsetResolutionSnapshot carries the paired configured/observed records
+// required to prove that a dynamic provider was not silently omitted.
+type ToolsetResolutionSnapshot struct {
+	ConfiguredUnavailable []ConfiguredUnavailableToolset  `json:"configured_unavailable_toolsets"`
+	Unavailable           []UnavailableToolsetObservation `json:"unavailable"`
+	Incomplete            bool                            `json:"-"`
+	IncompleteReason      string                          `json:"-"`
+}
+
+type toolsetResolutionReporter interface {
+	ToolsetResolutionSnapshot() ToolsetResolutionSnapshot
+}
+
+// ToolsetResolutionError binds a partial dynamic catalog failure to the exact
+// per-call resolver snapshot, avoiding a mutable global "last result" race
+// when several run registries are constructed concurrently.
+type ToolsetResolutionError struct {
+	Snapshot ToolsetResolutionSnapshot
+	Err      error
+}
+
+func (e *ToolsetResolutionError) Error() string { return e.Err.Error() }
+func (e *ToolsetResolutionError) Unwrap() error { return e.Err }
+func (e *ToolsetResolutionError) ToolsetResolutionSnapshot() ToolsetResolutionSnapshot {
+	return cloneToolsetResolutionSnapshot(e.Snapshot)
 }
 
 // RegisterOptions provides optional metadata when registering a tool.
 type RegisterOptions struct {
-	Tier htools.ToolTier
-	Tags []string
+	Tier      htools.ToolTier
+	Tags      []string
+	Owner     string
+	Condition string
+	// Action records the capability category used by selected-profile policy.
+	// Empty preserves direct custom-registration behavior (no category policy).
+	Action htools.Action
 }
 
 type Registry struct {
-	mu             sync.RWMutex
-	tools          map[string]registeredTool
-	mcpServers     map[string]struct{} // tracks registered MCP server names to prevent duplicates
-	mcpServerTools map[string][]string // maps server name → tool names registered for that server
-	shutdownHooks  []func(context.Context) error
+	mu                sync.RWMutex
+	tools             map[string]registeredTool
+	mcpServers        map[string]struct{} // tracks registered MCP server names to prevent duplicates
+	mcpServerTools    map[string][]string // maps server name → tool names registered for that server
+	shutdownHooks     []func(context.Context) error
+	toolsetResolution ToolsetResolutionSnapshot
 	// jobManager owns this registry's background bash jobs. Retained so a
 	// cancelled run can terminate the jobs it started — those jobs are
 	// detached from the run's context on purpose, so cancellation has to be
 	// said explicitly rather than propagated.
 	jobManager *htools.JobManager
+}
+
+// SetToolsetResolutionSnapshot records the condition resolver's redacted,
+// immutable unavailable-toolset result for operator inventory consumers.
+func (r *Registry) SetToolsetResolutionSnapshot(snapshot ToolsetResolutionSnapshot) {
+	r.mu.Lock()
+	r.toolsetResolution = cloneToolsetResolutionSnapshot(snapshot)
+	r.mu.Unlock()
+}
+
+// ToolsetResolutionSnapshot returns an isolated copy of the resolver result.
+func (r *Registry) ToolsetResolutionSnapshot() ToolsetResolutionSnapshot {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return cloneToolsetResolutionSnapshot(r.toolsetResolution)
+}
+
+func cloneToolsetResolutionSnapshot(snapshot ToolsetResolutionSnapshot) ToolsetResolutionSnapshot {
+	return ToolsetResolutionSnapshot{
+		ConfiguredUnavailable: append([]ConfiguredUnavailableToolset(nil), snapshot.ConfiguredUnavailable...),
+		Unavailable:           append([]UnavailableToolsetObservation(nil), snapshot.Unavailable...),
+		Incomplete:            snapshot.Incomplete,
+		IncompleteReason:      snapshot.IncompleteReason,
+	}
 }
 
 // SetJobManager records the background-job manager backing this registry.
@@ -117,8 +204,22 @@ func (r *Registry) Register(def ToolDefinition, handler ToolHandler) error {
 		parallelSafe: def.ParallelSafe,
 		mutating:     def.Mutating,
 		inflight:     &sync.WaitGroup{},
+		owner:        "harness.registry",
+		condition:    "direct Register call",
 	}
 	return nil
+}
+
+// ActionFor returns the registered capability category for name. Direct
+// custom registrations that do not declare one intentionally return false.
+func (r *Registry) ActionFor(name string) (htools.Action, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	tool, ok := r.tools[name]
+	if !ok || tool.action == "" {
+		return "", false
+	}
+	return tool.action, true
 }
 
 func (r *Registry) Definitions() []ToolDefinition {
@@ -138,8 +239,9 @@ func (r *Registry) Definitions() []ToolDefinition {
 	return defs
 }
 
-// DefinitionsWithMetadata returns tool definitions together with their tier and
-// tags. Returned values are deeply cloned so callers can mutate them safely.
+// DefinitionsWithMetadata returns tool definitions together with their tier,
+// tags, and registration provenance. Returned values are deeply cloned so
+// callers can mutate them safely.
 func (r *Registry) DefinitionsWithMetadata() []ToolMetadata {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -157,6 +259,8 @@ func (r *Registry) DefinitionsWithMetadata() []ToolMetadata {
 			Definition: rt.def.Clone(),
 			Tier:       rt.tier,
 			Tags:       copyStrings(rt.tags),
+			Owner:      rt.owner,
+			Condition:  rt.condition,
 		})
 	}
 	return defs
@@ -220,7 +324,7 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 	return tool.handler(ctx, args)
 }
 
-// RegisterWithOptions registers a tool with tier and tag metadata.
+// RegisterWithOptions registers a tool with tier, tag, and provenance metadata.
 func (r *Registry) RegisterWithOptions(def ToolDefinition, handler ToolHandler, opts RegisterOptions) error {
 	if def.Name == "" {
 		return fmt.Errorf("tool name is required")
@@ -239,6 +343,14 @@ func (r *Registry) RegisterWithOptions(def ToolDefinition, handler ToolHandler, 
 	if tier == "" {
 		tier = htools.TierCore
 	}
+	owner := strings.TrimSpace(opts.Owner)
+	if owner == "" {
+		owner = "harness.registry"
+	}
+	condition := strings.TrimSpace(opts.Condition)
+	if condition == "" {
+		condition = "direct RegisterWithOptions call"
+	}
 	r.tools[def.Name] = registeredTool{
 		def:          def.Clone(),
 		handler:      handler,
@@ -246,8 +358,11 @@ func (r *Registry) RegisterWithOptions(def ToolDefinition, handler ToolHandler, 
 		tags:         copyStrings(opts.Tags),
 		parallelSafe: def.ParallelSafe,
 		mutating:     def.Mutating,
+		action:       opts.Action,
 		inflight:     &sync.WaitGroup{},
 		mcpServer:    mcpServerFromTags(opts.Tags),
+		owner:        owner,
+		condition:    condition,
 	}
 	return nil
 }
@@ -363,13 +478,19 @@ func (r *Registry) RegisterMCPTools(serverName string, toolDefs []htools.MCPTool
 			return mcpReg.CallTool(ctx, regServer, origName, args)
 		})
 		r.tools[toolName] = registeredTool{
-			def:      def,
-			handler:  handler,
-			tier:     htools.TierDeferred,
-			tags:     []string{"mcp", "integration", "external", "dynamic", "mcp_server:" + serverName},
-			inflight: &sync.WaitGroup{},
+			def:       def,
+			handler:   handler,
+			tier:      htools.TierDeferred,
+			tags:      []string{"mcp", "integration", "external", "dynamic", "mcp_server:" + serverName},
+			inflight:  &sync.WaitGroup{},
+			owner:     "harness.mcp",
+			condition: fmt.Sprintf("MCP server %q connected at runtime", serverName),
 			// Conservative default: every MCP tool is mutating.
-			mutating:  true,
+			mutating: true,
+			// An MCP invocation crosses an external RPC boundary. The harness
+			// cannot safely infer the remote server's implementation, so selected
+			// profiles denying network access must fail closed before dispatch.
+			action:    htools.ActionFetch,
 			mcpServer: serverName,
 		}
 		registered = append(registered, toolName)
@@ -482,6 +603,12 @@ func (r *Registry) ReplaceByTag(sourceTag string, newTools []htools.Tool) error 
 		if tier == "" {
 			tier = htools.TierCore
 		}
+		owner := "harness.dynamic"
+		condition := fmt.Sprintf("dynamic registry source %q resolved", sourceTag)
+		if server := mcpServerFromTags(tags); server != "" {
+			owner = "harness.mcp"
+			condition = fmt.Sprintf("MCP server %q resolved from dynamic source %q", server, sourceTag)
+		}
 
 		r.tools[t.Definition.Name] = registeredTool{
 			def: ToolDefinition{
@@ -496,8 +623,11 @@ func (r *Registry) ReplaceByTag(sourceTag string, newTools []htools.Tool) error 
 			tags:         tags,
 			parallelSafe: t.Definition.ParallelSafe,
 			mutating:     t.Definition.Mutating,
+			action:       t.Definition.Action,
 			inflight:     &sync.WaitGroup{},
 			mcpServer:    mcpServerFromTags(tags),
+			owner:        owner,
+			condition:    condition,
 		}
 	}
 	r.rebuildMCPServerToolsLocked()

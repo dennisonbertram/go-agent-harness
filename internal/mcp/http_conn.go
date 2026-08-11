@@ -44,6 +44,15 @@ type httpConn struct {
 	closed bool
 }
 
+// newHTTPClient returns a client with a connection-owned idle pool. A nil
+// transport delegates to process-global http.DefaultTransport, whose idle-pool
+// cleanup can be triggered by unrelated httptest/server lifecycles. MCP
+// connections must not share that cleanup boundary.
+func newHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	return &http.Client{Transport: transport, Timeout: 30 * time.Second}
+}
+
 // dialHTTP creates a new httpConn from a ServerConfig.
 func dialHTTP(cfg ServerConfig) (Conn, error) {
 	if cfg.URL == "" {
@@ -61,7 +70,7 @@ func dialHTTP(cfg ServerConfig) (Conn, error) {
 		endpoint:      cfg.URL,
 		headers:       cfg.Headers,
 		tokenProvider: cfg.TokenProvider,
-		client:        &http.Client{Timeout: 30 * time.Second},
+		client:        newHTTPClient(),
 	}, nil
 }
 
@@ -180,8 +189,14 @@ func (c *httpConn) ReadResource(ctx context.Context, uri string) (string, error)
 // Close releases resources. It is idempotent and safe for concurrent use.
 func (c *httpConn) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil
+	}
 	c.closed = true
+	client := c.client
+	c.mu.Unlock()
+	client.CloseIdleConnections()
 	return nil
 }
 

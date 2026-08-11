@@ -10,8 +10,8 @@ struct EnvironmentInspector: View {
     let activities: [ToolActivity]
     @Binding var selected: ToolActivity?
 
-    private var subagents: [TaskInfo] { project.tasks.filter { $0.type == "subagent" } }
-    private var backgroundTasks: [TaskInfo] { project.tasks.filter { $0.type != "subagent" } }
+    private var subagents: [TaskInfo] { project.tasks.filter { $0.type == .subagent } }
+    private var backgroundTasks: [TaskInfo] { project.tasks.filter { $0.type != .subagent } }
     /// Distinguishes "nothing here" from "not fetched yet", so the card does
     /// not assert an absence it cannot know.
     private var hasPendingCollectionLoad: Bool {
@@ -136,7 +136,8 @@ private struct TaskSummary: View {
         HStack(spacing: Spacing.small) {
             Text(task.label).font(Typography.caption).lineLimit(1)
             Spacer(minLength: Spacing.none)
-            Text(task.status).font(Typography.detail).foregroundStyle(Theme.foregroundTertiary)
+            Text(task.status.rawValue).font(Typography.detail).foregroundStyle(
+                Theme.foregroundTertiary)
         }
     }
 }

@@ -64,12 +64,16 @@ func (r *Runner) awaitPlanApproval(ctx context.Context, runID, content string) (
 		}
 	}
 	options := parsePlanApproaches(content)
+	approvalWaiter, err := rc.ApprovalBroker.Register(ctx, ApprovalRequest{RunID: runID, CallID: "plan_exit", Tool: "plan_exit", Args: content, Timeout: rc.AskUserTimeout, Options: options})
+	if err != nil {
+		return false, PlanApproachOption{}, err
+	}
 	required := map[string]any{"tool": "plan_exit", "plan": content}
 	if len(options) > 0 {
 		required["options"] = options
 	}
 	r.emit(runID, EventPlanApprovalRequired, required)
-	approved, selectedID, err := rc.ApprovalBroker.Ask(ctx, ApprovalRequest{RunID: runID, CallID: "plan_exit", Tool: "plan_exit", Args: content, Timeout: rc.AskUserTimeout, Options: options})
+	approved, selectedID, err := approvalWaiter.Wait(ctx)
 	if err != nil {
 		return false, PlanApproachOption{}, err
 	}

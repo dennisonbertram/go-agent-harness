@@ -50,7 +50,15 @@ struct RunSessionLiveTests {
         // The composer clears immediately so the user can keep typing.
         #expect(session.draft.isEmpty)
 
-        try await wait { session.transcript.runState == .completed }
+        try await wait {
+            // `Transcript.reconcile` rebuilds from durable rows and clears the
+            // event cursor. Waiting for that observable post-reconciliation
+            // state proves accounting survives the real conversation-SSE
+            // terminal path, not just the per-run terminal frame.
+            session.transcript.runState == .completed
+                && session.transcript.lastEventID == nil
+                && session.transcript.usage.totalTokens > 0
+        }
 
         // Exact transcript shape is not asserted: the fake provider's turn
         // cursor is global to the server, so a run's scripted content depends
@@ -82,7 +90,14 @@ struct RunSessionLiveTests {
         // Spinner and composer must both free up once the run ends.
         #expect(session.isBusy == false)
         #expect(session.connectionError == nil)
+        // The completed UI state must carry the fake provider's complete
+        // accounting snapshot through conversation-stream reconciliation, not
+        // merely a nonzero token sentinel from an earlier run.
+        #expect(session.transcript.usage.promptTokens > 0)
+        #expect(session.transcript.usage.completionTokens > 0)
         #expect(session.transcript.usage.totalTokens > 0)
+        #expect(session.transcript.usage.costUSD > 0)
+        #expect(session.transcript.usage.costStatus == "available")
     }
 
     /// If harnessd is unreachable the UI must land in a terminal state with a

@@ -12,6 +12,7 @@ import (
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/harness/tools/deferred"
+	"go-agent-harness/internal/harnessmcp"
 	"go-agent-harness/internal/hooks"
 	"go-agent-harness/internal/mcpserver"
 	"go-agent-harness/internal/networks"
@@ -35,6 +36,15 @@ type mcpStdioRuntime struct {
 }
 
 func buildMCPStdioRuntime(workspace string) (mcpStdioRuntime, error) {
+	return buildMCPStdioRuntimeWithProfileDirs(workspace, "", "")
+}
+
+// buildMCPStdioRuntimeWithProfileDirs builds the MCP catalog with the same
+// project/user profile resolution inputs as the HTTP runtime. Keeping this
+// assembly explicit prevents MCP mutation tools from silently reverting to the
+// process default user directory when harnessd was configured with an isolated
+// profile directory.
+func buildMCPStdioRuntimeWithProfileDirs(workspace, profilesProject, profilesUser string) (mcpStdioRuntime, error) {
 	workspace = strings.TrimSpace(workspace)
 	if workspace == "" {
 		workspace = "."
@@ -55,7 +65,9 @@ func buildMCPStdioRuntime(workspace string) (mcpStdioRuntime, error) {
 	// would break ordinary editor workflows; that is an operator's call to make,
 	// not a silent default.
 	registry := harness.NewDefaultRegistryWithOptions(workspace, harness.DefaultRegistryOptions{
-		ApprovalMode: harness.ToolApprovalModeFullAuto,
+		ApprovalMode:    harness.ToolApprovalModeFullAuto,
+		ProfilesProject: profilesProject,
+		ProfilesDir:     profilesUser,
 	})
 	catalogTools := registry.CatalogTools()
 
@@ -78,6 +90,7 @@ type httpRuntimeOptions struct {
 	provider             harness.Provider
 	runnerCfg            harness.RunnerConfig
 	configReloader       *configReloader
+	authDisabled         bool
 	checkpointService    *checkpoints.Service
 	workflowDefinitions  []workflows.Definition
 	workflowStore        workflows.Store
@@ -110,13 +123,14 @@ type httpRuntimeOptions struct {
 	subagentConfigTOML   string
 	askUserBroker        htools.AskUserQuestionBroker
 	askUserTimeout       time.Duration
+	profilesProject      string
+	profilesUser         string
 }
 
 type httpRuntime struct {
 	runner          *harness.Runner
 	tools           *harness.Registry
 	subagentManager subagents.Manager
-	mcpServer       *mcpserver.Server
 	handler         http.Handler
 	httpServer      *http.Server
 }
@@ -156,6 +170,14 @@ func (h *subagentRunnerHandoff) CancelRun(runID string) error {
 	return h.runner.Load().CancelRun(runID)
 }
 
+// RunForkedSkill preserves the runner-owned fork capability used by the
+// synchronous spawn_agent path. Without this forwarding method the handoff
+// satisfies only AgentRunner and spawn_agent falls back to RunPrompt, losing
+// the trusted child origin and mandatory task_complete lifecycle.
+func (h *subagentRunnerHandoff) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (htools.ForkResult, error) {
+	return h.runner.Load().RunForkedSkill(ctx, config)
+}
+
 func (h *subagentRunnerHandoff) RunPrompt(ctx context.Context, prompt string) (string, error) {
 	return h.runner.Load().RunPrompt(ctx, prompt)
 }
@@ -184,6 +206,15 @@ func (h *subagentRunnerHandoff) ParentRunID(runID string) (string, bool) {
 }
 
 func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
+	// Fail closed before anything is built or bound: an unauthenticated daemon
+	// listening beyond loopback is an open agent-execution service (issue #1328).
+	// opts.authDisabled is derived (set when the run store is implicit), so it is
+	// not consent. Read the operator's own opt-out, and treat auth as enforced
+	// only when a store exists AND the flag is not set.
+	if err := checkBindSafety(opts.addr, explicitAuthOptOut(), opts.runStore != nil && !opts.authDisabled); err != nil {
+		return httpRuntime{}, err
+	}
+
 	handoff := &subagentRunnerHandoff{}
 
 	// registryOpts carries the subagent manager so the TOP-LEVEL registry
@@ -281,9 +312,7 @@ func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 	}
 
 	if opts.cronStarter != nil {
-		opts.cronStarter.mu.Lock()
-		opts.cronStarter.runner = runner
-		opts.cronStarter.mu.Unlock()
+		opts.cronStarter.BindRunner(runner)
 	}
 
 	if opts.callbackBridge != nil {
@@ -306,7 +335,21 @@ func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 	}
 
 	modelSettings := buildModelSettings(modelSettingsPath(), opts.modelCatalog, nil)
+	// One MCP implementation, two transports: /mcp now serves the same tool
+	// definitions and handlers as the stdio harness-mcp binary, rather than a
+	// second delegation API whose start_run could not even select a model
+	// (issue #1317). It runs inside harnessd and reaches the REST API over
+	// loopback, carrying the caller's own bearer token so an authenticated
+	// daemon stays authenticated end to end.
+	//
+	// Mounted behind the auth middleware by the server, not alongside it
+	// (issue #1328).
+	mcpSelfURL := selfBaseURL(opts.addr)
+	mcpHandler := harnessmcp.NewHTTPHandler(func(token string) *harnessmcp.HarnessClient {
+		return harnessmcp.NewHarnessClientWithToken(mcpSelfURL, token)
+	})
 	mainHandler := server.NewWithOptions(buildServerOptions(serverBootstrapOptions{
+		mcpHandler:       mcpHandler,
 		modelSettings:    modelSettings,
 		runner:           runner,
 		modelCatalog:     opts.modelCatalog,
@@ -330,13 +373,12 @@ func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 		callbackMgr:      opts.callbackMgr,
 		jobTracker:       opts.jobTracker,
 		configReloader:   opts.configReloader,
+		authDisabled:     opts.authDisabled,
+		profilesProject:  opts.profilesProject,
+		profilesUser:     opts.profilesUser,
 	}))
 
-	// Mount the MCP server at /mcp so external MCP clients can drive the harness.
-	mcpSrv := mcpserver.NewServer(&mcpRunnerAdapter{runner: runner, store: opts.runStore})
-
 	topMux := http.NewServeMux()
-	topMux.Handle("/mcp", mcpSrv.Handler())
 	topMux.Handle("/", mainHandler)
 
 	httpServer := &http.Server{
@@ -352,7 +394,6 @@ func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 		runner:          runner,
 		tools:           tools,
 		subagentManager: subagentMgr,
-		mcpServer:       mcpSrv,
 		handler:         topMux,
 		httpServer:      httpServer,
 	}, nil

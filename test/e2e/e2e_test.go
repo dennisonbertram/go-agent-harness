@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -203,4 +204,207 @@ func TestE2E_ToolCallApprovalRoundTrip(t *testing.T) {
 	if terminal.Type != harness.EventRunCompleted {
 		t.Fatalf("expected terminal event %q, got %q (sequence %v)", harness.EventRunCompleted, terminal.Type, types)
 	}
+}
+
+// TestE2E_ToolApprovalEventIsImmediatelyResolvable pins the readiness
+// contract for live SSE consumers: observing tool.approval_required makes an
+// immediate approve or deny actionable, and the conversation reaches its
+// terminal outcome. The gate holds the legacy Ask-only lifecycle before it can
+// create its pending entry, so the old publish-then-Ask ordering
+// deterministically returns 404 rather than relying on scheduler timing.
+func TestE2E_ToolApprovalEventIsImmediatelyResolvable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+		want harness.EventType
+	}{
+		{name: "approve", path: "approve", want: harness.EventToolApprovalGranted},
+		{name: "deny", path: "deny", want: harness.EventToolApprovalDenied},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := newRegistrationGatedApprovalBroker()
+			defer broker.release()
+
+			provider := &scriptedProvider{turns: []harness.CompletionResult{
+				{ToolCalls: []harness.ToolCall{{ID: "call_ready", Name: "echo_tool", Arguments: `{"value":"ready"}`}}},
+				{Content: "done after immediate resolution"},
+			}}
+			registry := harness.NewRegistry()
+			if err := registry.Register(harness.ToolDefinition{
+				Name:         "echo_tool",
+				Description:  "echoes its input",
+				Parameters:   map[string]any{"type": "object"},
+				ParallelSafe: true,
+			}, func(_ context.Context, args json.RawMessage) (string, error) {
+				return string(args), nil
+			}); err != nil {
+				t.Fatalf("register tool: %v", err)
+			}
+
+			ts := newTestServer(t, provider, registry, broker)
+			runID := startRun(t, ts, `{"prompt":"use the tool","permissions":{"sandbox":"unrestricted","approval":"all"}}`)
+			reader, closeStream := openEventStream(t, ts, runID)
+			defer closeStream()
+
+			deadline := time.Now().Add(10 * time.Second)
+			resolved := false
+			sawResolution := false
+			for {
+				if time.Now().After(deadline) {
+					t.Fatalf("timed out waiting for terminal event after immediate %s", tc.path)
+				}
+				ev, err := reader.next()
+				if err != nil {
+					t.Fatalf("reading SSE stream: %v", err)
+				}
+				hev := ev.harnessEvent(t)
+				switch hev.Type {
+				case harness.EventToolApprovalRequired:
+					if resolved {
+						continue
+					}
+					pending, ok := broker.Pending(runID)
+					if !ok {
+						t.Fatal("tool.approval_required was observable before its pending approval")
+					}
+					gotDeadline, err := time.Parse(time.RFC3339Nano, hev.Payload["deadline_at"].(string))
+					if err != nil {
+						t.Fatalf("parse event deadline_at: %v", err)
+					}
+					if !gotDeadline.Equal(pending.DeadlineAt) {
+						t.Fatalf("event deadline_at=%s, want exact registered deadline %s", gotDeadline, pending.DeadlineAt)
+					}
+					resolved = true
+					res, err := ts.Client().Post(ts.URL+"/v1/runs/"+runID+"/"+tc.path, "application/json", nil)
+					if err != nil {
+						t.Fatalf("POST %s immediately after event: %v", tc.path, err)
+					}
+					res.Body.Close()
+					if res.StatusCode != 200 {
+						t.Fatalf("POST %s immediately after event: expected 200, got %d", tc.path, res.StatusCode)
+					}
+				case tc.want:
+					sawResolution = true
+				}
+				if harness.IsTerminalEvent(hev.Type) {
+					if hev.Type != harness.EventRunCompleted {
+						t.Fatalf("terminal event = %q, want %q", hev.Type, harness.EventRunCompleted)
+					}
+					if !resolved || !sawResolution {
+						t.Fatalf("terminal event arrived without immediate %s resolution (resolved=%v saw=%v)", tc.path, resolved, sawResolution)
+					}
+					return
+				}
+			}
+		})
+	}
+}
+
+// TestE2E_PlanExitApprovalEventIsImmediatelyResolvable drives both immediate
+// plan denial and the subsequent immediate approval through real HTTP/SSE.
+// The completed conversation proves that plan-exit registration also happens
+// before its observable approval-required event.
+func TestE2E_PlanExitApprovalEventIsImmediatelyResolvable(t *testing.T) {
+	broker := newRegistrationGatedApprovalBroker()
+	defer broker.release()
+	ts := newTestServer(t, &scriptedProvider{turns: []harness.CompletionResult{
+		{Content: "# initial plan"},
+		{Content: "# revised plan"},
+	}}, nil, broker)
+	runID := startRun(t, ts, `{"prompt":"plan","plan_mode":true}`)
+	reader, closeStream := openEventStream(t, ts, runID)
+	defer closeStream()
+
+	deadline := time.Now().Add(10 * time.Second)
+	approvalCount := 0
+	sawDenied := false
+	sawGranted := false
+	for {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for terminal plan event (approvals=%d)", approvalCount)
+		}
+		ev, err := reader.next()
+		if err != nil {
+			t.Fatalf("reading SSE stream: %v", err)
+		}
+		hev := ev.harnessEvent(t)
+		switch hev.Type {
+		case harness.EventPlanApprovalRequired:
+			if _, ok := broker.Pending(runID); !ok {
+				t.Fatal("plan.approval_required was observable before its pending approval")
+			}
+			path := "deny"
+			if approvalCount > 0 {
+				path = "approve"
+			}
+			approvalCount++
+			res, err := ts.Client().Post(ts.URL+"/v1/runs/"+runID+"/"+path, "application/json", nil)
+			if err != nil {
+				t.Fatalf("POST %s immediately after plan event: %v", path, err)
+			}
+			res.Body.Close()
+			if res.StatusCode != 200 {
+				t.Fatalf("POST %s immediately after plan event: expected 200, got %d", path, res.StatusCode)
+			}
+		case harness.EventPlanApprovalDenied:
+			sawDenied = true
+		case harness.EventPlanApprovalGranted:
+			sawGranted = true
+		}
+		if harness.IsTerminalEvent(hev.Type) {
+			if hev.Type != harness.EventRunCompleted || approvalCount != 2 || !sawDenied || !sawGranted {
+				t.Fatalf("unexpected plan terminal state: type=%q approvals=%d denied=%v granted=%v", hev.Type, approvalCount, sawDenied, sawGranted)
+			}
+			return
+		}
+	}
+}
+
+// registrationGatedApprovalBroker keeps the old Ask lifecycle at a
+// deterministic pre-registration barrier. A readiness-aware runner registers
+// before publication and therefore does not need this legacy path.
+type registrationGatedApprovalBroker struct {
+	inner      *harness.InMemoryApprovalBroker
+	releaseAsk chan struct{}
+	once       sync.Once
+}
+
+func newRegistrationGatedApprovalBroker() *registrationGatedApprovalBroker {
+	return &registrationGatedApprovalBroker{
+		inner:      harness.NewInMemoryApprovalBroker(),
+		releaseAsk: make(chan struct{}),
+	}
+}
+
+func (b *registrationGatedApprovalBroker) Ask(ctx context.Context, req harness.ApprovalRequest) (bool, string, error) {
+	select {
+	case <-b.releaseAsk:
+		return b.inner.Ask(ctx, req)
+	case <-ctx.Done():
+		return false, "", ctx.Err()
+	}
+}
+
+func (b *registrationGatedApprovalBroker) Register(ctx context.Context, req harness.ApprovalRequest) (harness.ApprovalWaiter, error) {
+	return b.inner.Register(ctx, req)
+}
+
+func (b *registrationGatedApprovalBroker) Pending(runID string) (harness.PendingApproval, bool) {
+	return b.inner.Pending(runID)
+}
+
+func (b *registrationGatedApprovalBroker) Approve(runID string) error {
+	return b.inner.Approve(runID)
+}
+
+func (b *registrationGatedApprovalBroker) ApproveWithOption(runID, option string) error {
+	return b.inner.ApproveWithOption(runID, option)
+}
+
+func (b *registrationGatedApprovalBroker) Deny(runID string) error {
+	return b.inner.Deny(runID)
+}
+
+func (b *registrationGatedApprovalBroker) release() {
+	b.once.Do(func() { close(b.releaseAsk) })
 }

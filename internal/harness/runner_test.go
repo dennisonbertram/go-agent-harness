@@ -173,6 +173,141 @@ func TestRunnerExecutesToolCallsAndPublishesEvents(t *testing.T) {
 	)
 }
 
+// TestIssue1256_PersistsTrustedWorkspaceBeforeMutatingRewindCapture proves the
+// durable owner row is authoritative before a mutating point becomes usable.
+// The handler runs after CaptureRewindPreImage, so observing both there catches
+// a terminal-only metadata write even when the final run later succeeds.
+func TestIssue1256_PersistsTrustedWorkspaceBeforeMutatingRewindCapture(t *testing.T) {
+
+	for _, tc := range []struct {
+		name       string
+		tenantID   string
+		wantTenant string
+	}{
+		{name: "default tenant", wantTenant: ""},
+		{name: "named tenant", tenantID: "tenant-1256", wantTenant: "tenant-1256"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			if err := os.WriteFile(filepath.Join(workspace, "safe.txt"), []byte("before"), 0o600); err != nil {
+				t.Fatalf("seed workspace: %v", err)
+			}
+			store := newTestConversationStore(t)
+			registry := NewRegistry()
+			captured := make(chan struct {
+				owner  *Conversation
+				points []RewindPoint
+			}, 1)
+			if err := registry.Register(ToolDefinition{
+				Name:        "write",
+				Description: "test write",
+				Mutating:    true,
+				Parameters:  map[string]any{"type": "object"},
+			}, func(_ context.Context, _ json.RawMessage) (string, error) {
+				owner, err := store.GetConversationOwner(context.Background(), "conv-1256")
+				if err != nil {
+					t.Fatalf("GetConversationOwner during capture: %v", err)
+				}
+				points, err := store.ListRewindPoints(context.Background(), "conv-1256")
+				if err != nil {
+					t.Fatalf("ListRewindPoints during capture: %v", err)
+				}
+				captured <- struct {
+					owner  *Conversation
+					points []RewindPoint
+				}{owner, points}
+				if err := os.WriteFile(filepath.Join(workspace, "safe.txt"), []byte("after"), 0o600); err != nil {
+					return "", err
+				}
+				return "written", nil
+			}); err != nil {
+				t.Fatalf("register write: %v", err)
+			}
+
+			runner := NewRunner(&stubProvider{turns: []CompletionResult{
+				{ToolCalls: []ToolCall{{ID: "write-1256", Name: "write", Arguments: `{"path":"safe.txt","content":"after"}`}}},
+				{Content: "done"},
+			}}, registry, RunnerConfig{
+				DefaultModel:         "test",
+				MaxSteps:             2,
+				ConversationStore:    store,
+				WorkspaceBaseOptions: WorkspaceProvisionOptions{RepoPath: workspace},
+			})
+
+			run, err := runner.StartRun(RunRequest{Prompt: "write", ConversationID: "conv-1256", TenantID: tc.tenantID})
+			if err != nil {
+				t.Fatalf("StartRun: %v", err)
+			}
+			got := <-captured
+			if got.owner == nil {
+				t.Fatal("owner is absent while rewind point is captured")
+			}
+			if got.owner.Workspace != workspace {
+				t.Fatalf("owner workspace during capture = %q, want configured %q", got.owner.Workspace, workspace)
+			}
+			if got.owner.TenantID != tc.wantTenant {
+				t.Fatalf("owner tenant during capture = %q, want %q", got.owner.TenantID, tc.wantTenant)
+			}
+			if len(got.points) != 1 || got.points[0].ID == "" {
+				t.Fatalf("rewind points during capture = %+v, want one usable point", got.points)
+			}
+			waitForRunCompletion(t, runner, run.ID)
+			owner, err := store.GetConversationOwner(context.Background(), "conv-1256")
+			if err != nil {
+				t.Fatalf("GetConversationOwner after completion: %v", err)
+			}
+			if owner == nil {
+				t.Fatal("owner is absent after completion")
+			}
+			if owner.Workspace != workspace {
+				t.Fatalf("owner workspace after completion = %q, want configured %q", owner.Workspace, workspace)
+			}
+			if owner.TenantID != tc.wantTenant {
+				t.Fatalf("owner tenant after completion = %q, want %q", owner.TenantID, tc.wantTenant)
+			}
+
+			// A later ordinary run is allowed to have no configured workspace. It
+			// must not erase the trusted workspace recorded by the mutating run:
+			// that metadata is the only server-side authority RestoreRewindPoint
+			// has for locating the captured file safely.
+			workspaceLessRunner := NewRunner(&stubProvider{turns: []CompletionResult{{Content: "follow-up done"}}}, registry, RunnerConfig{
+				DefaultModel:      "test",
+				MaxSteps:          1,
+				ConversationStore: store,
+			})
+			followUp, err := workspaceLessRunner.StartRun(RunRequest{Prompt: "follow up", ConversationID: "conv-1256", TenantID: tc.tenantID})
+			if err != nil {
+				t.Fatalf("StartRun without configured workspace: %v", err)
+			}
+			waitForRunCompletion(t, workspaceLessRunner, followUp.ID)
+
+			owner, err = store.GetConversationOwner(context.Background(), "conv-1256")
+			if err != nil {
+				t.Fatalf("GetConversationOwner after workspace-less completion: %v", err)
+			}
+			if owner == nil || owner.Workspace != workspace {
+				t.Fatalf("workspace-less completion erased trusted workspace: owner=%+v, want workspace %q", owner, workspace)
+			}
+			if owner.TenantID != tc.wantTenant {
+				t.Fatalf("workspace-less completion changed tenant = %q, want %q", owner.TenantID, tc.wantTenant)
+			}
+
+			// This final restore proves that the persisted workspace is not merely
+			// present in metadata; it remains usable for the destructive rewind.
+			if _, err := store.RestoreRewindPoint(context.Background(), "conv-1256", got.points[0].ID, owner.Workspace, false); err != nil {
+				t.Fatalf("RestoreRewindPoint after workspace-less completion: %v", err)
+			}
+			restored, err := os.ReadFile(filepath.Join(workspace, "safe.txt"))
+			if err != nil {
+				t.Fatalf("read restored workspace file: %v", err)
+			}
+			if string(restored) != "before" {
+				t.Fatalf("restored file = %q, want pre-image %q", restored, "before")
+			}
+		})
+	}
+}
+
 func TestRunnerInjectsMemorySnippetAndEmitsMemoryEvents(t *testing.T) {
 	t.Parallel()
 
@@ -434,19 +569,19 @@ func TestRunnerAskUserQuestionWaitsAndResumes(t *testing.T) {
 		t.Fatalf("start run: %v", err)
 	}
 
-	deadline := time.Now().Add(1500 * time.Millisecond)
-	for {
-		pending, err := runner.PendingInput(run.ID)
-		if err == nil {
-			if pending.CallID != "call_ask" {
-				t.Fatalf("unexpected call id: %q", pending.CallID)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for pending input: %v", err)
-		}
-		time.Sleep(10 * time.Millisecond)
+	history, stream, cancel, err := runner.Subscribe(run.ID)
+	if err != nil {
+		t.Fatalf("subscribe run: %v", err)
+	}
+	t.Cleanup(cancel)
+	waitForRunEventType(t, history, stream, EventRunWaitingForUser)
+
+	pending, err := runner.PendingInput(run.ID)
+	if err != nil {
+		t.Fatalf("pending input after waiting event: %v", err)
+	}
+	if pending.CallID != "call_ask" {
+		t.Fatalf("unexpected call id: %q", pending.CallID)
 	}
 
 	state, ok := runner.GetRun(run.ID)
@@ -739,8 +874,13 @@ func TestRunnerFailedRunIncludesPartialUsageTotals(t *testing.T) {
 	}
 }
 
+// collectRunEvents preserves terminal event/history collection and also waits
+// for the independently published terminal status. Event-first publication may
+// expose replay before status; most callers use this helper as a settled-run
+// boundary. The phase-ordering tests use direct Subscribe barriers instead.
 func collectRunEvents(t *testing.T, runner *Runner, runID string) ([]Event, error) {
 	t.Helper()
+	deadline := time.Now().Add(4 * time.Second)
 
 	history, stream, cancel, err := runner.Subscribe(runID)
 	if err != nil {
@@ -748,26 +888,139 @@ func collectRunEvents(t *testing.T, runner *Runner, runID string) ([]Event, erro
 	}
 	defer cancel()
 
-	events := append([]Event(nil), history...)
-	if hasTerminalEvent(events) {
-		return events, nil
+	return collectSubscribedRunEvents(runner, runID, history, stream, deadline, nil)
+}
+
+// waitForRunEventType establishes an event-lifecycle boundary for tests that
+// need to inspect a non-terminal run state. Pending broker registration is
+// intentionally earlier than its runner status/event publication, so it is not
+// a substitute for observing the public lifecycle transition.
+func waitForRunEventType(t *testing.T, history []Event, stream <-chan Event, want EventType) Event {
+	t.Helper()
+	for _, event := range history {
+		if event.Type == want {
+			return event
+		}
 	}
 
-	timeout := time.After(4 * time.Second)
+	timeout := time.NewTimer(2 * time.Second)
+	defer timeout.Stop()
+	for {
+		select {
+		case event, ok := <-stream:
+			if !ok {
+				t.Fatalf("stream closed before %s", want)
+			}
+			if event.Type == want {
+				return event
+			}
+		case <-timeout.C:
+			t.Fatalf("timed out waiting for %s", want)
+		}
+	}
+}
+
+func collectSubscribedRunEvents(
+	runner *Runner,
+	runID string,
+	history []Event,
+	stream <-chan Event,
+	deadline time.Time,
+	settlementStarted func(),
+) ([]Event, error) {
+	events := append([]Event(nil), history...)
+	if hasTerminalEvent(events) {
+		return settleCollectedRunEvents(runner, runID, events, deadline, settlementStarted)
+	}
+
+	timeout := time.NewTimer(time.Until(deadline))
+	defer timeout.Stop()
 	for {
 		select {
 		case ev, ok := <-stream:
 			if !ok {
-				return events, nil
+				return settleCollectedRunEvents(runner, runID, events, deadline, settlementStarted)
 			}
 			events = append(events, ev)
 			if IsTerminalEvent(ev.Type) {
-				return events, nil
+				return settleCollectedRunEvents(runner, runID, events, deadline, settlementStarted)
 			}
-		case <-timeout:
+		case <-timeout.C:
 			return nil, context.DeadlineExceeded
 		}
 	}
+}
+
+func settleCollectedRunEvents(
+	runner *Runner,
+	runID string,
+	events []Event,
+	deadline time.Time,
+	settlementStarted func(),
+) ([]Event, error) {
+	if settlementStarted != nil {
+		settlementStarted()
+	}
+	eventStatus, err := collectedTerminalRunStatus(events)
+	if err != nil {
+		return events, fmt.Errorf("run %q terminal settlement: %w", runID, err)
+	}
+	for {
+		run, ok := runner.GetRun(runID)
+		if !ok {
+			return events, fmt.Errorf("run %q disappeared before terminal status settled", runID)
+		}
+		if isTerminalRunStatus(run.Status) {
+			if run.Status != eventStatus {
+				return events, fmt.Errorf(
+					"run %q terminal status %q does not match collected terminal event status %q; events=%v",
+					runID,
+					run.Status,
+					eventStatus,
+					eventTypes(events),
+				)
+			}
+			return events, nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return events, fmt.Errorf(
+				"run %q terminal event collected before status settled: %w",
+				runID,
+				context.DeadlineExceeded,
+			)
+		}
+		wait := 5 * time.Millisecond
+		if remaining < wait {
+			wait = remaining
+		}
+		time.Sleep(wait)
+	}
+}
+
+func collectedTerminalRunStatus(events []Event) (RunStatus, error) {
+	var terminalStatus RunStatus
+	for _, event := range events {
+		var status RunStatus
+		switch event.Type {
+		case EventRunCompleted:
+			status = RunStatusCompleted
+		case EventRunFailed:
+			status = RunStatusFailed
+		case EventRunCancelled:
+			status = RunStatusCancelled
+		default:
+			continue
+		}
+		if terminalStatus != "" {
+			return "", fmt.Errorf("collected multiple terminal events: %v", eventTypes(events))
+		}
+		terminalStatus = status
+	}
+	if terminalStatus == "" {
+		return "", fmt.Errorf("collected events contain no terminal event: %v", eventTypes(events))
+	}
+	return terminalStatus, nil
 }
 
 func hasTerminalEvent(events []Event) bool {
@@ -1999,6 +2252,11 @@ func TestRunnerFailsWhenClientFactoryErrors_NoFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collect events: %v", err)
 	}
+	// A terminal event can be present in replay while its matching status is
+	// still completing the event-first publication sequence. Wait for the
+	// independently asserted status instead of treating replay as the inverse
+	// of the public status-implies-replay guarantee.
+	waitForStatus(t, runner, run.ID, RunStatusFailed)
 
 	state, ok := runner.GetRun(run.ID)
 	if !ok {

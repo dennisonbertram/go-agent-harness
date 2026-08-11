@@ -170,16 +170,33 @@ cronctl health
 
 #### Agent cron tools
 
-Running LLM agents have access to six cron tools when the cron client is available. Because these are **deferred** tools, the agent must activate them via `find_tool` before use.
+Running LLM agents have access to eight **core** cron tools when the cron
+client is available. The default registry includes them in the initial tool
+schema, so an agent calls them directly; it does **not** activate them through
+`find_tool` first. Keeping the complete lifecycle together avoids an agent that
+can create a job but cannot later inspect, update, pause, resume, delete, or
+read its execution history.
 
 | Tool | What it does | Mutating |
 |------|-------------|---------|
 | `cron_create` | Create a recurring job | yes |
 | `cron_list` | List all jobs | no |
 | `cron_get` | Get a job and its last 5 executions | no |
+| `cron_update` | Update a job's mutable fields using its current revision | yes |
+| `cron_history` | List a job's execution history | no |
 | `cron_delete` | Delete a job | yes |
 | `cron_pause` | Pause a job | yes |
 | `cron_resume` | Resume a paused job | yes |
+
+`cron_create` requires an explicit `execution_type`; it never infers a mode
+from the other arguments. Choose exactly one of these execution contracts:
+
+- `"shell"` requires a non-empty `command` and rejects `prompt`. It runs that
+  headless host command on each fire; command output is recorded in cron
+  execution history.
+- `"harness"` requires a non-empty `prompt` and rejects `command`. It starts a
+  harness assistant continuation in the same conversation as the creating run;
+  the resulting child run is recorded as the execution's `run_id`.
 
 `cron_create` accepts these parameters:
 
@@ -187,7 +204,9 @@ Running LLM agents have access to six cron tools when the cron client is availab
 |-----------|------|----------|---------|
 | `name` | string | yes | — |
 | `schedule` | string | yes | — |
-| `command` | string | yes | — |
+| `execution_type` | `"shell"` or `"harness"` | yes | — |
+| `command` | string | required for `"shell"`; forbidden for `"harness"` | — |
+| `prompt` | string | required for `"harness"`; forbidden for `"shell"` | — |
 | `timeout_seconds` | integer | no | `30` |
 
 `cron_get` is handy for diagnostics: it returns both the job metadata and the five most recent executions in a single call, so the agent can see at a glance whether the last few runs succeeded or timed out.
@@ -218,11 +237,26 @@ Every job has the following fields:
 }
 ```
 
-`execution_type` is either `"shell"` (run a shell command via `sh -c`) or `"harness"` (for harness-integrated execution). `execution_config` is a JSON blob whose shape depends on the type — for shell jobs it must contain a `"command"` key.
+`execution_type` is either `"shell"` (run a headless shell command via `sh -c`)
+or `"harness"` (continue the creating run's conversation with an assistant
+prompt). `execution_config` is a JSON blob whose shape depends on the type:
+shell jobs contain a non-empty `"command"`; harness jobs contain a non-empty
+`"prompt"`. Agent-created harness jobs inherit their tenant, agent, and
+conversation from immutable run metadata rather than model-supplied scope
+fields.
 
 **Job status values:** `"active"`, `"paused"`, `"deleted"`
 
-**Execution status values:** `"pending"`, `"running"`, `"success"`, `"failed"`, `"timeout"`
+**Execution status values:** `"queued"`, `"starting"`, `"running"`, `"succeeded"`, `"failed"`, `"timeout"`, `"skipped"`.
+
+Harness executions include a structured `run_id` as soon as the harness accepts
+the scheduled run. Do not infer that ID from `output_summary`: the summary is
+for display and changes again when terminal output is available. When a second
+cron fire targets the same tenant, agent, and conversation while an earlier
+cron execution remains active, the scheduler records a terminal `"skipped"`
+history row whose error text is the stable overlap reason. Different
+conversations remain independently concurrent. Older installations can still
+contain the legacy `"pending"` and `"success"` history values.
 
 ---
 
@@ -373,5 +407,7 @@ When running `cronsd` as a standalone daemon:
 ## Next steps
 
 - To understand how `harnessd` authenticates these API calls, see [Authentication and Tenancy](/docs/server/authentication).
-- To drive cron jobs from within a running agent, activate the deferred tools with `find_tool` and call `cron_create`.
+- To drive cron jobs from within a running agent, call the initial-turn core
+  `cron_create` tool directly; use the other seven core cron tools to inspect
+  and manage the job lifecycle.
 - To connect external webhooks (GitHub, Slack, Linear) to run triggers, set the corresponding `*_WEBHOOK_SECRET` environment variables and point your webhook at the appropriate `/v1/webhooks/*` route or at `/v1/external/trigger`.

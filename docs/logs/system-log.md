@@ -1,5 +1,857 @@
 # System Log
 
+## 2026-08-07 — Issue #1268 acceptance PTY terminal drain boundary
+
+- System/component: `internal/acceptance/ptyrunner` fresh and non-mutating
+  real TUI evidence runners plus `freshFrameCollector`.
+- Ownership/order: the collector owns master read completion and final raw
+  bytes; successful child exit now waits for that completion and seals the
+  final frame before deferred master cleanup. The common cleanup helper closes
+  the master before child-process cleanup for error/cancellation returns.
+- Consumers: retained PTY frames are correlated with existing API/SSE evidence
+  only; product daemon, GUI, TUI, and tool contracts are unchanged.
+- Failure boundary: context cancellation and unexpected collector read errors
+  still fail the acceptance run; Linux slave-close `EIO` remains clean EOF.
+
+## 2026-08-07 — Issue #1261 continuation identity ownership
+
+- The Runner owns inherited `Run.ConversationID`; the continue HTTP handler
+  serializes that immutable identity; `continueRunCmd` owns mixed-version
+  resolution; and the TUI reducer owns adoption only for an unselected
+  session. Conversation SSE remains owned by the selected-conversation bridge
+  and never receives a guessed child-run ID.
+
+## 2026-08-07 — Issue #1254 Fork Completion Lifecycle
+
+- Ownership/order: `RunForkedSkill` creates the child, activates its deferred control by child ID before dispatch, and every existing completed/failed/cancelled transition cleans that ID. The step engine makes validated completion terminal before scheduling another provider request; synchronous `spawn_agent` continues to bypass `subagents.Manager` and its API/persistence path.
+## 2026-08-07 — Issue #1256 rewind root ownership
+
+- Runner configuration owns the only restore-root handoff. Before a mutating
+  tool saves a rewind point, SQLite records that configured root and tenant on
+  the conversation owner; fork copies it transactionally. Server restore still
+  rejects an absent/empty owner rather than consulting CWD or client input.
+- Terminal persistence delegates preservation to an atomic SQLite statement:
+  once a non-empty root or tenant exists, an empty later configuration cannot
+  erase it, including when concurrent runs complete in either order.
+
+## 2026-08-07 — Issue #1246 TUI selected-session ownership
+
+- Flow: `/sessions` Enter -> `sessionpicker.Update` ->
+  `SessionPickerSelectedMsg` -> atomic conversation replay boundary -> normal
+  SSE continuation; only an unsupported boundary cancels into legacy history.
+  The model remains the sole owner of reset, stale-message filtering, viewport
+  rendering, and stream lifecycle.
+
+## 2026-08-07 — Issue #1249 atomic selected-conversation handoff
+
+- The Runner owns the atomic subscription/replay/snapshot boundary. The server
+  serializes it only for opt-in clients, and the TUI owns pre-marker suppression
+  plus normal post-marker reduction. Legacy clients remain GET-first after
+  cancelling their unsupported opened stream.
+
+## 2026-08-07 — Issue #1249 selected-conversation replay ownership
+
+- `Runner.SubscribeConversationFrom` remains the registration/replay owner.
+  `handleConversationEvents` owns only the additive id-less marker after its
+  historical page. The TUI model owns suppression, buffering, and snapshot
+  reconciliation; it never creates durable cursors or compares response text.
+  Existing scheduled runs still enter through the same live conversation SSE
+  channel after the marker.
+
+## 2026-08-07 — Issue #1247 cron initial-schema ownership
+
+- `NewDefaultRegistryWithOptions` owns the tier promotion boundary: after it
+  wraps the model-scoped cron client, `catalogTools` appends all eight cron
+  definitions to `coreTools`. The underlying reusable constructors remain
+  implementation-local and do not authorize a generic deferred-selection
+  change. Provider initial schemas consume `DefinitionsForRun`; policy and
+  scoped client ownership stay outside this documentation/test-only slice.
+
+## 2026-08-07 — Issue #1243 acceptance framing boundary
+
+- Production `internal/server.writeSSE` remains the sole wire producer. The
+  #1231 acceptance decoder is a read-only boundary that retains header and
+  JSON provenance together before #1241 lifecycle matching; no fallback may
+  cross that boundary. Ping comments are explicitly zero-data frames.
+
+## 2026-08-07 — Issue #1241 filesystem/Git acceptance lifecycle boundary
+
+- `assertFilesystemGitToolCalls` receives the run ID returned by the run API,
+  retains an immutable raw SSE artifact, decodes it once, and delegates only validation to
+  `validateFilesystemGitToolCallLifecycle`. The validator owns transient
+  expected-spec bindings and keyed pending/completed state; artifact retention,
+  HTTP, Runner, and default-tool ownership remain outside that boundary.
+- The matcher validates each raw run independently. It explicitly does not
+  carry call-ID state through the four-turn conversation, so a later run may
+  reuse a provider call ID without weakening duplicate detection in the raw
+  stream being proved.
+
+## 2026-08-07 — Issue #1236 plural workflow event ownership
+
+- `internal/workflows.Engine.mu` now defines the handoff boundary: sequence
+  increment, Store append, subscriber registration/watermark, initialization
+  buffering, and live fan-out coordinate through it. `Store.GetEvents` remains
+  outside the mutex so a slow history copy cannot block unrelated emits.
+- History contains only events at or below the watermark; events after it are
+  retained in the initializing entry until handoff, then future events use the
+  existing bounded live channel. Cancellation remains the plural engine's
+  only close owner and uses map membership for idempotence.
+- Before either side can use the per-run counter, `sequenceInit` coordinates a
+  read-only Store high-water lookup without holding `Engine.mu`. Its completion
+  channel publishes the hydrated maximum to all waiters; failures are shared
+  with current waiters and may be retried later. This preserves fresh-engine
+  durable replay and next-event allocation.
+
+## 2026-08-07 — PTY collector action provenance
+
+- Sealed action records now include barrier offsets/versions and the actual
+  observed match end/version. The owned collector alone maps Linux close EIO
+  to EOF after writing received bytes; it cannot alter child exit status.
+
+## 2026-08-07 — Issue #1230 non-mutating PTY ownership
+
+- `RunNonMutatingCommandBatch` is acceptance-only: it owns an isolated fake
+  daemon, direct PTY master, single append-only collector, private artifacts,
+  and all cleanup. It reads existing HTTP/SSE/conversation contracts without
+  modifying product runtime ownership.
+- Each frame binds its input hash, terminal-prefix hash, rendered-screen hash,
+  conversation, and applicable run ID. `/continue` has an additional terminal
+  API target-state probe before the typed alias command.
+
+## 2026-08-06 (Issue #1220 native rendered evidence boundary)
+
+- Admission flow is fixed public command -> non-prompting current-process TCC
+  probe -> #1205 owner preflight -> separate private runtime/artifact roots ->
+  fixed fake daemon and app -> attested app PID AX input/capture -> private API
+  correlation -> exact child cleanup -> proof finalization.
+- Runtime identity comes only from the owner attestation. The platform adapter
+  never enumerates a replacement app process; its window lookup is constrained
+  to the attested PID, and cleanup invokes only the two returned child handles.
+- Evidence identity is nonce + one conversation + two ordered completed run IDs.
+  AX proves rendered transcript text; SSE and API/store prove backend history;
+  the manifest binds those signals to the screenshot and owned logs by hash.
+- Retained-root finalization has two mutually exclusive outputs: `proof.json`
+  only after successful scenario, verified cleanup, sealing, and validation;
+  otherwise `failure.json` records the primary/finalization error and cleanup
+  truth. Neither output changes ownership of the retained root.
+
+## 2026-08-06 — Issue #1221 fresh PTY evidence boundary
+
+- `internal/acceptance/ptyrunner` owns the test-only fresh conversation
+  primitive. It starts an isolated fake `harnessd`, launches real
+  `harnesscli -tui` through `script`, and correlates its two run IDs and one
+  conversation ID against `/v1/runs`, message storage, and each run's SSE.
+- The boundary is intentionally below product behavior: geometry, VT parsing,
+  artifact hashing, and fake turns live in acceptance infrastructure only;
+  TUI rendering, HTTP handlers, provider code, and native macOS UI are
+  unchanged.
+
+## 2026-08-06 — Issue #1215 test-fixture readiness boundary
+
+- `cmd/harnessd/main_test.go` owns the repair. `runInvalidCatalogMatrixTest`
+  delegates to `runMatrixTestWithHealthTimeout`, which injects `runDeps.listen`,
+  receives the listener actually bound by the real daemon, observes early
+  `runWithSignalsWithDeps` completion, and probes that listener's `/healthz`.
+- `awaitLifecycleSignalOrRunFailure` owns only fixture synchronization for
+  cleaner tests. It changes no `main.go` lifecycle ordering: the cleaner still
+  receives cancellation and the daemon still awaits its explicit release/
+  acknowledgement before returning.
+
+## 2026-08-06 — Issue #1214 source-workflow invalid-protocol test boundary
+
+- `internal/workflow/source_test.go` owns the fixture-only sequence:
+  `workflowsdk.Main` reads the runner's `start` frame, writes the normal
+  terminal `result`, and returns; the fixture then writes a raw `log` so
+  `SourceManager.serveProtocol` exercises its existing message-after-terminal
+  rejection. `internal/workflow/source.go`, process cleanup, protocol wire,
+  and all product consumers are unchanged.
+
+## 2026-08-06 — Issue #1212 modelstore live-smoke boundary
+
+- `internal/modelstore/live_manual_test.go` owns the test-only admission
+  boundary. Each real-provider subtest receives the explicit
+  `HARNESS_TEST_LIVE_PROVIDERS=1` acknowledgement and its own environment
+  credential before it constructs `NewFetcher`; without both inputs it skips.
+  `scripts/test-regression.sh` retains its existing `go test ./...` phases but
+  cannot cross that boundary accidentally. No application process reads the
+  new test flag.
+
+## 2026-08-06 — Issue #1210 terminal SSE/status boundary
+
+- `Runner.commitStatusSnapshot` closes a per-run notification after publishing
+  the new public status. `Server.handleRunEvents` maps each terminal event to
+  its required terminal status and waits on that notification before writing
+  the terminal SSE frame; non-terminal history and live frames retain their
+  existing write order. Request cancellation ends the wait.
+
+## 2026-08-05 — Issue #1204 PTY acceptance boundary
+
+- `internal/acceptance/ptyrunner` owns only the disposable external path:
+  fake turns -> real harnessd -> source run -> `script(1)`/harnesscli TUI ->
+  typed continuation -> child SSE/API/store probes -> hashed artifacts.
+- `cmd/harnessd.loadFakeTurns` translates the additive fixture-only `deltas`
+  field into `fakeprovider.Turn`; existing Runner, HTTP/SSE, persistence, and
+  TUI ownership remain unchanged. The runner never reads user configuration or
+  writes outside its caller-supplied artifact root.
+- Correlation requires source/child run distinction, shared conversation
+  identity, child completion/delta evidence, rendered reply, and durable API
+  probe. Process-group teardown owns daemon descendants; artifact retention is
+  caller policy rather than production persistence.
+- Portability ownership stays in this adapter: Darwin receives direct BSD
+  `script` child argv, while Linux receives util-linux `-q -c` plus one
+  POSIX-quoted child command and `/dev/null`. The adapter owns the started
+  PTY process group and exposes an exit while semantic screen readiness waits;
+  server, TUI, provider, API, and persistence ownership are unchanged.
+- Verification completed under `TMPDIR=/private/tmp`: focused normal/race PTY
+  tests plus the repository normal/race/coverage gate passed (`85.3%`, zero
+  uncovered functions). This is local test evidence, not a merge or deploy.
+- The owned PTY completion channel crosses both screen-readiness and
+  post-command child-discovery boundaries, preventing either wait from
+  translating a completed script child into an unrelated timeout.
+
+## 2026-08-06 — Issue #1208 fake-provider scenario support
+
+- `cmd/native-gui-acceptance` now performs a zero-effect scenario preflight
+  between repository resolution and #1205 owner construction. It creates a
+  128-bit nonce, binds it to three reviewed turn groups, and passes the
+  resulting immutable fixture only to its daemon child writer.
+- The future data flow is: nonce-scoped fake turns -> owner-created daemon/app
+  -> serialized native driver -> four independent artifact types -> #1089
+  proof validator. This slice deliberately stops before the driver/GUI step;
+  it changes neither production server behavior nor native UI code.
+- `WriteFakeProviderTurns` now accepts the owner root and a safe relative path,
+  resolves its existing parent canonically under that root, and rejects an
+  existing symlink at the final target. The daemon child still owns only
+  `fake-turns.json` in its private root.
+- The cron scenario delegates schedule acceptance to `cron.NextRunTime`, the
+  parser contract used by cron server create/update requests, rather than
+  accepting a merely non-empty fixture string.
+
+## 2026-08-05 — Issue #1199 authored-skill lifecycle
+
+- `skillListerAdapter` owns `SKILL.md` verification persistence and registry reload. `manage_skill_packs` remains separately backed by `PackRegistry`; authored skills are never pack manifests.
+
+## 2026-08-05 — Issue #1201 API intent-evidence boundary (parent #1087)
+
+- `apisserunner.Runner` owns only the external acceptance path:
+  compiled inventory/cases -> `/v1/runs` -> `/events` -> `/v1/runs/{id}` ->
+  fixture-owned independent probe -> cleanup -> `inventory.ValidateEvidence`.
+  `internal/server` and `cmd/harnessd` retain normal production composition;
+  no manager is called directly and no tool catalog is duplicated. Artifact
+  files are task-owned, SHA-256-bound raw SSE and terminal-state records.
+- The negative matrix owns a second request path for every live API item:
+  live inventory -> per-item `denied_tools` run -> blocked SSE -> isolated
+  workspace snapshot. It proves no forbidden handler mutation but does not
+  alter the positive typed postcondition contract.
+- After accepted admission, runner cleanup is a lifecycle guarantee, not just
+  the passing path: deferred cleanup executes on stream, terminal, artifact,
+  and probe errors, and preserves both failure causes for the artifact/report
+  caller. Manifest gap output validates its claimed rows against a projection
+  of the same compiled inventory, preserving unknown/N-A rejection while still
+  allowing incomplete manifests to list missing rows.
+## 2026-08-05 — Issue #1089 native evidence flow
+
+- Flow repair: launcher creates nonce + temporary root + artifact root and
+  permits only a tracked repository driver. Manifest collection provenance
+  records the driver digest, app build, child PID/loopback port/URL, and each
+  evidence environment must match it before native acceptance can pass.
+- Flow: real isolated driver -> proof manifest/artifacts ->
+  `native-gui-acceptance` -> live `/v1/tools` inventory -> #1086 suite hash
+  validation -> per-artifact SHA-256 verification. The runner owns no app or
+  daemon lifecycle; the driver owns serialized launch and cleanup.
+
+## 2026-08-05 — Issue #1187 profile-path boundary
+
+- Startup resolves `HARNESS_PROFILES_DIR` once: omitted ->
+  `~/.harness/profiles`; supplied -> cleaned absolute path; relative -> startup
+  error. `$HARNESS_WORKSPACE/.harness/profiles` remains the project read tier.
+- Those same derived strings cross `DefaultRegistryOptions`, `RunnerConfig`,
+  and `ServerOptions`; mutation writes target only the user path while reads
+  retain project > user > built-in precedence.
+- MCP stdio resolves the same validated user path before constructing its
+  shared registry and passes its workspace-derived project path explicitly.
+## 2026-08-05 — Issue #1188 selected-profile admission boundary
+
+- TUI `startRunCmd` serializes its selected capability profile as `profile`.
+  Server decoding forwards it to `Runner.startRun`, which now resolves the
+  profile from `RunnerConfig.ProfilesDir` before validation, prompt/model
+  resolution, persistence, provider calls, and run-state publication.
+- Existing `runPreflight` remains the owner of profile-backed workspace and
+  MCP setup. Startup and subagent code retain their separate `ApplyValues`
+  paths. Follow-up ordinary TUI submissions carry the same profile and
+  conversation ID, so each run receives the same constrained policy.
+- `download` is classified at the profile boundary as both network and file
+  write. Its name enters the per-run absolute denylist before the step engine
+  dispatches a provider call, which prevents both its guarded HTTP client and
+  file writer from running.
+- Default registry registration now retains `tools.Definition.Action`. The
+  selected-profile state records denied actions privately; `filteredToolsForRun`
+  removes matching offered definitions and `runner_step_engine` independently
+  rejects a direct provider call before `Registry.Execute`.
+
+## 2026-08-05 — Issue #1174 TUI lifecycle map
+
+- `executeInitCommand` snapshots target existence and starts the normal run.
+- `RunStartedMsg` binds the pending write to the accepted run ID.
+- `assistant.message` supplies final markdown; matching `run.completed` reaches the same guarded commit through `SSEDoneMsg` or synthetic completion.
+- Failed/fatal/lost terminals abandon pending state; atomic file replacement keeps workspace persistence crash-safe and conflict-aware.
+
+## 2026-08-05 (Issue #1183 durable replay SSE fixture)
+
+- Durable TUI replay crosses `executeReplayCommand` to `replayRunCmd` for the
+  per-run POST. Its returned ID crosses `RunStartedMsg` to `startSSEForRun`,
+  whose bridge requests `/v1/runs/<returned>/events` with the SSE Accept
+  header. `assistant.message` updates the transcript and `run.completed`
+  retires the active run. Rollout-file simulation instead returns a one-shot
+  `RunControlResultMsg` and opens no stream.
+
+## 2026-08-05 (Issue #1177 harnessd test boundary)
+
+- `runMatrixTestWithListener` is test-only ownership wiring: it supplies the
+  existing `runDeps.listen` seam, receives the actual listener returned by the
+  real daemon startup path, waits for its `/healthz`, executes an optional
+  assertion, then sends the existing interrupt and awaits shutdown. The two
+  memory configuration tests now consume this boundary; production listener,
+  memory, callback, cron, provider, and client behavior is unchanged.
+
+## 2026-08-04 (Issue #1169 bootstrap VCS boundary)
+
+- `scripts/init.sh` owns bootstrap build provenance. It resolves clean target
+  worktree metadata after creating and entering the worktree. When `origin` is
+  configured, it creates that target from the fetched commit rather than the
+  caller's possibly stale local branch, scopes metadata only to each
+  `go build -buildvcs=true`, and validates the emitted executable before
+  declaring bootstrap success.
+- #1165 remains the later acceptance-launch boundary: it validates a supplied
+  executable before daemon/provider dispatch. Neither layer fabricates VCS
+  data, substitutes a fallback binary, or changes runtime provider routing.
+
+## 2026-08-04 (Issue #830 test fixture boundary)
+
+- `internal/provider/anthropic/client_test.go:testRetryConfig` is a
+  package-test-only input to the local Anthropic client. `TestClientRetriesOn429`
+  and `TestClientRetriesOn503` use it before calling `Complete` against their
+  own `httptest` servers. The production retry implementation and defaults in
+  `internal/provider` are outside this slice.
+## 2026-08-04 (Issue #1165 acceptance launch boundary)
+
+- Acceptance flow is clean checkout -> build or supplied executable ->
+  `go version -m`/SHA-256 validation and artifact write -> daemon start ->
+  health/request dispatch. A failed validation ends the flow before the
+  executable is invoked, so neither daemon assembly nor provider construction
+  occurs.
+
+## 2026-08-04 (Issue #1161 scheduled routing boundary)
+
+- Intended flow: origin `RunRequest` -> immutable tool `RunMetadata` -> cron
+  execution config or callback row -> typed scheduled start -> Runner request.
+  The invariant is exact safe routing-policy replay alongside existing scope.
+- Remote flow additionally serializes the same values through authenticated
+  `/v1/cron/runs`; the request fingerprint must bind model, provider,
+  allow-fallback, and ordered fallback providers so key reuse cannot silently
+  change execution policy.
+- Compatibility: missing values remain empty/false and use historical Runner
+  defaults. Ownership checks and logs stay unchanged; no secret-bearing
+  provider configuration crosses or persists at this boundary.
+- Durable admission persists the requested provider on the queued run before
+  worker dispatch. Later provider resolution may replace it with the effective
+  provider, but a crash/restart before preflight now replays the original safe
+  selection instead of an empty provider.
+## 2026-08-04 (Issue #1162 fake-provider routing boundary)
+
+- `cmd/harnessd` owns environment-to-`RunnerConfig` assembly. `internal/harness.Runner` owns per-run provider resolution. The catalog is both metadata/tool/pricing input and a possible real-client route, so explicit fake must cross that assembly boundary as an authoritative execution mode while leaving the registry attached for metadata.
+
+## 2026-08-04 (Issue #1158 conversation history/event boundary)
+
+- Write flow: completed run messages -> acquire conversation sequence lock ->
+  acquire conversation event lock -> resolve latest durable event ID -> persist
+  conversation messages -> publish copied in-memory messages plus cursor ->
+  release event/sequence locks -> later terminal event publication.
+- Read flow: authenticated, tenant-owned `/messages` request -> acquire the same
+  sequence/event boundary -> read copied messages plus their paired cursor ->
+  additive JSON `{messages,last_event_id}`. After process restart no cursor is
+  reconstructed without a future durable message-snapshot version marker.
+- Compatibility: no event reader, any uncertain recovery, or an old server
+  produces an empty cursor. #1148 must interpret empty as full replay and use
+  exact bounded event-ID reconciliation; it must never reconstruct identity
+  from assistant content.
+- Component boundary: #1158 changes Runner, server response, and TUI decode
+  only. Conversation bridge lifetime, reconnect, same-text rendering, bounded
+  dedupe, cron/callback execution, and native GUI remain #1148/parent matrix
+  responsibilities.
+- Overlap boundary: if any other same-conversation run was nonterminal during
+  the completing run's lifetime, its events may be interleaved but absent from
+  the completing message slice. The pair is therefore published with an empty
+  cursor; this prevents silent event loss and delegates full replay
+  reconciliation to #1148.
+
+## 2026-08-04 (Issue #1156 MCP test-client transport boundary)
+
+- Production `dialHTTP` continues to create the existing timeout-only client
+  and therefore retains current default transport semantics. Only
+  `NewHTTPConnForTest` owns a clone of the default transport, isolating test
+  idle-connection cleanup without adding a production behavior change.
+- Auth boundary is unchanged: a received 401 maps to `ErrUnauthorized`, a 403
+  maps to `ErrForbidden`, and actual transport failures stay failures rather
+  than being retried or reclassified.
+
+## 2026-08-04 (Issue #1152 harnessd fixture contract)
+
+- Production remains: `runWithSignalsWithDeps` derives
+  `callbacksEnabled` from `HARNESS_ENABLE_CALLBACKS` with a true default, then
+  builds the implicit durable run store and callback manager when enabled.
+  This slice changes only test environment maps and test synchronization.
+- Fixture ordering: set explicit callback opt-out -> begin real daemon -> wait
+  for the assertion-owned provider/cleaner/listener readiness -> deliver the
+  real signal -> await the existing real shutdown path. Bounded timeouts are
+  diagnostic only and do not establish readiness.
+
+## 2026-08-03 (Issue #1144 transient heartbeat fixture contract)
+
+- Component boundary: only `transientLeaseStore` and its regression fixture in
+  `delayed_callback_retry_red_test.go` change. `CallbackManager`, SQLite
+  callbacks, retry policy, process fencing, API, TUI, and native GUI are
+  unchanged.
+- Ordering contract: initial durable claim -> injected transient renewal error
+  -> real successful token-fenced SQLite renewal -> test reads later durable
+  deadline under the same token/attempt -> starter release. Cleanup's
+  idempotent release precedes manager shutdown.
+- Verification contract: no timing sleep establishes renewal; a successful
+  wrapped-store result and durable state comparison do.
+- Validation: focused normal x100, persisted race x100 (exit 0), complete
+  tools normal/race, and the repository regression coverage gate passed.
+
+## 2026-08-03 (Issue #1140 matrix listener identity)
+
+- `runWithSignalsWithDeps` remains the harnessd startup owner. Its optional
+  `runDeps.listen` seam defaults to `net.Listen`; after acquisition the runtime
+  still follows the existing callback-recovery-before-serve ordering.
+- Test-only `runMatrixTestWithListener` wraps that seam to publish
+  `listener.Addr()` exactly once, waits for the corresponding `/healthz`, then
+  runs endpoint assertions and graceful signal shutdown. No production API,
+  persistence, client, or configuration contract changed.
+
+## 2026-08-03 (Issue #1124 retry-wait fixture contract)
+
+- Component boundary: only `delayed_callback_retry_red_test.go` and internal
+  planning/logging change. Production `CallbackManager.Recover`, scheduling,
+  SQLite claim, tokens, leases, and API task projection are unchanged.
+- Ordering contract under test: Recover re-arms durable `retry_wait`; a manual
+  fire before the manager's fake `next_attempt_at` leaves it untouched; after
+  exactly one fake hour a manual fire atomically claims and starts the same
+  reserved run as attempt two, clearing private owner fields.
+- Verification to this point: focused normal/race x100 (0.419s/2.549s) and
+  complete tools normal/race (13.200s/14.719s) pass on the final source tree;
+  isolated repository regression also passes normal/race, 85.5% coverage, and
+  zero uncovered functions.
+## 2026-08-03 (Issue #1136 immutable timeout capability)
+
+- `RunSubmission` privately binds owner token, generation, lifecycle, and a
+  consumed bit. ToolWalk alone binds its configured duration at submission,
+  `markStarted` derives the absolute deadline, and `Runner.waitForTerminal`
+  mints a package-visible ticket with a fileprivate constructor only through
+  `RunSession.submissionTimeoutGate(for:)` after its exact deadline check. The
+  ticket captures a fileprivate transport closure;
+  no raw package or public `RunSubmission` handle-cancel API remains. A
+  handle-keyed task registry lets reset/load cancel all local streams.
+- Deterministic native timing: production uses `ContinuousClock.now`; the
+  internal-only RunSession initializer injects the same monotonic closure into
+  `markStarted` deadline creation and gate expiry checks, so tests advance
+  epsilon/exact-deadline state without scheduler-dependent sleeps.
+- Wait API boundary: `Runner.waitForTerminal` accepts only a polling interval.
+  The timeout is immutable submission configuration, not a second wait-phase
+  parameter that can conflict with the stored deadline.
+
+## 2026-08-03 (Issue #1133 passive A outcome after B selection)
+
+- Flow: ToolWalk captures `RunSubmission(A)` -> conversation stream selects B
+  and marks A displaced -> Runner disables all automatic controls yet continues
+  reading A-local lifecycle -> A terminal/failure is judged, or deadline sends
+  the existing A cancel endpoint through a local-ownership fence.
+- The selected-run reducer remains the only B UI authority. The displaced A
+  timeout path intentionally performs no shared-state transition, so it cannot
+  clear B pending controls, selection, transcript, or acknowledgement state.
+- `RunSubmission` carries a session-owner token and reset/load generation plus
+  a one-shot started-only timeout capability. It preserves A-only authority
+  through B -> C replacement without reconstructing it from an ID/set; terminal
+  or failure consume no capability, and reset/load cancels all live submission
+  tasks while invalidating old handles.
+
+## 2026-08-03 (Issue #1130 submission-local outcome flow)
+
+- Flow: local composer/ToolWalk A -> `RunSubmission.lifecycle` plus
+  `isDisplaced`; conversation SSE can select scheduled B without rewriting A.
+  A start/stream tasks settle the handle, while `RunSession` shared transcript,
+  accounting, and controls require exact active-handle identity and selected A.
+- ToolWalk order is terminal -> failure -> displaced -> timeout. The first two
+  are judged from A's transcript, displacement performs no automatic control,
+  and only timeout calls existing expected-run cancellation for A.
+- Reset/load synchronously displace and detach active A. A late response cannot
+  select the replacement conversation; a cancelled detached task is not
+  reported as a transport failure.
+
+## 2026-08-03 (Issue #1128 submission lifecycle)
+
+- Flow: Composer/ToolWalk -> `ProjectSession.submit` -> `RunSession.submit` ->
+  `RunSubmission` -> `startRun` response assigns A -> A-only per-run SSE
+  reduces the handle -> terminal/failure/displacement is observed by ToolWalk.
+- A selected B synchronously marks a started A handle displaced. ToolWalk then
+  performs no automatic input/approval/timeout action against B. Reset/load
+  displaces unresolved submissions; a late server response exits before it can
+  reactivate the reset session.
+
+## 2026-08-03 (Issue #1125 native action owner)
+
+- Ownership path: rendered Stop/Composer or ToolWalk timeout -> expected run ID
+  -> RunSession guard -> existing run-specific HarnessClient cancel/steer endpoint.
+  Mismatch returns before local force-stop, draft clear, Task, or network.
+
+## 2026-08-03 (Issue #1007 Native External-Run Reducer)
+
+- `RunSession` now has separate in-memory active/control ownership from
+  transcript accounting. It rejects prior-conversation frames before mutation,
+  preserves local provisional ownership until timestamped evidence, and keeps
+  terminal run IDs as replay tombstones for the selected conversation.
+- No harness API, persistence, scheduler, callback, cron, TUI, configuration,
+  or deployment surface changes in this slice. Full local combined verification
+  passes; hosted CI/review remain required before promotion.
+
+## 2026-08-03 (Issue #1120 fixture contract)
+
+- Component boundary: only callback test helpers and the blocked-heartbeat
+  regression fixture change. The test exercises the existing process-wide
+  recovery authority, durable private dispatch token, deadline cancellation,
+  and token-CAS release unchanged.
+- Required observable sequence: first manager starts; its heartbeat blocks;
+  second manager fails process fencing; the original deadline cancels; the
+  same claimed token releases to `retry_wait`; durable run ID/attempt remain
+  stable; second manager has zero admissions.
+- Verification: focused normal/race x100, complete affected package normal/race,
+  and the isolated repository regression gate passed at 85.5% coverage with
+  zero uncovered functions.
+
+## 2026-08-03 (Issue #1117 fixture contract)
+
+- System/component: callback manager test fixtures only. Production
+  `CallbackManager`, `SQLiteCallbackStore`, fence, dispatch token, lease, and
+  retry state machine are not changed. The duplicate-manager fixture validates
+  live workspace authority rejection and a single durable starter admission;
+  transient claim contention validates the same external-admission cardinality.
+- Verification: focused callback ownership/claim contention normal x100 and
+  race x100, then complete tools normal/race, pass with the strengthened
+  assertions. The isolated repository-wide foreground gate also passes:
+  normal/race, 85.5% total coverage, and zero uncovered functions.
+
+## 2026-08-03 (Issue #1106 durable ownership participation)
+
+- Every filesystem-backed durable callback manager acquires the common sidecar
+  authority before `Set` or dispatch and retains it for the manager lifetime.
+  `Recover` additionally requires that authority; unavailable authority fails
+  closed. Authority installation is serialized per manager and is released
+  after failed bootstrap, on shutdown, or by process exit. Current claims atomically
+  enter private persisted state `dispatching_fenced`; old claims use public
+  `dispatching`. Each version's literal claim/reclaim predicates therefore
+  preserve whichever admission won first without cross-version takeover.
+- Recovery is a two-part authorization: kernel release proves the previous
+  current process is gone, and the exact token captured at bootstrap is the CAS
+  precondition. It may recover only current private `dispatching_fenced` rows,
+  including expired or `NULL` leases. Ordinary timers have no recovery token
+  and cannot reclaim a live in-process admission. Legacy public `dispatching`
+  rows remain fail-closed, even expired or `NULL`, because their process never
+  participated in the kernel authority protocol.
+- A deadline release records the owned sanitized `callback admission
+  unavailable` retry reason in the durable row. Local claim contention retries
+  until manager cancellation with a capped
+  backoff duration only before ownership; it does not change callback
+  admission-attempt semantics. Store state is private: manager/API/event/error
+  boundaries normalize it back to `dispatching`.
+- The durable/API status contract is covered here. TUI and native macOS status,
+  actions, and visible full-conversation continuation remain #1007/#1009/#1010.
+
+## 2026-08-03 (Issue #994 Terminal/Control Ownership)
+
+- System/component: macOS `RunSession` control request task, per-run terminal
+  SSE stream, and conversation/reset ownership transition.
+- Ordering: terminal SSE may clear `currentRunID` before the POST completes.
+  `runControlRequestGeneration` is the control result owner; it is incremented
+  for a newer control and invalidated by `load`/`reset`, whereas same-run
+  terminal lifecycle is intentionally not an invalidation boundary.
+- Effect: a matching late control completion clears its in-flight state and
+  optionally reports/restores its failure. Completion from an old session is
+  ignored, preserving the selected conversation's UI state.
+- Composer admission: `canSubmit` and `submit` share `runControlInFlight` as
+  a hard boundary, so button and Return-key paths cannot start B while A's
+  terminal-era control result still owns the session.
+
+## 2026-08-03 (Issue #1108 Native Durable Reconciliation Fixture)
+
+- System/component: native `RunSession` conversation SSE terminal handling and
+  asynchronous `GET /v1/conversations/{id}/messages` reconciliation, exercised
+  by `ConversationStreamStub`.
+- Ordering boundary: terminal reducer state/accounting can become visible
+  before durable transcript rows. Test gates therefore open only after accepted
+  application state and final assertions wait for rendered assistant text.
+- Product contract: unchanged; this isolates test observability of the existing
+  GUI durable-continuation contract.
+- Verification: release of C's durable fixture response occurs only after C
+  owns visible terminal accounting; the final wait then requires the durable C
+  assistant row and exact C state together.
+## 2026-08-03 (Issue #1106 callback dispatch lease)
+
+- System/component: `SQLiteCallbackStore` and `CallbackManager.dispatchDurable`.
+- Ownership/order: a conditional SQLite `UPDATE ... RETURNING` installs and
+  returns one dispatch token in one statement; only that returned token owns
+  `MarkStarted`, `MarkRetry`, or `MarkFailed`. A manager remembers the expiry
+  from its most recent successful claim/renewal.
+- Failure boundary: a heartbeat `ok=false` is definitive loss and cancels
+  immediately. A database error is transient only before the remembered
+  deadline; expiry cancels admission, then the owner releases its exact token
+  into retry-wait only after `StartCallback` has returned. Normal timers never
+  reclaim an expired live row. Bootstrap recovery alone converts an expired
+  abandoned row after process loss is confirmed. This preserves one durable
+  reserved run/conversation turn, but does not assert exactly-once external
+  effects across process crash.
+- Deadline ownership: a dedicated guard timer cancels the admission at the
+  last confirmed expiry even if the heartbeat is blocked inside SQLite. A
+  successful renewal must arrive before the old guard deadline to reset it.
+
+## 2026-08-03 (Issue #1102 — AskUser Waiting Lifecycle)
+
+- Flow: AskUser tool call -> broker stores `AskUserQuestionPending` -> broker invokes `OnPending` -> `Runner.setStatusAndEmitContext` commits `waiting_for_user` and publishes `run.waiting_for_user` -> client/test observes status/event -> `SubmitInput` resolves broker -> runner emits tool completion, sets `running`, emits `run.resumed`.
+- Test ownership: `PendingInput` validates pending-question payload; `Runner.Subscribe` is the synchronization source for public lifecycle visibility. No persistence, API, TUI, or macOS contract changes in this issue.
+
+## 2026-08-03 (Issue #1006 Callback Dispatch State Machine)
+
+- System/component: `CallbackManager`, `SQLiteCallbackStore`,
+  `callbackRunStarter`, `Runner.EnsureRunWithIDContext`, callback event bridge,
+  and `/v1/tasks` callback rows.
+- Ownership/order: Set persists a callback-derived run ID before acknowledgement.
+  One token owner claims due work, renews its lease during Runner admission, and
+  may commit started/retry/failed only while its token still owns dispatching.
+  Cancel can win only from pending/retry-wait; a dispatch claim wins as conflict.
+- Recovery: pending uses `fires_at`, retry-wait uses `next_attempt_at`, and
+  dispatching uses lease expiry. Re-admission always asks Runner to reconcile
+  the same reserved identity, including a queued row left by a canceled/crashed
+  owner, so post-admission callback-link recovery does not allocate another run.
+- Visibility/security: task and lifecycle payloads expose stable run linkage,
+  attempt, next-attempt, and allowlisted generic error summaries. Dispatch
+  tokens, lease deadlines, and raw provider/store errors remain internal.
+- Conversation replay: scheduling remains run-scoped while the run is live;
+  later lifecycle changes are conversation-owned and never append after a
+  terminal run. Startup enumerates every durable callback state, republishes
+  one current-state lifecycle snapshot, then rearms active rows. This rebuilds
+  restart-visible current state; it is not a complete historical event ledger.
+- Failure truth: durable callback listing is an error-returning boundary. Task
+  status, the agent list tool, and tenant-scoped cancel authorization return an
+  error rather than substituting partial process memory, successful empty
+  state, or a false not-found result.
+- Timestamp compatibility: startup migration parses both #1005 driver-native
+  and textual timestamp forms and rewrites them UTC before due/lease predicates.
+  This makes cross-restart lexical SQLite comparisons deterministic and avoids
+  zero-delay redispatch loops for already-overdue local-zone rows.
+
+
+## 2026-08-03 (Deleted-Job Cron Recovery Boundary — Issue #1098)
+
+- System/component: `internal/cron.Scheduler.reconcileExecutionRows`,
+  `finishUnavailableExecution`, `reconciledLeases`, and `activeScopes`.
+- Ownership/order: definitive `IsJobNotFound` is the only lookup result that
+  may create an unavailable terminal record. Under the lifecycle gate the
+  scheduler writes that record first, then resolves the recorded scope and
+  releases its local/durable admission lease; it never touches a deleted job.
+- Failure boundary: cancellation and transient lookup remain nonterminal;
+  failed persistence retains the recovered lease and prevents duplicate scoped
+  work. Stop retains its existing winner semantics.
+- Verification boundary: test-only direct coverage executes both definitive
+  missing-job variants and observes the same durable row/lease ordering; no
+  runtime ownership or schema change was required.
+
+## 2026-08-02 (Issue #1093 Conversation-Cleaner Lifecycle)
+
+- System/component: `harness.ConversationCleaner`, `persistenceBootstrap`, and `runWithSignalsWithDeps` shutdown/unwind paths.
+- Ownership/order: starting a cleaner returns its completion acknowledgement; the bootstrap-owned lifecycle cancels it and waits exactly once before `ConversationStore.Close`. Normal signal handling may call shutdown early, while the deferred owner makes startup-failure and later-return paths safe without double waiting.
+- Inputs/outputs: no wire, configuration, or persistence contract changed. A positive existing retention policy starts the same daily cleaner; disabled retention returns an already-complete lifecycle.
+- Reliability boundary: cancellation is no longer treated as proof of exit. Store closure is ordered after acknowledgement, so a cleaner cannot race a closed SQLite store.
+
+## 2026-08-01 (Issue #1086 acceptance inventory flow)
+
+`harness.Registry.DefinitionsWithMetadata()` and the daemon's `/v1/tools`
+route represent the same resolved tool catalog. `tui.NewCommandRegistry().All()`
+is the command source. `internal/acceptance/inventory` normalizes those snapshots
+into canonical item IDs, a schema version, and a SHA-256 hash; later runners
+attach proof records to item/surface pairs. The report command is read-only and
+does not take ownership of tool execution, PTY state, macOS UI, persistence, or
+scheduled-work continuation.
+
+The default builder keeps each `tools.Tool` paired with owner and enabling
+condition until `Registry.RegisterWithOptions` stores it. Core/deferred tiers
+remain activation policy, not ownership inference. Dynamic MCP constructors add
+the exact server tag; runtime MCP registration and tag-based replacement store
+equivalent metadata directly. `/v1/tools` serializes the Registry snapshot's
+owner/condition fields, and the acceptance compiler rejects generic direct-
+registration provenance rather than guessing from a tool name.
+
+Configured MCP servers that fail tool discovery now produce a paired,
+redacted resolver snapshot: configured identity plus observed unavailable
+reason/provenance. A typed per-call discovery error carries that snapshot while
+healthy providers still contribute their partial catalog, avoiding mutable
+last-result races during concurrent registry construction. The Registry copies
+the snapshot, `/v1/tools` emits it additively, and the inventory command hashes
+the resulting provenance-bearing not-applicable row. Evidence validation and
+report rendering both resolve the exact compiled item and applicable surface.
+
+`toolCatalog` requires both the present definitions and the paired resolver
+snapshot. A snapshot can additionally be marked incomplete when a generic MCP
+failure has no provider identity; the server then returns 503 and emits no
+authoritative catalog. The inventory CLI requires non-null resolver arrays,
+using explicit empty arrays as the only valid zero-unavailable representation.
+TUI command entries carry owner/condition at their built-in, bundle-plugin, or
+legacy-plugin registration boundary, and the compiler rejects missing command
+provenance rather than supplying a default. Independent surface runners retain
+the full inventory/hash and use selected-surface completeness validation.
+
+Evidence schema v2 expands each TUI command item into inventory-derived
+canonical and alias invocation requirements. Cases and evidence bind the stable
+invocation ID; report rows remain separate. `EvidenceClass` distinguishes local
+TUI behavior from conversation-backed behavior, controlling whether runtime
+identities must be absent or present. Passes carry typed expected-postcondition
+and observed-probe sets plus typed artifact references with SHA-256 and explicit
+redaction declarations.
+
+`SuiteContract` owns required runner-negative scenarios that cannot come from a
+registry. It contains stable typed scenario IDs, is hashed with the complete
+inventory hash, and is validated per selected surface. Suite evidence carries
+both hashes, while suite rendering places synthetic scenarios in a separate
+table so they cannot masquerade as registered commands or tools.
+
+The suite contract also owns the complete `native_gui` applicability overlay.
+Registry-derived tool rows cover API and TUI mechanically; each available item
+must then be mapped to native `available` or `not-applicable` with source refs
+and UX rationale. Suite validation derives native case completeness from this
+hash-bound overlay. Passing native evidence additionally carries the four-part
+screenshot/AX/raw-event/API-store artifact minimum and exact build, bundle,
+daemon, and workspace-isolation metadata.
+## 2026-08-03 (Issue #1038 Native Terminal Accounting)
+
+- System path: harnessd accounting events -> `HarnessEvent` -> `Transcript.apply` -> `RunSession.streamConversation` terminal message reconciliation -> SwiftUI usage views.
+- Contract: `usage.delta` reports cumulative per-turn fields; terminal `usage_totals` uses final `*_total` keys and `cost_totals` uses final cost/status fields. Either source can establish native usage, and a durable-message rebuild preserves the latest event-derived accounting because message rows do not contain it.
+- Compatibility: no endpoint, schema, persistence, authentication, provider, or TUI change. Older terminal payloads with absent accounting preserve prior delta-derived values.
+## 2026-08-03 (Issue #994 Native Run-Control Acknowledgement)
+
+- System: SwiftUI `ApprovalBar`, `PlanApprovalView`, `AskUserView`, and composer controls call the single `RunSession` acknowledgement boundary, which uses existing `HarnessClient` cancel/approve/deny/steer/input endpoints.
+- Ownership: `RunSession` retains the active run ID, request generations, `pendingQuestions`, typed draft, and action flags. A completion may update state only when it still owns the matching run and generation; reset/load invalidates outstanding ownership.
+- UX: controls disable while a request is pending; a failed action exposes the retryable server/transport message in `InlineRunStatus`, which is announced politely to assistive technology. Structured answers must be trimmed and nonempty and stay editable until acknowledgement.
+
+- Review-repair state machine: steer guards before draft consumption; retry clears stale local error; approve/deny transition `requesting -> acknowledged` only after HTTP success and leave the shared control disabled until a same-run grant/deny/terminal SSE frame increments that run's lifecycle generation. A stale run is filtered before this transition.
+## 2026-08-03 (Workflow Subscriber Terminal Close — Issue #1115)
+
+- System/component: `internal/workflow.Engine.Subscribe`, `subEntry`, `Engine.emit`, and the script-workflow SSE history/live consumer.
+- Ownership/order: `emit` sequences, persists, and performs nonblocking fan-out while holding `Engine.mu`; on completed/failed events it closes every currently registered channel and deletes the run's subscriber map in that same critical section. `cancel` uses map membership under the same mutex, preventing send-on-closed and double-close.
+- Initialization boundary: while `Subscribe` copies history without the engine lock, `subEntry.pending` captures later events in order. If terminal occurs during that copy, `emit` closes the channel and removes the map while the retained entry pointer still folds pending events into returned history.
+- Replay boundary: a subscriber registered after terminal transition is not retroactively closed. It receives terminal history; the SSE handler short-circuits on that terminal record and always invokes cancellation.
+- Test boundary: #1115 gates the script until registration, fills the 64-slot live channel, and proves ordered buffered reads followed by closure. Runtime code, persistence, API, callbacks, crons, and product clients do not change.
+
+## 2026-08-01 (Issue #1081 Keychain Parser Coverage)
+
+- System/component: `internal/modelstore/credref.go:keychainParts` and the
+  regression coverage gate.
+- Responsibilities: parse the target portion of a Keychain credential
+  reference into service and account; on Linux, `KeychainAvailable` prevents
+  Keychain process execution before this parser is reached.
+- Inputs/outputs: a `<service>/<account>` target produces two strings; missing
+  separator, service, or account returns the existing validation error.
+- Dependencies: Darwin real-path verification still depends on `security(1)`;
+  portable unit coverage depends on no external credential service.
+- Operational note: hosted Ubuntu run `30672776651` exposed the missing direct
+  coverage after normal and race suites completed; the repair does not change
+  runtime behavior, persistence, or secrets handling.
+
+## 2026-08-01 (TUI Assistant Response Reconciliation)
+
+- System: run SSE -> TUI bridge -> `Model.Update` -> viewport bubble ->
+  `SSEDoneMsg` -> transcript export.
+- `assistant.message.delta` builds incremental content;
+  `assistant.message` is the authoritative full response and may arrive without
+  deltas.
+- Tool start is an assistant-tail ownership boundary. A later provider response
+  begins a new bubble and cannot replace the intervening tool card.
+- Terminal transcript finalization consumes the current run once; replayed
+  assistant/completion events are no-ops, and `RunStartedMsg` opens the next
+  run's lifecycle by clearing both the prior assistant accumulator and its
+  finalization state. This boundary covers initial and continuation API starts.
+- Server emission, persistence, authentication, provider behavior, and other
+  clients remain unchanged.
+
+## 2026-08-01 (Conversational Cron CRUD Ownership — Issue #1002)
+
+- Components: every model registry constructor -> one idempotent scoped cron client -> deferred `cron_*` tools -> embedded adapter or HTTP client/server -> `SQLiteStore` -> `Scheduler`. Operator/server endpoints retain the raw adapter outside this boundary.
+- Identity contract: model get/update/history/pause/resume/delete accept job IDs only. Explicit operator name lookup uses `/v1/jobs/by-name?name=...`; query encoding round-trips every non-empty allowed name. Unscoped collisions return typed `ErrJobAmbiguous`, while scoped lookup selects by the complete ownership tuple.
+- Persistence contract: non-deleted names are unique within `(tenant_id, conversation_id, agent_id)`. SQLite index metadata identifies a non-partial, one-key-column global name constraint regardless of DDL spelling/collation; legacy global uniqueness is transactionally rebuilt with jobs and executions copied before old tables are dropped.
+- Lifecycle contract: create and paused→active resume are paused-first, so registration or activation failure retains a paused restart-safe row. Active schedule replacement is inert `Prepare` → durable CAS → infallible in-memory `Commit`; failed prepare/CAS leaves the old durable row and live entry untouched. Registration identities are monotonic and are checked again after jitter/reload before execution allocation, suppressing queued stale callbacks. Pause/delete remove live dispatch under the same mutation lock.
+- Concurrency/security boundary: remote and embedded model paths apply tenant/conversation/agent predicates at store lookup before reading history or mutating. Update/pause/resume/delete require the version returned by `cron_get`; stale model calls return typed conflict/HTTP 409. Concurrent update/delete serializes to either update-then-delete or delete-then-not-found, never a post-delete re-arm. Authentication of raw cronsd requests remains #1003.
+- Provider boundary: every initially visible tool schema has a top-level object
+  shape without provider-forbidden root composition. Shell-versus-harness
+  pairing remains enforced by the cron handler, so provider compatibility does
+  not weaken execution validation.
+- Compatibility/rollback: existing jobs/history and shell/harness payloads remain readable. Operator callers must use the distinct name route; reverting this slice requires restoring the global identity policy only if duplicate scoped names have not been created.
+## 2026-08-01 — cronsd authenticated management boundary
+
+- Flow: harnessd or cronctl sends `Authorization: Bearer <ingress key>` to
+  cronsd; cronsd resolves the configured tenant principal, rejects conflicting
+  body tenant data, and scopes CRUD/history before reaching the store or live
+  scheduler. Scheduled harness dispatch then uses the separate outbound
+  `CRONSD_HARNESS_API_KEY` at harnessd's `/v1/cron/runs` boundary.
+- Lifecycle: configuration and persisted-job ownership validate before
+  scheduler start. `/healthz` reports process liveness; authenticated
+  `/readyz` proves the management boundary is configured and reachable.
+- Compatibility: legacy tenantless shell rows are assigned to the configured
+  instance tenant. Tenantless harness and foreign-tenant rows fail closed.
+- Persistence invariant: a legacy shell job is visible only after
+  `ClaimJobTenant` returns the persisted tenant winner. Conversation owner
+  migration similarly derives one normalized owner from legacy runs in an
+  immediate transaction; disagreement blocks migration/readiness.
+
+## 2026-08-01 (Issue #1003 durable conversation authorization)
+
+- Restart-time conversation authorization combines transcript-store tenant
+  metadata with run-store tenant/agent records when the latter is configured.
+  A run-store read error is returned as an ownership-check failure, never
+  treated as a new conversation.
+- First ownership is serialized by `Store.CreateRun`: MemoryStore owns a
+  conversation claim map under its run mutex; SQLite owns the additive
+  `conversation_run_owners` row and run insert in one transaction. Reserved
+  conflict errors cross the Runner boundary as conversation access denial.
+- Ordinary `StartRun` now calls that same store boundary once, before local run
+  state becomes visible. Owner conflict aborts admission; generic persistence
+  failure retains the prior log-and-continue contract. `ContinueRun` keeps its
+  inherited-owner, non-fatal helper path.
+
+## 2026-07-31 (Source-Workflow Initial Write Lifecycle)
+
+- System/component: `internal/workflow.SourceManager.runSourceWorkflow`, the
+  initial parent-to-child `start` write, process-group cleanup, and
+  `sourceWorkflowOutcome`.
+- Ownership/order: every successfully started child remains parent-owned until
+  one close/wait path reaps it. Terminal resolution remains deadline, semantic
+  protocol, cleanup-attributed initial-write failure, natural non-zero process
+  exit with bounded stderr, standalone initial-write error, later close error,
+  then missing result or success.
+- Inputs/outputs: add the already-observed initial-write error to the internal
+  outcome record; no API, CLI, protocol, persistence, config, or client schema
+  changes.
+- Reliability/security boundary: write/protocol failures still terminate the
+  process group, wait occurs exactly once, and stderr remains limited to
+  `maxWorkflowStderrBytes`.
+- Termination attribution: the runtime records whether initial-write cleanup
+  successfully requested process-group SIGKILL and whether `cmd.Wait` observed
+  that signal. That wait status is cleanup evidence rather than a new primary
+  failure; natural exit statuses and other signals retain process-failure
+  precedence. Exact concurrent same-signal provenance is outside this narrow
+  lifecycle contract.
+- Rollback boundary: revert if timeout/protocol precedence, standalone
+  transport errors, process reaping, successful results, or stderr bounds
+  change.
+
 ## 2026-07-31 (Runner Dispatcher Shutdown Identity)
 
 - System/component: bounded `internal/harness.Runner`, `poolDispatcher`,
@@ -17,6 +869,66 @@
 - Compatibility/failure modes: no API, config, persistence, client, provider,
   or tool contract changes; existing queue-drain, timeout, and idempotency
   behavior remains the rollback boundary.
+
+## 2026-07-31 (Terminal Run Transition Publication — Issue #1067)
+
+- System/component: `Runner.transitionTerminal`, `Runner.emit`, and
+  `eventJournal` terminal persistence/fanout in `internal/harness`.
+- Responsibilities: the event journal remains the only event-ledger writer and
+  terminal-seal owner; the transition seam binds the winning terminal event to
+  its completed, failed, or cancelled `Run` record.
+- Order: prior causal/error events -> terminal ledger append/seal -> bounded
+  event-store append -> ordered terminal recorder dispatch/drain -> matching
+  conditional status persistence -> matching in-memory status -> subscriber
+  fanout -> backup/pruning lifecycle.
+- Concurrency boundary: store and recorder I/O remain outside `Runner.mu`.
+  A per-conversation sequence guard preserves replay-to-live ordering across
+  the whole transition. The global `conversationEventMu` is released around
+  recorder and status-store I/O, so unrelated conversation journals progress;
+  the in-memory status commit briefly reacquires only the Runner state lock.
+- Consumers: `GetRun`, run summary, run SSE replay/live delivery,
+  conversation replay, CLI/TUI exit handling, and macOS transcript state keep
+  existing schemas and event IDs.
+- Failure boundary: retained terminal `UpdateRun` is attempted only after
+  `AppendEvent` reports success. Append failure leaves durable status
+  non-terminal; later status-update failure/timeout may leave durable terminal
+  event ahead of durable status. Both remain non-fatal to bounded in-memory
+  status/fanout, so this is explicitly one-way rather than transactional
+  two-way atomicity. Terminal redaction drops remain the explicit no-event
+  exception and now drain the recorder before publishing status.
+- Status/resource boundary: every status transition shares a per-run mutex, so
+  delayed non-terminal writes cannot overwrite terminal state. The
+  per-conversation sequence lock counts queued waiters and deletes idle keys;
+  external terminal I/O never holds the global conversation journal mutex.
+- Retention/admission boundary: store-backed terminal pruning requires event
+  persistence (or intentional StorageModeNone suppression) plus acknowledged
+  final status persistence. Both unresolved event and status records consume
+  the `MaxCompletedRetention` durability backlog. Once full, StartRun and
+  ContinueRun retry status-only gaps under one shared deadline capped at 250 ms
+  with no store I/O under Runner/status/journal/conversation locks, then return
+  typed fail-closed backpressure if unresolved.
+- API/recovery boundary: the two run-admission HTTP routes map typed durability
+  backpressure to 503 `terminal_durability_unavailable`; Continue validates
+  missing/non-completed sources first and revalidates before its single-winner
+  mutation. Successful status retry immediately prunes newly durable candidates
+  back to the configured retention limit before reopening admission. Ambiguous
+  append errors remain blocked until process/operator recovery rather than
+  risking a duplicate forensic event. No-store runs intentionally remain
+  process-local and ungated.
+- Continuation reservation boundary: source validation and reservation are one
+  `Runner.mu` mutation; unlocked durability recovery follows; the existing
+  write-lock revalidation remains the only single-winner mutation. The shared
+  prune candidate filter excludes nonzero reservations regardless of caller.
+  Deferred release decrements the in-state counter and immediately invokes the
+  shared lock-held prune policy, so no keyed side map or stale reservation entry
+  survives success, backpressure, revalidation loss, or dispatch failure.
+- Test settlement boundary: `collectRunEvents` and its configurable-timeout
+  variant retain terminal history exactly, require exactly one terminal event,
+  then use the remaining shared deadline to require the matching terminal
+  `GetRun` status. Closed streams without a terminal event and contradictory
+  event/status pairs fail explicitly. This is test-only and does not move the
+  production commit or fanout boundaries. Direct phase tests bypass the settled
+  helper and continue observing the intentional publication window.
 
 ## 2026-07-31 (Source-Workflow Terminal Error Arbitration)
 
@@ -722,3 +1634,253 @@ Use this file to document systems, interfaces, and interactions as they are buil
 - Security boundary: textual evidence still passes through feedback redaction.
   Attached pixels are intentionally uploaded unchanged under the current
   single-user contract.
+
+## 2026-07-31 (Issue #1003 Remote cronsd Harness Dispatch)
+
+- System/component: `cmd/cronsd`, `internal/cron` remote dispatch, and the
+  authenticated `harnessd` `/v1/cron/runs` boundary.
+- Inputs/outputs: persisted harness jobs enter `DispatchExecutor`, then
+  `RemoteRunStarter` sends typed scope and correlation metadata and receives a
+  stable `run_id`; shell jobs remain on `ShellExecutor`.
+- Config/dependencies: remote URL and bearer credential are explicit
+  `CRONSD_HARNESS_*` settings; connect/request timeouts are finite; active
+  harness jobs fail readiness if the boundary is incomplete.
+- Failure modes: auth, timeout/cancellation, malformed response, non-2xx, and
+  transport errors become safe typed execution failures with retryability and
+  no prompt/credential contents.
+- Verification: current local `harnessd` and `cronsd` processes completed a
+  scheduled harness job through the remote boundary; execution and run IDs
+  were recorded, and the exact foreground regression script passed at 85.6%
+  coverage with zero uncovered functions.
+
+## 2026-07-31 (Issue #1003 Durable Remote-Start Idempotency)
+
+- System/component: authenticated `/v1/cron/runs`, server single-flight,
+  built-in run-store migration, and `Runner.StartRunWithID`.
+- Source of truth: authenticated tenant plus `Idempotency-Key` selects one
+  stored fingerprint and reserved run ID. The raw prompt is hashed into the
+  fingerprint and is not stored in the idempotency row.
+- Lifecycle: reserve before start; mark accepted before HTTP success. A replay
+  after restart returns an accepted binding. An interrupted reservation first
+  recovers a persisted run, otherwise it starts the same reserved ID.
+- Failure modes: missing durable-store support fails 503 without starting;
+  fingerprint reuse conflicts with 409; redirects are returned as non-2xx and
+  never receive the bearer credential.
+- Compatibility: additive SQLite table and optional store interface implemented
+  by both built-in stores; ordinary `StartRun` IDs and `/v1/runs` are unchanged.
+
+## 2026-07-31 (Issue #1003 Fresh-Store API-Key Bootstrap)
+
+- System/component: `cmd/harnessd` persistence bootstrap and the existing
+  built-in SQLite API-key schema.
+- Lifecycle: when `HARNESS_RUN_DB` is configured, startup opens the store,
+  applies the base run/idempotency schema, then applies the API-key schema
+  before constructing authenticated server routes.
+- Failure mode: either migration failure aborts startup and closes the store;
+  harnessd never advertises an authenticated endpoint backed by a partial
+  schema.
+- Compatibility: both migrations remain additive and idempotent. The cron
+  execution store and #1004 terminal run linkage are unchanged.
+
+## 2026-07-31 (Issue #1003 Reserved-Start and Deadline Boundary)
+
+- System/component: `HarnessExecutor`, `Runner.StartRunWithID`, authenticated
+  cron start single-flight, and the shared built-in run store.
+- Persistence order: reserve the tenant/key/fingerprint/run ID, synchronously
+  persist that reserved run, register/dispatch it in memory, then mark the
+  binding accepted. A persistence failure returns 503 before dispatch.
+- Timeout order: the persisted job timeout wraps the inherited scheduler
+  context; the remote starter adds its transport timeout. Context propagation
+  selects the earliest deadline and retains `Canceled`/`DeadlineExceeded`.
+- Cache lifecycle: one entry exists only while a start callback is running;
+  completion closes existing waiters and deletes the entry. Later delivery
+  re-enters the durable binding path.
+- Restart recovery: an unaccepted binding whose durable run is still queued
+  enters `ResumeRunWithID`; exact scope/prompt/status validation precedes
+  same-ID dispatch, and acceptance follows dispatch. Nonqueued persisted runs
+  keep the prior already-started recovery path.
+- Same-process recovery: when the run is already active after a transient
+  acceptance-write failure, retry reuses it and retries only the mark.
+  `ResumeRunWithID` also performs an atomic under-lock identity check so
+  concurrent direct callers cannot overwrite or double-dispatch one run ID.
+- Resume execution identity: the persisted model/provider hydrate both the
+  public run and the internal request; prompt resolution and provider
+  execution therefore cannot drift to a replacement process's new defaults.
+- Accepted queued recovery: existing bindings always inspect the durable run.
+  Queued rows absent from current runner state resume with the same ID whether
+  the binding was accepted or still pending.
+- Timeout validation: omitted create timeouts default to 30 seconds, while
+  explicit nonpositive create and PATCH values are rejected before persistence
+  or dispatch; harness dispatch derives its deadline from a validated record.
+- Remote response lifecycle: success is logged only after the bounded response
+  body is decoded. Deadline/cancel during decode returns the same typed
+  `timeout`/`cancelled` classification as transport failure before headers.
+- Compatibility: ordinary non-reserved run persistence remains non-fatal and
+  #1004 still owns terminal cron execution-to-run linkage.
+
+## 2026-08-01 (Issue #1003 Cross-Process Cron Dispatch Lease)
+
+- Component: `internal/server` remote-cron idempotency and built-in
+  `internal/store` implementations.
+- Durable state: each tenant/key binding records dispatcher owner and lease
+  expiry. SQLite acquisition is atomic across independent connections;
+  acceptance is conditional on the stored owner.
+- Lifecycle: reserve identity, acquire lease, persist/admit or resume the exact
+  queued run, then mark accepted. A competing process never dispatches while a
+  lease is live; an expired lease allows recovery of crash-orphaned queued work.
+- Schema: two additive columns migrate both fresh and existing
+  `cron_run_starts` tables. API payloads and cron execution linkage are
+  unchanged.
+
+## 2026-08-01 (Issue #1003 Linearizable Renewable Dispatch Lease)
+
+- Component: SQLite cron binding store, remote-cron server heartbeat, and the
+  Runner's read-only shutdown signal.
+- Atomicity: lease acquisition/renewal returns the row from its conditional
+  mutation. An acquired result cannot be overwritten by a later read.
+- Clock: SQLite calculates current time and expiry for every persisted lease;
+  process time determines duration only.
+- Liveness: the owner renews while its local run is queued/running. Heartbeat
+  termination follows terminal state, absence, shutdown, or lost ownership;
+  expired stopped/crashed work can then resume under one replacement owner.
+- Availability: concurrent pre-lease migrations recheck each additive column
+  after an ALTER race. Other migration failures remain fatal.
+## 2026-08-03 (Issue #1106 callback workspace authority)
+
+- The callback database now has a sidecar recovery lock at
+  `<callbacks.db>.recovery.lock`. It is advisory filesystem metadata and is
+  joined by every filesystem-backed callback manager before `Set`, dispatch, or
+  recovery; failed bootstrap and shutdown release it. It does not alter callback
+  rows, public API, SSE payloads, TUI, or native UI behavior.
+## 2026-08-03 (Issue #1106 recovery authority boundary)
+
+- Delayed callback recovery is supported only for filesystem-backed workspace
+  stores. In-memory and opaque URI stores remain usable for non-recovery
+  operations but fail closed on durable bootstrap because process-loss
+  authority cannot be established.
+
+## 2026-08-03 (Issue #1132 AskUser public-readiness boundary)
+
+- `AskUserQuestion` exposes broker pending input before Runner commits the
+  externally observable `waiting_for_user` status and event. Consumers needing
+  lifecycle readiness must use `Runner.Subscribe` history/live events and
+  wait for `EventRunWaitingForUser`, rather than treating `PendingInput` as a
+  publication barrier.
+- This is a test-contract clarification only: runner, broker, SSE/API, TUI,
+  native GUI, persistence, and compaction runtime behavior are unchanged.
+## 2026-08-03 (Issue #1135 recovered cron lifecycle boundary)
+
+- Recovered execution terminalization is ordered as durable `UpdateExecution`,
+  `releaseReconciledScope`, job tracking, then completion of the scheduler's
+  reconciliation goroutine. Test fixtures must not substitute a store-entry
+  notification for that completion boundary. This is documentation of existing
+  scheduler behavior only; API, persistence, TUI, and native GUI contracts are
+  unchanged.
+## 2026-08-03 (Issue #1141 callback deadline fixture boundary)
+
+- Callback lease deadline ownership is independent of heartbeat I/O. Tests that model blocked renewal must await the manager-owned deadline and the starter's canceled context before releasing renewal; SQLite's durable state remains the observable outcome for API, TUI, and native replay.
+## 2026-08-03 (Issue #1122 native interaction owner)
+
+- Ownership path: conversation SSE `HarnessEvent.runID` -> `Transcript`
+  approval/plan or `AskUserPrompt.runID` -> `RunSession.currentRunID` fence ->
+  Chat/ToolWalk captured ID -> run-specific HarnessClient endpoint.
+- Selection/selected terminal/fallback/reset clear all pending interaction
+  state immediately. A foreign terminal retires only its own run and cannot
+  clear the currently selected run's interaction state.
+## 2026-08-04 (Issue #1147 callback default-store boundary)
+
+- Component: `cmd/harnessd` persistence bootstrap, callback run starter, and
+  HTTP server bootstrap.
+- Durable callbacks reserve run identity before due-time admission, so a
+  callbacks-enabled default workspace now owns `.harness/runs.db` even without
+  `HARNESS_RUN_DB`.
+- The generated store is marked internal: it supplies runner persistence but
+  sets `ServerOptions.AuthDisabled`, preserving the historic unauthenticated
+  local-server default. An explicit run-store configuration does not receive
+  that override; `HARNESS_AUTH_DISABLED` remains independently authoritative.
+- On store open/migration failure, bootstrap fails before callback recovery or
+  scheduling is available. Rollback disables callback dispatch while retaining
+  callback and run records for recovery.
+
+## 2026-08-04 (Issue #1153 cron dispatch-poll contract)
+
+- `getOrStartCronRun` remains the owner of durable tenant/key reservation,
+  lease election, retry, and Runner admission. `waitForCronRunDispatch` is a
+  cancellation-aware interval gate between failed foreign-election attempts.
+- The #1153 fixture overrides only store responses. It preserves the real
+  MemoryStore reservation, Runner persistence, provider path, and typed error
+  boundary; no server/API/TUI/native runtime wiring changes.
+## 2026-08-04 (Issue #1149 cron execution-history boundary)
+
+- Flow is request -> `runs:read` gate -> tenant-visible job lookup -> existing
+  `CronClient.ListExecutions` adapter -> additive JSON response; no mutation or
+  scheduler ownership is introduced.
+## 2026-08-04 (Issue #1148 selected-conversation SSE contract)
+
+- History is loaded before selected-conversation streaming; historical replay is
+  reconciled by event identity, while distinct same-content later events remain
+  visible and advance the reconnect cursor.
+
+## 2026-08-05 (Issue #1175 test-system boundary)
+
+- Canonical path normalization is constrained to acceptance fixture setup;
+  bootstrap production behavior and its fail-closed VCS checks are unchanged.
+
+## 2026-08-05 (Issue #1173 durable replay boundary)
+
+- Durable run replay is an authenticated per-run admission using the source
+  run's effective provider and conversation scope; rollout-file simulation
+  remains a separate offline forensic boundary.
+
+## 2026-08-05 (Issue #1180 bootstrap system boundary)
+
+- `scripts/init.sh` owns worktree creation and local binary publication.
+  Target-worktree Git state is authoritative for revision selection; Go build
+  metadata is authoritative for published executable provenance.
+- The new staging clone is a transient translation boundary: it has no runtime
+  ownership and supplies only a directory-form `.git` CWD for Go buildvcs.
+  Candidate files remain owned by the target build directory and are exposed
+  only after existing metadata validation and rename.
+
+## 2026-08-05 (Issue #1190 MCP HTTP ownership boundary)
+
+- `dialHTTP` and `NewHTTPConnForTest` both construct `httpConn.client` through
+  the production-owned clone factory. The clone preserves standard default
+  transport settings while separating idle-pool cleanup from
+  `http.DefaultTransport`; `httpConn.Close` owns no global or sibling pool.
+- This changes no MCP wire payload, token selection, retry policy, persistence,
+  harness API, TUI, or native-client path.
+# 2026-08-05 (Issue #1186 cron validation system boundary)
+
+- `internal/cron` owns raw cronsd's typed caller-validation identity;
+  `cmd/harnessd` adapters translate it to the harness-tool sentinel; and
+  `internal/server/http_cron.go` alone owns the public HTTP status/code. This
+  keeps validation separate from scheduler/store/transport failures and leaves
+  UI clients on their existing error-rendering contract.
+# 2026-08-05 (Issue #1194 blame parser boundary)
+
+- `GitBlameContextTool` remains the sole caller of `parsePorcelainBlame`.
+  Strict header validation establishes record identity before metadata/content
+  accumulation. `git show` remains per-unique-hash best effort, but only a
+  successful non-timeout result crosses into `commit_subject`/`commit_body`.
+  The tool response schema, command/path confinement, persistence, and client
+  rendering paths are unchanged.
+
+# 2026-08-05 (Issue #1198 skills-directory system boundary)
+
+- `cmd/harnessd` owns global skill-root resolution. The resolved immutable
+  value crosses into `skills.Loader`, `DefaultRegistryOptions.SkillsDir`, the
+  watcher, and Go workflow skill-bundle inputs; workspace and plugin paths
+  retain their existing separate ownership. This changes no API schema or
+  persisted record, only the backing root used by existing skill surfaces.
+- `cmd/harnesscli/tui` owns a separate local loader for slash completion and
+  invocation. It must mirror—not independently reinterpret—the global skill
+  root: override paths are identical, while invalid paths omit only the global
+  source and preserve safe workspace/plugin discovery.
+
+# 2026-08-05 (Issue #1205 owned native command boundary)
+
+- `cmd/native-gui-acceptance` owns lifecycle selection; callers may grant
+  foreground permission but cannot supply a URL, driver, manifest, bundle, or
+  cleanup target. `Owner` owns the private root, probe digest, child PIDs, and
+  recorded cleanup. Existing daemons/apps remain outside that ownership set.

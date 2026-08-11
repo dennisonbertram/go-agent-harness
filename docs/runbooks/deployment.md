@@ -1,3 +1,14 @@
+> **Binding beyond this machine.** `harnessd` listens on `127.0.0.1:8080` by
+> default. Authentication is implicitly disabled when no API key store is
+> configured, so an unauthenticated daemon on a routable address is an open
+> agent-execution service: anyone who can reach the port can start runs in the
+> workspace with the daemon's provider credentials and read the results.
+>
+> The daemon therefore **refuses to start** when `HARNESS_ADDR` names a
+> non-loopback address and no authentication is configured. To listen publicly,
+> either configure an API key store, or set `HARNESS_AUTH_DISABLED=true` to accept
+> an open daemon deliberately. `/mcp` is authenticated exactly like `/v1`.
+
 # Deployment Runbook
 
 ## Goal

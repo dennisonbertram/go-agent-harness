@@ -3,11 +3,38 @@ package deferred
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tools "go-agent-harness/internal/harness/tools"
 )
+
+type blankIDRecordingClient struct {
+	tools.CronClient
+	calls int
+}
+
+func (c *blankIDRecordingClient) GetJob(context.Context, string) (tools.CronJob, error) {
+	c.calls++
+	return tools.CronJob{}, nil
+}
+
+func (c *blankIDRecordingClient) UpdateJob(context.Context, string, tools.CronUpdateJobRequest) (tools.CronJob, error) {
+	c.calls++
+	return tools.CronJob{}, nil
+}
+
+func (c *blankIDRecordingClient) DeleteJobCAS(context.Context, string, time.Time) error {
+	c.calls++
+	return nil
+}
+
+func (c *blankIDRecordingClient) ListExecutions(context.Context, string, int, int) ([]tools.CronExecution, error) {
+	c.calls++
+	return nil, nil
+}
 
 type recordingCronClient struct {
 	tools.CronClient
@@ -41,7 +68,7 @@ func TestCronUpdateChangesOnlyTheFieldsGiven(t *testing.T) {
 	tool := CronUpdateTool(client)
 
 	_, err := tool.Handler(context.Background(),
-		json.RawMessage(`{"id":"job-1","schedule":"0 * * * *"}`))
+		json.RawMessage(`{"id":"job-1","schedule":"0 * * * *","expected_updated_at":"2026-08-01T00:00:00Z"}`))
 	if err != nil {
 		t.Fatalf("cron_update: %v", err)
 	}
@@ -61,7 +88,7 @@ func TestCronUpdateChangesOnlyTheFieldsGiven(t *testing.T) {
 // name this tool does not accept; reporting success would hide that.
 func TestCronUpdateRejectsANoOp(t *testing.T) {
 	tool := CronUpdateTool(&recordingCronClient{})
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1"}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","expected_updated_at":"2026-08-01T00:00:00Z"}`))
 	if err == nil {
 		t.Fatal("a no-op update was accepted")
 	}
@@ -92,5 +119,57 @@ func TestCronHistoryClampsPaging(t *testing.T) {
 	}
 	if client.lastExecOff != 0 {
 		t.Errorf("negative offset became %d, want 0", client.lastExecOff)
+	}
+}
+
+func TestCronCRUDSchemasRequireJobIDAndDoNotAdvertiseNames(t *testing.T) {
+	client := &recordingCronClient{}
+	for _, tool := range []tools.Tool{CronGetTool(client), CronUpdateTool(client), CronPauseTool(client), CronResumeTool(client), CronDeleteTool(client), CronHistoryTool(client)} {
+		props := tool.Definition.Parameters["properties"].(map[string]any)
+		if _, ok := props["name"]; ok {
+			t.Fatalf("%s advertises forbidden name lookup", tool.Definition.Name)
+		}
+		id := props["id"].(map[string]any)
+		description, _ := id["description"].(string)
+		if !strings.Contains(strings.ToLower(description), "id only") {
+			t.Fatalf("%s id description = %q, want explicit ID-only contract", tool.Definition.Name, description)
+		}
+	}
+}
+
+func TestCronExistingJobToolsRejectBlankIDsBeforeClientCalls(t *testing.T) {
+	const version = "2026-08-01T00:00:00Z"
+	for _, id := range []string{"", " \t "} {
+		for _, tc := range []struct {
+			name string
+			tool func(tools.CronClient) tools.Tool
+			args func(string) string
+		}{
+			{name: "get", tool: CronGetTool, args: func(id string) string { return fmt.Sprintf(`{"id":%q}`, id) }},
+			{name: "delete", tool: CronDeleteTool, args: func(id string) string {
+				return fmt.Sprintf(`{"id":%q,"expected_updated_at":%q}`, id, version)
+			}},
+			{name: "pause", tool: CronPauseTool, args: func(id string) string {
+				return fmt.Sprintf(`{"id":%q,"expected_updated_at":%q}`, id, version)
+			}},
+			{name: "resume", tool: CronResumeTool, args: func(id string) string {
+				return fmt.Sprintf(`{"id":%q,"expected_updated_at":%q}`, id, version)
+			}},
+			{name: "update", tool: CronUpdateTool, args: func(id string) string {
+				return fmt.Sprintf(`{"id":%q,"tags":"changed","expected_updated_at":%q}`, id, version)
+			}},
+			{name: "history", tool: CronHistoryTool, args: func(id string) string { return fmt.Sprintf(`{"id":%q}`, id) }},
+		} {
+			t.Run(fmt.Sprintf("%s/%q", tc.name, id), func(t *testing.T) {
+				client := &blankIDRecordingClient{}
+				_, err := tc.tool(client).Handler(context.Background(), json.RawMessage(tc.args(id)))
+				if err == nil || !strings.Contains(err.Error(), "id is required") {
+					t.Fatalf("error = %v, want id is required", err)
+				}
+				if client.calls != 0 {
+					t.Fatalf("client calls = %d, want 0", client.calls)
+				}
+			})
+		}
 	}
 }

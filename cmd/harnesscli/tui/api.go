@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -85,8 +86,9 @@ type runCreateResponse struct {
 }
 
 type runContinueResponse struct {
-	RunID  string `json:"run_id"`
-	Status string `json:"status"`
+	RunID          string `json:"run_id"`
+	Status         string `json:"status"`
+	ConversationID string `json:"conversation_id"`
 }
 
 type tuiRunRecord struct {
@@ -186,7 +188,11 @@ func startRunCmd(baseURL, prompt, conversationID, model, provider, reasoningEffo
 		if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
 			return RunFailedMsg{Error: fmt.Sprintf("decode run response: %s", err.Error())}
 		}
-		return RunStartedMsg{RunID: created.RunID}
+		runID := strings.TrimSpace(created.RunID)
+		if runID == "" {
+			return RunFailedMsg{Error: "start run: response missing run_id"}
+		}
+		return RunStartedMsg{RunID: runID}
 	}
 }
 
@@ -447,6 +453,32 @@ func steerRunCmd(baseURL, runID, prompt, apiKey string) tea.Cmd {
 
 func replayRunCmd(baseURL, target, apiKey string) tea.Cmd {
 	return func() tea.Msg {
+		if isBareRunID(target) {
+			endpoint := strings.TrimRight(baseURL, "/") + "/v1/runs/" + url.PathEscape(target) + "/replay"
+			req, err := newHarnessRequest(context.Background(), http.MethodPost, endpoint, nil, apiKey)
+			if err != nil {
+				return RunControlResultMsg{Kind: "replay", RunID: target, Err: "build request: " + err.Error()}
+			}
+			resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+			if err != nil {
+				return RunControlResultMsg{Kind: "replay", RunID: target, Err: "request failed: " + err.Error()}
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return RunControlResultMsg{Kind: "replay", RunID: target, Err: "read response: " + err.Error()}
+			}
+			if resp.StatusCode >= 300 {
+				return RunControlResultMsg{Kind: "replay", RunID: target, Err: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
+			}
+			var payload struct {
+				RunID string `json:"run_id"`
+			}
+			if err := json.Unmarshal(body, &payload); err != nil || payload.RunID == "" {
+				return RunControlResultMsg{Kind: "replay", RunID: target, Err: "decode replay response"}
+			}
+			return RunStartedMsg{RunID: payload.RunID}
+		}
 		body, err := json.Marshal(map[string]any{
 			"rollout_path": target,
 			"mode":         "simulate",
@@ -481,6 +513,10 @@ func replayRunCmd(baseURL, target, apiKey string) tea.Cmd {
 	}
 }
 
+func isBareRunID(target string) bool {
+	return strings.HasPrefix(target, "run_") && !strings.ContainsAny(target, `/\\.`)
+}
+
 func continueRunCmd(baseURL, runID, prompt, apiKey string) tea.Cmd {
 	return func() tea.Msg {
 		body, err := json.Marshal(map[string]string{"prompt": prompt})
@@ -512,8 +548,52 @@ func continueRunCmd(baseURL, runID, prompt, apiKey string) tea.Cmd {
 		if created.RunID == "" {
 			return RunFailedMsg{RunID: runID, Error: "continue: response missing run_id"}
 		}
-		return RunStartedMsg{RunID: created.RunID}
+		conversationID := strings.TrimSpace(created.ConversationID)
+		if conversationID == "" {
+			// An old harnessd can accept the continuation before it knows about
+			// conversation_id in the response. Resolve the child run rather than
+			// using its ID as a conversation ID: continuations inherit the source
+			// conversation, so that fallback would open a false 404 stream.
+			conversationID, err = resolveRunConversationID(baseURL, created.RunID, apiKey)
+			if err != nil {
+				return RunFailedMsg{RunID: created.RunID, Error: "continue: resolve conversation identity: " + err.Error()}
+			}
+		}
+		return RunStartedMsg{RunID: created.RunID, ConversationID: conversationID}
 	}
+}
+
+// resolveRunConversationID reads the authoritative child-run record for the
+// mixed-version continuation compatibility path. It never returns the child
+// run ID as an invented conversation ID: callers must fail visibly if the
+// server cannot establish the real durable conversation owner.
+func resolveRunConversationID(baseURL, runID, apiKey string) (string, error) {
+	endpoint := strings.TrimRight(baseURL, "/") + "/v1/runs/" + url.PathEscape(runID)
+	req, err := newHarnessRequest(context.Background(), http.MethodGet, endpoint, nil, apiKey)
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var run tuiRunRecord
+	if err := json.Unmarshal(body, &run); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	conversationID := strings.TrimSpace(run.ConversationID)
+	if conversationID == "" {
+		return "", errors.New("response missing conversation_id")
+	}
+	return conversationID, nil
 }
 
 // modelsResponse matches the JSON body returned by GET /v1/models.
@@ -1109,6 +1189,7 @@ func fetchConversationMessagesCmd(baseURL, conversationID, apiKey string) tea.Cm
 				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"messages"`
+			LastEventID string `json:"last_event_id"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return ConversationHistoryErrorMsg{ConversationID: conversationID, Err: "decode response: " + err.Error()}
@@ -1117,7 +1198,11 @@ func fetchConversationMessagesCmd(baseURL, conversationID, apiKey string) tea.Cm
 		for i, msg := range payload.Messages {
 			messages[i] = ConversationMessage{Role: msg.Role, Content: msg.Content}
 		}
-		return ConversationHistoryMsg{ConversationID: conversationID, Messages: messages}
+		return ConversationHistoryMsg{
+			ConversationID: conversationID,
+			Messages:       messages,
+			LastEventID:    payload.LastEventID,
+		}
 	}
 }
 
@@ -1343,6 +1428,10 @@ func sseEventsURL(baseURL, runID string) string {
 	return strings.TrimRight(baseURL, "/") + "/v1/runs/" + runID + "/events"
 }
 
+func conversationSSEEventsURL(baseURL, conversationID string) string {
+	return strings.TrimRight(baseURL, "/") + "/v1/conversations/" + url.PathEscape(conversationID) + "/events"
+}
+
 // startSSEForRun starts the SSE bridge for the given run and returns the
 // channel and cancel func. apiKey, if non-empty, is sent as
 // "Authorization: Bearer <apiKey>" (see SSEBridgeOptions) — the same
@@ -1362,6 +1451,15 @@ func startSSEForRun(baseURL, runID, apiKey string) (<-chan tea.Msg, func()) {
 func startSSEForRunFrom(baseURL, runID, lastEventID, apiKey string) (<-chan tea.Msg, func()) {
 	url := sseEventsURL(baseURL, runID)
 	return StartSSEBridgeWithOptions(context.Background(), url, SSEBridgeOptions{LastEventID: lastEventID, APIKey: apiKey})
+}
+
+func startSSEForConversationFrom(baseURL, conversationID, lastEventID, apiKey string, replayBoundary bool) (<-chan tea.Msg, func()) {
+	return StartSSEBridgeWithOptions(context.Background(), conversationSSEEventsURL(baseURL, conversationID), SSEBridgeOptions{
+		LastEventID:                lastEventID,
+		APIKey:                     apiKey,
+		KeepAliveAfterTerminal:     true,
+		ConversationReplayBoundary: replayBoundary,
+	})
 }
 
 // maxSSEReconnectAttempts bounds how many times the TUI will automatically
@@ -1399,4 +1497,66 @@ func reconnectSSECmd(baseURL, runID, lastEventID, apiKey string, attempt int) te
 		ch, cancel := startSSEForRunFrom(baseURL, runID, lastEventID, apiKey)
 		return SSEReconnectedMsg{Ch: ch, Cancel: cancel}
 	})
+}
+
+type conversationSSEReconnectedMsg struct {
+	ConversationID string
+	Ch             <-chan tea.Msg
+	Cancel         func()
+}
+
+type conversationSSEStartedMsg struct {
+	ConversationID string
+	Ch             <-chan tea.Msg
+	Cancel         func()
+}
+
+func startConversationSSEFromCmd(baseURL, conversationID, lastEventID, apiKey string, replayBoundary bool) tea.Cmd {
+	return func() tea.Msg {
+		ch, cancel := startSSEForConversationFrom(baseURL, conversationID, lastEventID, apiKey, replayBoundary)
+		return conversationSSEStartedMsg{ConversationID: conversationID, Ch: ch, Cancel: cancel}
+	}
+}
+
+func reconnectConversationSSECmd(baseURL, conversationID, lastEventID, apiKey string, attempt int, replayBoundary bool) tea.Cmd {
+	delay := sseReconnectBackoff(attempt)
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		ch, cancel := startSSEForConversationFrom(baseURL, conversationID, lastEventID, apiKey, replayBoundary)
+		return conversationSSEReconnectedMsg{ConversationID: conversationID, Ch: ch, Cancel: cancel}
+	})
+}
+
+// pollConversationSSECmd identifies messages from the independent selected
+// conversation stream so its lifecycle never changes active-run state.
+func pollConversationSSECmd(conversationID string, ch <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return SSEDoneMsg{EventType: "bridge.closed", Conversation: true, ConversationID: conversationID}
+		}
+		switch v := msg.(type) {
+		case SSEEventMsg:
+			v.Conversation = true
+			v.ConversationID = conversationID
+			return v
+		case SSEErrorMsg:
+			v.Conversation = true
+			v.ConversationID = conversationID
+			return v
+		case SSEDoneMsg:
+			v.Conversation = true
+			v.ConversationID = conversationID
+			return v
+		case SSEDropMsg:
+			v.Conversation = true
+			v.ConversationID = conversationID
+			return v
+		case SSEConversationReplayBoundaryMsg:
+			v.Conversation = true
+			v.ConversationID = conversationID
+			return v
+		default:
+			return msg
+		}
+	}
 }

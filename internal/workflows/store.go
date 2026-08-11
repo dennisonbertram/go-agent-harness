@@ -15,6 +15,7 @@ type Store interface {
 	ListStepStates(ctx context.Context, workflowRunID string) ([]StepState, error)
 	AppendEvent(ctx context.Context, event *Event) error
 	GetEvents(ctx context.Context, workflowRunID string, afterSeq int64) ([]Event, error)
+	LastEventSeq(ctx context.Context, workflowRunID string) (int64, error)
 }
 
 type MemoryStore struct {
@@ -102,4 +103,16 @@ func (m *MemoryStore) GetEvents(_ context.Context, workflowRunID string, afterSe
 		}
 	}
 	return out, nil
+}
+
+func (m *MemoryStore) LastEventSeq(_ context.Context, workflowRunID string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var highWater int64
+	for _, event := range m.events[workflowRunID] {
+		if event.Seq > highWater {
+			highWater = event.Seq
+		}
+	}
+	return highWater, nil
 }

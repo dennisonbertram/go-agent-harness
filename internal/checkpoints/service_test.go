@@ -5,9 +5,130 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+type recordBlockingCheckpointStore struct {
+	Store
+	blockID string
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *recordBlockingCheckpointStore) Update(ctx context.Context, record *Record) error {
+	if record.ID == s.blockID {
+		s.once.Do(func() { close(s.started) })
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.Store.Update(ctx, record)
+}
+
+func (s *recordBlockingCheckpointStore) ResolvePending(
+	ctx context.Context,
+	id string,
+	status Status,
+	resumePayload string,
+	updatedAt time.Time,
+) (*Record, bool, error) {
+	if id == s.blockID {
+		s.once.Do(func() { close(s.started) })
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		}
+	}
+	return s.Store.ResolvePending(ctx, id, status, resumePayload, updatedAt)
+}
+
+type racingConditionalCheckpointStore struct {
+	*MemoryStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+type transientPollGetStore struct {
+	Store
+	mu         sync.Mutex
+	getCalls   int
+	pollFailed chan struct{}
+}
+
+func (s *transientPollGetStore) Get(ctx context.Context, id string) (*Record, error) {
+	s.mu.Lock()
+	s.getCalls++
+	call := s.getCalls
+	s.mu.Unlock()
+	if call == 3 {
+		close(s.pollFailed)
+		return nil, errors.New("transient checkpoint read outage")
+	}
+	return s.Store.Get(ctx, id)
+}
+
+func newRacingConditionalCheckpointStore() *racingConditionalCheckpointStore {
+	return &racingConditionalCheckpointStore{
+		MemoryStore: NewMemoryStore(),
+		entered:     make(chan struct{}, 2),
+		release:     make(chan struct{}),
+	}
+}
+
+func (s *racingConditionalCheckpointStore) waitForRace(ctx context.Context) error {
+	select {
+	case s.entered <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *racingConditionalCheckpointStore) Update(ctx context.Context, record *Record) error {
+	if err := s.waitForRace(ctx); err != nil {
+		return err
+	}
+	return s.MemoryStore.Update(ctx, record)
+}
+
+// ResolvePending is the atomic store contract exercised by the repair. It is
+// intentionally an extra method until the production Store interface adopts
+// it; the pre-fix Service continues through non-conditional Update above.
+func (s *racingConditionalCheckpointStore) ResolvePending(
+	ctx context.Context,
+	id string,
+	status Status,
+	resumePayload string,
+	updatedAt time.Time,
+) (*Record, bool, error) {
+	if err := s.waitForRace(ctx); err != nil {
+		return nil, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.records[id]
+	if !ok {
+		return nil, false, &NotFoundError{ID: id}
+	}
+	if current.Status != StatusPending {
+		return cloneRecord(current), false, nil
+	}
+	current.Status = status
+	current.ResumePayload = resumePayload
+	current.UpdatedAt = updatedAt
+	return cloneRecord(current), true, nil
+}
 
 func TestSQLiteStorePersistsCheckpointAcrossReopen(t *testing.T) {
 	t.Parallel()
@@ -74,6 +195,128 @@ func TestSQLiteStorePersistsCheckpointAcrossReopen(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreUpdateCopiesReplacementRecord(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryStore()
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	record := &Record{
+		ID:            "checkpoint-memory-update",
+		Kind:          KindExternalResume,
+		Status:        StatusPending,
+		WorkflowRunID: "workflow-memory-update",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := store.Create(context.Background(), record); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	replacement := cloneRecord(record)
+	replacement.Status = StatusResumed
+	replacement.ResumePayload = `{"answer":"persisted"}`
+	replacement.UpdatedAt = now.Add(time.Minute)
+	if err := store.Update(context.Background(), replacement); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	replacement.Status = StatusDenied
+	replacement.ResumePayload = `{"answer":"mutated-after-update"}`
+
+	loaded, err := store.Get(context.Background(), record.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if loaded.Status != StatusResumed {
+		t.Fatalf("status = %q, want %q", loaded.Status, StatusResumed)
+	}
+	if loaded.ResumePayload != `{"answer":"persisted"}` {
+		t.Fatalf("resume payload = %q, want copied replacement payload", loaded.ResumePayload)
+	}
+	if !loaded.UpdatedAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("updated_at = %s, want %s", loaded.UpdatedAt, now.Add(time.Minute))
+	}
+}
+
+func TestCheckpointStoresResolvePendingAtomically(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		open func(t *testing.T) Store
+	}{
+		{
+			name: "memory",
+			open: func(t *testing.T) Store {
+				t.Helper()
+				return NewMemoryStore()
+			},
+		},
+		{
+			name: "sqlite",
+			open: func(t *testing.T) Store {
+				t.Helper()
+				store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "checkpoints.db"))
+				if err != nil {
+					t.Fatalf("NewSQLiteStore: %v", err)
+				}
+				if err := store.Migrate(context.Background()); err != nil {
+					t.Fatalf("Migrate: %v", err)
+				}
+				return store
+			},
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			store := test.open(t)
+			t.Cleanup(func() { _ = store.Close() })
+			now := time.Now().UTC()
+			record := &Record{
+				ID:        "checkpoint-atomic-" + test.name,
+				Kind:      KindUserInput,
+				Status:    StatusPending,
+				RunID:     "run-atomic-" + test.name,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
+			if err := store.Create(context.Background(), record); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			resumed, won, err := store.ResolvePending(
+				context.Background(),
+				record.ID,
+				StatusResumed,
+				`{"answer":"yes"}`,
+				now.Add(time.Second),
+			)
+			if err != nil {
+				t.Fatalf("ResolvePending first: %v", err)
+			}
+			if !won || resumed.Status != StatusResumed {
+				t.Fatalf("first resolution = (%+v, %t), want resumed winner", resumed, won)
+			}
+			current, won, err := store.ResolvePending(
+				context.Background(),
+				record.ID,
+				StatusExpired,
+				"",
+				now.Add(2*time.Second),
+			)
+			if err != nil {
+				t.Fatalf("ResolvePending second: %v", err)
+			}
+			if won {
+				t.Fatal("second terminal transition unexpectedly won")
+			}
+			if current.Status != StatusResumed || current.ResumePayload != `{"answer":"yes"}` {
+				t.Fatalf("current record = %+v, want original resumed payload", current)
+			}
+		})
+	}
+}
+
 func TestServiceResumeWakesWaiterAndPersistsPayload(t *testing.T) {
 	t.Parallel()
 
@@ -129,6 +372,284 @@ func TestServiceResumeWakesWaiterAndPersistsPayload(t *testing.T) {
 	}
 	if loaded.ResumePayload == "" {
 		t.Fatal("expected persisted resume payload")
+	}
+}
+
+func TestServiceReportsWhenResolutionAlreadyLostToExpiry(t *testing.T) {
+	t.Parallel()
+
+	svc := NewService(NewMemoryStore(), time.Now)
+	record, err := svc.Create(context.Background(), CreateRequest{
+		Kind:       KindUserInput,
+		RunID:      "run-resolution-race",
+		DeadlineAt: time.Now().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	expired, err := svc.ExpirePending(context.Background(), record.ID)
+	if err != nil {
+		t.Fatalf("ExpirePending: %v", err)
+	}
+	if !expired {
+		t.Fatal("ExpirePending did not resolve pending checkpoint")
+	}
+	if err := svc.Resume(context.Background(), record.ID, map[string]any{"answer": "late"}); !errors.Is(err, ErrAlreadyResolved) {
+		t.Fatalf("Resume error = %v, want ErrAlreadyResolved", err)
+	}
+}
+
+func TestServiceResolutionDoesNotSerializeUnrelatedRecords(t *testing.T) {
+	t.Parallel()
+
+	base := NewMemoryStore()
+	store := &recordBlockingCheckpointStore{
+		Store:   base,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(store.release)
+		}
+	})
+	svc := NewService(store, time.Now)
+	first, err := svc.Create(context.Background(), CreateRequest{Kind: KindUserInput, RunID: "run-a"})
+	if err != nil {
+		t.Fatalf("Create first: %v", err)
+	}
+	second, err := svc.Create(context.Background(), CreateRequest{Kind: KindUserInput, RunID: "run-b"})
+	if err != nil {
+		t.Fatalf("Create second: %v", err)
+	}
+	store.blockID = first.ID
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- svc.Resume(context.Background(), first.ID, map[string]any{"answer": "a"})
+	}()
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first record resolution")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- svc.Resume(context.Background(), second.ID, map[string]any{"answer": "b"})
+	}()
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("unrelated Resume: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("unrelated checkpoint resolution was blocked by service-wide serialization")
+	}
+	close(store.release)
+	released = true
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Resume: %v", err)
+	}
+}
+
+func TestServiceResolutionLockHonorsWaitingContext(t *testing.T) {
+	t.Parallel()
+
+	base := NewMemoryStore()
+	store := &recordBlockingCheckpointStore{
+		Store:   base,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(store.release)
+		}
+	})
+	svc := NewService(store, time.Now)
+	record, err := svc.Create(context.Background(), CreateRequest{Kind: KindUserInput, RunID: "run-context"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	store.blockID = record.ID
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- svc.Resume(context.Background(), record.ID, map[string]any{"answer": "first"})
+	}()
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first resolution")
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- svc.Resume(waitCtx, record.ID, map[string]any{"answer": "second"})
+	}()
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("waiting Resume error = %v, want context deadline", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("checkpoint resolution lock ignored the waiting context")
+	}
+	close(store.release)
+	released = true
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Resume: %v", err)
+	}
+}
+
+func TestServiceConditionalResolutionHasOneWinnerAcrossServices(t *testing.T) {
+	t.Parallel()
+
+	store := newRacingConditionalCheckpointStore()
+	svcA := NewService(store, time.Now)
+	svcB := NewService(store, time.Now)
+	record, err := svcA.Create(context.Background(), CreateRequest{Kind: KindUserInput, RunID: "run-shared"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	resumeDone := make(chan error, 1)
+	expireDone := make(chan struct {
+		expired bool
+		err     error
+	}, 1)
+	go func() {
+		resumeDone <- svcA.Resume(context.Background(), record.ID, map[string]any{"answer": "accepted"})
+	}()
+	go func() {
+		expired, err := svcB.ExpirePending(context.Background(), record.ID)
+		expireDone <- struct {
+			expired bool
+			err     error
+		}{expired: expired, err: err}
+	}()
+	for range 2 {
+		select {
+		case <-store.entered:
+		case <-time.After(time.Second):
+			t.Fatal("timed out staging cross-service resolution race")
+		}
+	}
+	close(store.release)
+	resumeErr := <-resumeDone
+	expireResult := <-expireDone
+	if expireResult.err != nil {
+		t.Fatalf("ExpirePending: %v", expireResult.err)
+	}
+	resumeWon := resumeErr == nil
+	if resumeErr != nil && !errors.Is(resumeErr, ErrAlreadyResolved) {
+		t.Fatalf("Resume error = %v, want nil or ErrAlreadyResolved", resumeErr)
+	}
+	if resumeWon == expireResult.expired {
+		t.Fatalf("resolution winners: resume=%t expire=%t, want exactly one", resumeWon, expireResult.expired)
+	}
+	loaded, err := svcA.Get(context.Background(), record.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if resumeWon && loaded.Status != StatusResumed {
+		t.Fatalf("stored status = %q, want resumed winner", loaded.Status)
+	}
+	if expireResult.expired && loaded.Status != StatusExpired {
+		t.Fatalf("stored status = %q, want expired winner", loaded.Status)
+	}
+}
+
+func TestServiceWaitObservesResolutionFromAnotherService(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryStore()
+	waitingService := NewService(store, time.Now)
+	resolvingService := NewService(store, time.Now)
+	record, err := waitingService.Create(context.Background(), CreateRequest{Kind: KindUserInput, RunID: "run-remote"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	waitDone := make(chan waitResult, 1)
+	go func() {
+		result, err := waitingService.Wait(waitCtx, record.ID)
+		waitDone <- waitResult{result: result, err: err}
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		waitingService.mu.Lock()
+		registered := len(waitingService.waiters[record.ID]) == 1
+		waitingService.mu.Unlock()
+		if registered {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for waiter registration")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := resolvingService.Resume(context.Background(), record.ID, map[string]any{"answer": "remote"}); err != nil {
+		t.Fatalf("remote Resume: %v", err)
+	}
+	select {
+	case outcome := <-waitDone:
+		if outcome.err != nil {
+			t.Fatalf("Wait: %v", outcome.err)
+		}
+		if outcome.result.Status != StatusResumed {
+			t.Fatalf("Wait status = %q, want resumed", outcome.result.Status)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Wait did not observe resolution persisted by another Service")
+	}
+}
+
+func TestServiceWaitSurvivesTransientPollingReadFailure(t *testing.T) {
+	t.Parallel()
+
+	baseStore := NewMemoryStore()
+	store := &transientPollGetStore{
+		Store:      baseStore,
+		pollFailed: make(chan struct{}),
+	}
+	waitingService := NewService(store, time.Now)
+	resolvingService := NewService(baseStore, time.Now)
+	record, err := waitingService.Create(context.Background(), CreateRequest{Kind: KindUserInput, RunID: "run-transient-poll"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	waitDone := make(chan waitResult, 1)
+	go func() {
+		result, err := waitingService.Wait(waitCtx, record.ID)
+		waitDone <- waitResult{result: result, err: err}
+	}()
+
+	select {
+	case <-store.pollFailed:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for transient polling failure")
+	}
+	if err := resolvingService.Resume(context.Background(), record.ID, map[string]any{"answer": "after outage"}); err != nil {
+		t.Fatalf("remote Resume: %v", err)
+	}
+	select {
+	case outcome := <-waitDone:
+		if outcome.err != nil {
+			t.Fatalf("Wait returned transient polling error: %v", outcome.err)
+		}
+		if outcome.result.Status != StatusResumed || outcome.result.Payload["answer"] != "after outage" {
+			t.Fatalf("Wait result = %+v, want resumed remote payload", outcome.result)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Wait did not remain registered after transient polling failure")
 	}
 }
 
@@ -213,8 +734,13 @@ func TestServiceStoreDenyExpireAndWaitCancellation(t *testing.T) {
 	}
 
 	cancel()
-	if err := <-errCh; !errors.Is(err, context.Canceled) {
-		t.Fatalf("Wait cancellation error = %v, want context.Canceled", err)
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Wait cancellation error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for cancelled waiter")
 	}
 	svc.mu.Lock()
 	_, stillRegistered := svc.waiters[cancelled.ID]

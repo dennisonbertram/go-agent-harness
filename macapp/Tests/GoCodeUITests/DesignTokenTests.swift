@@ -6,6 +6,40 @@ import Testing
 @Suite("Non-colour design tokens")
 struct DesignTokenTests {
 
+    @Test("the brand mark uses the selected D0 ring and inward chevron")
+    func brandMarkUsesD0Geometry() {
+        let path = BrandMark().path(in: CGRect(x: 0, y: 0, width: 100, height: 100))
+        var elements: [Path.Element] = []
+        func append(_ element: Path.Element) {
+            elements.append(element)
+        }
+        path.forEach(append)
+
+        guard elements.count == 8,
+            case .move(let ringStart) = elements[0],
+            case .curve(let ringEnd, control1: _, control2: _) = elements[4],
+            case .move(let chevronStart) = elements[5],
+            case .line(let chevronPoint) = elements[6],
+            case .line(let chevronEnd) = elements[7]
+        else {
+            Issue.record("BrandMark path no longer has the expected D0 arc and chevron elements")
+            return
+        }
+
+        // D0's SVG reference uses a 23.5pt ring centered at (50, 50), with
+        // right-side endpoints at approximately (72.3, 43) and (72.3, 57).
+        #expect(abs(ringStart.x - 72.4) < 0.15)
+        #expect(abs(ringStart.y - 43.0) < 0.15)
+        #expect(abs(ringEnd.x - 72.4) < 0.15)
+        #expect(abs(ringEnd.y - 57.0) < 0.15)
+
+        // The chevron is mirrored around the vertical centerline and points
+        // inward from the right edge of the ring.
+        #expect(chevronStart == CGPoint(x: 57, y: 42.5))
+        #expect(chevronPoint == CGPoint(x: 74, y: 50))
+        #expect(chevronEnd == CGPoint(x: 57, y: 57.5))
+    }
+
     @Test("spacing keeps the established layout rhythm")
     func spacingRhythm() {
         #expect(Spacing.none == 0)

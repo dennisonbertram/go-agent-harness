@@ -145,9 +145,13 @@ const (
 
 // Callback events.
 const (
-	EventCallbackScheduled EventType = "callback.scheduled"
-	EventCallbackFired     EventType = "callback.fired"
-	EventCallbackCanceled  EventType = "callback.canceled"
+	EventCallbackScheduled   EventType = "callback.scheduled"
+	EventCallbackDispatching EventType = "callback.dispatching"
+	EventCallbackRetryWait   EventType = "callback.retry_wait"
+	EventCallbackStarted     EventType = "callback.started"
+	EventCallbackFailed      EventType = "callback.failed"
+	EventCallbackFired       EventType = "callback.fired"
+	EventCallbackCanceled    EventType = "callback.canceled"
 )
 
 // Skill constraint events.

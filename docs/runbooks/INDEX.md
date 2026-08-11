@@ -6,11 +6,18 @@
 - [Session rewind](session-rewind.md) — destructive file-snapshot restore and conversation truncation.
 
 - `testing.md`: How to design and run meaningful tests before commit.
+- `benchmark-smoke.md`: Key-free smoke plus the required clean exact-binary
+  provenance check and recorded build-info/digest artifact.
+- `acceptance-inventory.md`: Issue #1086 registry-derived tool/TUI inventory, mandatory resolver evidence, canonical/alias, synthetic-scenario, and native-applicability completeness, proof-oriented v2 evidence contract, and Issue #1087's in-progress API/SSE executor boundary.
+- `native-gui-acceptance.md`: Issues #1205/#1208/#1220 owner-created native
+  lifecycle, deterministic fixtures, non-prompting TCC admission, and one
+  correlated rendered core scenario foundation; not the full #1089 matrix.
 - `symphony.md`: How to run OpenAI Symphony for this repository with the wrapper script.
 - `symphony-issue-authoring.md`: How to write GitHub issues that Symphony can execute autonomously with strict TDD, behavior tests, regression gates, and merge rules.
 - `deployment.md`: MVP deployment runbook with security and verification checks.
 - `distribution.md`: Installer, OS service install (`harnesscli service` launchd/systemd user units), GitHub Pages, release archive, Homebrew, and release checklist guidance for distributing go-code.
 - `worktree-flow.md`: Required worktree-first development and merge workflow.
+- `remote-cronsd.md`: Authenticated, fresh-store-ready, durable-replay-safe remote cronsd-to-harnessd dispatch configuration, readiness, canary, and rollback.
 - `issue-triage.md`: How to select and complete a structured GitHub Issue Form for every work class.
 - `issue-driven-development.md`: Required issue-to-impact-map-to-TDD-to-PR workflow, minor-change limits, and review diagnostics.
 - `documentation-maintenance.md`: How to maintain per-folder indexes and documentation quality.
@@ -24,4 +31,3 @@
 - `profile-authoring.md`: TOML schema reference, resolution tiers, built-in profile catalog, and step-by-step guide for creating and validating custom profiles.
 - `profile-operations.md`: How to choose, start with, and operate profiles — recommendation tool, run request field, API lifecycle management, and efficiency reports.
 - `subagent-debugging.md`: How to find a child run's ID, read its status and events, interpret ChildResult, and diagnose common failures (profile not found, tool not allowed, max_steps exceeded, cost limit, workspace provision).
-- `benchmark-smoke.md`: Key-free deterministic smokes (in-process Go test + shell script), the grounded result schema (`internal/benchresult`), the comparison-harness shape (`benchmarks/comparison/`), and the real Python benchmark paths with their deps and honesty caveats.

@@ -585,30 +585,12 @@ func TestRunnerConcurrentMetaMessageInjection(t *testing.T) {
 
 // collectRunEventsWithTimeout is like collectRunEvents but with configurable timeout.
 func collectRunEventsWithTimeout(runner *Runner, runID string, timeout time.Duration) ([]Event, error) {
+	deadline := time.Now().Add(timeout)
 	history, stream, cancel, err := runner.Subscribe(runID)
 	if err != nil {
 		return nil, err
 	}
 	defer cancel()
 
-	events := append([]Event(nil), history...)
-	if hasTerminalEvent(events) {
-		return events, nil
-	}
-
-	timer := time.After(timeout)
-	for {
-		select {
-		case ev, ok := <-stream:
-			if !ok {
-				return events, nil
-			}
-			events = append(events, ev)
-			if IsTerminalEvent(ev.Type) {
-				return events, nil
-			}
-		case <-timer:
-			return nil, context.DeadlineExceeded
-		}
-	}
+	return collectSubscribedRunEvents(runner, runID, history, stream, deadline, nil)
 }

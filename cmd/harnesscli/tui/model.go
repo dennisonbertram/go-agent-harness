@@ -135,6 +135,23 @@ type Model struct {
 	// once exhausted the stream is treated as terminally lost.
 	sseReconnectAttempts int
 
+	// conversationSSECh remains attached to the selected conversation after an
+	// individual run ends, so cron/callback continuations render while idle.
+	conversationSSECh                <-chan tea.Msg
+	cancelConversationSSE            func()
+	conversationLastEventID          string
+	conversationSSEReconnectAttempts int
+	seenSSEEventIDs                  map[string]struct{}
+	seenSSEEventIDOrder              []string
+	// conversationReplayAwaitingMarker is true only for an initial selected
+	// conversation resume. Until the server's replay-complete boundary arrives,
+	// all replay frames are deliberately suppressed. The boundary carries the
+	// atomic snapshot; every frame after it uses the normal SSE reducer.
+	conversationReplayAwaitingMarker       bool
+	conversationReplayLoadingHistory       bool
+	conversationReplayLegacyHistoryLoading bool
+	conversationReplayBuffered             []SSEEventMsg
+
 	// toolExpanded tracks which tool calls are in the expanded view, keyed by
 	// tool call ID. True = expanded, absent/false = collapsed.
 	toolExpanded map[string]bool
@@ -165,6 +182,10 @@ type Model struct {
 	// toolViews tracks the latest render state per tool call so lifecycle
 	// updates and ctrl+o can rerender through the shared component path.
 	toolViews map[string]tooluse.Model
+	// toolGroup collapses consecutive tool calls into one transcript line, and
+	// toolGroupID is the viewport card it renders into (issue #1308).
+	toolGroup   tooluse.Group
+	toolGroupID string
 
 	// toolLineCounts tracks how many viewport lines belong to the latest
 	// rendered block for a tool call when that block is currently at the tail.
@@ -189,14 +210,30 @@ type Model struct {
 	// lastAssistantText accumulates all assistant deltas for the current run.
 	lastAssistantText string
 
-	// responseStarted tracks whether the first assistant delta for the current
-	// run has been written to the viewport. On the first delta we call
-	// the messagebubble renderer and then replace only the active assistant tail.
+	// responseStarted tracks whether the assistant bubble for the current
+	// provider step has been written to the viewport. On the first delta we
+	// append it; later deltas replace only that active assistant tail.
 	responseStarted bool
 
 	// activeAssistantLineCount tracks how many viewport lines belong to the
 	// currently streaming assistant bubble.
 	activeAssistantLineCount int
+
+	// assistantTranscriptFinalized prevents replayed terminal events from
+	// recording the current run's assistant response more than once.
+	assistantTranscriptFinalized bool
+	// assistantRunLifecycle owns terminal finalization by server run ID. The
+	// viewport still has one visible in-progress bubble, but no run's terminal
+	// state may suppress a different run's authoritative final message.
+	assistantRunLifecycle map[string]bool
+	terminalRunIDs        map[string]bool
+	assistantRunOrder     []string
+	// assistantRunText retains a final/delta accumulator that reaches the
+	// conversation stream just before RunStartedMsg reaches the model. This is
+	// a real dual-stream ordering: resetting the global accumulator in
+	// RunStartedMsg would otherwise leave the already-rendered bubble without a
+	// transcript entry and suppress its local-stream duplicate by event ID.
+	assistantRunText map[string]string
 
 	// thinkingText accumulates reasoning deltas for the current turn.
 	thinkingText string
@@ -228,8 +265,13 @@ type Model struct {
 	// cumulativeCostUSD is the running total cost for the current session.
 	cumulativeCostUSD float64
 
-	// totalTokens is the cumulative token count for the context grid.
+	// totalTokens is the run's cumulative token count, used for cost and
+	// accounting surfaces. It is NOT context occupancy — see
+	// contextOccupancyTokens.
 	totalTokens int
+	// contextOccupancyTokens is the latest turn's prompt plus completion: what
+	// the next request will actually carry in the context window (issue #1307).
+	contextOccupancyTokens int
 
 	// overlayActive is true when an overlay (help, context, stats, etc.) is open.
 	overlayActive bool
@@ -333,10 +375,13 @@ type Model struct {
 	// chars) so RunStartedMsg can record it on the session entry as LastMsg.
 	pendingLastMsg string
 
-	// pendingInitAgentsMd is true while a /init generation run is in flight;
-	// when the run completes, the assistant's markdown is written to
-	// <workspace>/AGENTS.md (see init_agents.go).
-	pendingInitAgentsMd bool
+	// pendingInitAgentsMd tracks one submitted /init request. Its accepted run
+	// ID and target snapshot fence the eventual workspace write so a later or
+	// foreign terminal cannot commit generated content.
+	pendingInitAgentsMd      bool
+	pendingInitRunID         string
+	pendingInitTarget        string
+	pendingInitTargetExisted bool
 
 	// extraDirs holds the absolute paths of additional directories the user
 	// attached to this session via /add-dir. They are sent on every run as
@@ -423,6 +468,10 @@ type Model struct {
 	pluginWarnings []string
 	pluginBrowser  pluginBrowserState
 
+	// startupNotices holds non-plugin notices raised while building the model
+	// (currently divergent provider keys), surfaced on the status bar by Init.
+	startupNotices []string
+
 	// swarm tracks the current run's agent_swarm call (epic #808 slice 4) so
 	// the /subagents view can group and live-update swarm members.
 	swarm swarmTracker
@@ -440,18 +489,22 @@ func spinnerSeed(cfg TUIConfig) int64 {
 
 func New(cfg TUIConfig) Model {
 	m := Model{
-		config:           cfg,
-		keys:             DefaultKeyMap(),
-		theme:            DefaultTheme(),
-		themeName:        "default-dark",
-		contextGrid:      contextgrid.New(),
-		statsPanel:       statspanel.New(nil),
-		costDisplay:      costdisplay.New(),
-		spinner:          spinner.New(spinnerSeed(cfg)),
-		thinkingBar:      thinkingbar.New(),
-		interruptBanner:  interruptui.New(),
-		selectedModel:    cfg.Model,
-		shellExecTimeout: defaultShellExecTimeout,
+		config:                cfg,
+		keys:                  DefaultKeyMap(),
+		theme:                 DefaultTheme(),
+		themeName:             "default-dark",
+		contextGrid:           contextgrid.New(),
+		statsPanel:            statspanel.New(nil),
+		costDisplay:           costdisplay.New(),
+		spinner:               spinner.New(spinnerSeed(cfg)),
+		thinkingBar:           thinkingbar.New(),
+		interruptBanner:       interruptui.New(),
+		selectedModel:         cfg.Model,
+		shellExecTimeout:      defaultShellExecTimeout,
+		seenSSEEventIDs:       make(map[string]struct{}),
+		assistantRunLifecycle: make(map[string]bool),
+		terminalRunIDs:        make(map[string]bool),
+		assistantRunText:      make(map[string]string),
 	}
 	m.modelSwitcher = modelswitcher.New(cfg.Model)
 	// Initialize history store with defaults.
@@ -477,16 +530,15 @@ func New(cfg TUIConfig) Model {
 	// replayed to the server on Init() because the server already reads its own
 	// environment variables.
 	m.envAPIKeys = make(map[string]string)
-	envKeyVars := map[string]string{
-		"openrouter": "OPENROUTER_API_KEY",
-		"openai":     "OPENAI_API_KEY",
-		"anthropic":  "ANTHROPIC_API_KEY",
-	}
-	for provider, envVar := range envKeyVars {
+	for provider, envVar := range providerEnvKeyVars {
 		if key := os.Getenv(envVar); key != "" {
 			m.envAPIKeys[provider] = key
 		}
 	}
+	// Both key sources are populated now, so this is where they can be compared.
+	// Divergent keys otherwise collapse into one "configured" mark and surface
+	// later as an unattributable provider 401 (issue #1297).
+	m.startupNotices = divergentKeyNotices(m.pendingAPIKeys, m.envAPIKeys)
 	// Subscription credentials are harness-owned local files, not environment
 	// variables. Store only a non-secret availability marker in the TUI.
 	if _, err := codex.DefaultStore().Load(); err == nil {
@@ -620,7 +672,7 @@ func buildHelpDialog(reg *CommandRegistry, keys KeyMap) helpdialog.Model {
 		{Keys: "@", Description: keys.AtMention.Help().Desc},
 		{Keys: "!", Description: keys.ShellMode.Help().Desc},
 		{Keys: "? / ctrl+h", Description: keys.Help.Help().Desc},
-		{Keys: "ctrl+o", Description: "plan mode / expand active tool / compaction"},
+		{Keys: "ctrl+o", Description: "plan mode / expand tool calls / compaction"},
 		{Keys: "ctrl+e", Description: keys.EditMode.Help().Desc},
 		{Keys: "esc", Description: keys.Interrupt.Help().Desc},
 		{Keys: "ctrl+s", Description: keys.Copy.Help().Desc},
@@ -1152,6 +1204,9 @@ func (m *Model) appendMessageBubble(role messagebubble.Role, content string) {
 	if len(lines) == 0 {
 		return
 	}
+	// A message ends the current run of tool calls, so the next call opens a
+	// fresh group instead of merging into the previous one (issue #1308).
+	m.endToolGroup()
 	m.renderedToolCallID = ""
 	m.vp.AppendLines(lines)
 }
@@ -1291,12 +1346,47 @@ func steerErrorStatusText(msg SteerErrorMsg) string {
 func (m *Model) appendToolUseView(view tooluse.Model) {
 	view.Width = m.width
 	view.DiffStyles = m.diffStyles
-	lines := renderedBlockLines(view.View())
+
+	// Tool calls render as one collapsed group rather than one line each: a
+	// tool-heavy turn otherwise buries the assistant's answer (issue #1308).
+	// Add is upsert-by-CallID, so a call's later lifecycle updates land on the
+	// same member instead of adding a new one.
+	if m.toolGroupID == "" {
+		m.toolGroup = tooluse.NewGroup(m.width)
+		m.toolGroupID = "toolgroup:" + view.CallID
+	}
+	m.toolGroup = m.toolGroup.Add(view)
+	m.toolViews[view.CallID] = view
+	m.renderTranscriptCard(m.toolGroupID, m.toolGroup.View())
+}
+
+// endToolGroup closes the current tool-call group so the next call starts a new
+// one. Without it every group in the session would merge into a single summary.
+func (m *Model) endToolGroup() {
+	m.toolGroup = tooluse.Group{}
+	m.toolGroupID = ""
+}
+
+// toggleToolGroup flips the current group between collapsed and expanded and
+// re-renders it in place.
+func (m *Model) toggleToolGroup() bool {
+	if m.toolGroupID == "" || m.toolGroup.Len() == 0 {
+		return false
+	}
+	m.toolGroup = m.toolGroup.Toggle()
+	m.renderTranscriptCard(m.toolGroupID, m.toolGroup.View())
+	return true
+}
+
+// renderTranscriptCard places or replaces a card's lines in the viewport,
+// keeping the recorded line offsets of later cards consistent.
+func (m *Model) renderTranscriptCard(cardID, rendered string) {
+	lines := renderedBlockLines(rendered)
 	if len(lines) == 0 {
 		return
 	}
 
-	callID := view.CallID
+	callID := cardID
 	prevCount, known := m.toolLineCounts[callID]
 
 	if known && prevCount > 0 {
@@ -1344,7 +1434,6 @@ func (m *Model) appendToolUseView(view tooluse.Model) {
 		m.vp.AppendLines(lines)
 	}
 
-	m.toolViews[callID] = view
 	m.toolLineCounts[callID] = len(lines)
 	m.renderedToolCallID = callID
 }
@@ -1564,6 +1653,27 @@ func (m Model) contextWindowTotal() int {
 	return defaultContextWindowTokens
 }
 
+// applyContextWindowForSelectedModel records the selected model's declared
+// context window so the status bar and the /context overlay divide by the real
+// number.
+//
+// Without this the field is never assigned and both surfaces silently use their
+// own 200,000-token fallback for every model, which understated a 2,000,000-token
+// window by 10x (issue #1306). A model that declares nothing keeps the fallback.
+func (m *Model) applyContextWindowForSelectedModel() {
+	for _, e := range m.serverModels {
+		if e.ID != m.selectedModel || e.Provider != m.selectedProvider {
+			continue
+		}
+		if e.ContextWindow > 0 {
+			m.contextGrid.TotalTokens = e.ContextWindow
+			return
+		}
+		break
+	}
+	m.contextGrid.TotalTokens = 0
+}
+
 func (m *Model) clearThinkingBar() {
 	m.thinkingText = ""
 	m.thinkingBar = thinkingbar.New()
@@ -1617,7 +1727,9 @@ func (m Model) ActiveToolCallStatus() string {
 }
 
 func (m *Model) rerenderActiveToolView() {
-	if m.activeToolCallID == "" || m.renderedToolCallID != m.activeToolCallID {
+	// The group card is what the viewport holds, so compare against it rather
+	// than the individual call ID (issue #1308).
+	if m.activeToolCallID == "" || m.toolGroupID == "" || m.renderedToolCallID != m.toolGroupID {
 		return
 	}
 	view, ok := m.toolViews[m.activeToolCallID]
@@ -1681,6 +1793,11 @@ func (m *Model) handleToolStart(callID, name string, input json.RawMessage) {
 	m.toolViews[callID] = view
 	m.activeToolCallID = callID
 	m.appendToolUseView(view)
+	// The tool card now owns the viewport tail. Close any assistant bubble from
+	// the preceding provider step so the next step appends a new bubble instead
+	// of replacing the tool card with stale tail-line ownership.
+	m.responseStarted = false
+	m.activeAssistantLineCount = 0
 }
 
 func (m *Model) handleToolChunk(callID, chunk string) {
@@ -1786,6 +1903,7 @@ func (m *Model) renderActiveAssistantBubble() {
 	m.clearThinkingBar()
 	lines := m.renderMessageBubble(messagebubble.RoleAssistant, m.lastAssistantText)
 	if !m.responseStarted {
+		m.endToolGroup()
 		m.renderedToolCallID = ""
 		m.vp.AppendLines(lines)
 		m.activeAssistantLineCount = len(lines)
@@ -1845,6 +1963,21 @@ func (m *Model) resetTranscriptView() {
 func executeClearCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
 	m.resetTranscriptView()
 	return []tea.Cmd{m.setStatusMsg("Conversation cleared")}, false
+}
+
+// wrapSessionPickerCmd translates component-local picker messages into the
+// model messages that own selected-session history and stream lifecycle.
+func wrapSessionPickerCmd(pickerCmd tea.Cmd) tea.Cmd {
+	return func() tea.Msg {
+		raw := pickerCmd()
+		if sel, ok := raw.(sessionpicker.SessionSelectedMsg); ok {
+			return SessionPickerSelectedMsg{SessionID: sel.Entry.ID}
+		}
+		if del, ok := raw.(sessionpicker.SessionDeletedMsg); ok {
+			return SessionDeletedMsg{ID: del.ID}
+		}
+		return raw
+	}
 }
 
 // wrapUndoPickerCmd translates the undo picker's UndoSelectedMsg into the
@@ -2277,6 +2410,7 @@ func executeForkCommand(m *Model, cmd Command) ([]tea.Cmd, bool) {
 }
 
 func executeNewSessionCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+	m.stopConversationSSE()
 	m.conversationID = ""
 	m.vp = viewport.New(m.width, m.layout.ViewportHeight)
 	m.transcript = nil
@@ -2496,11 +2630,17 @@ func (m Model) Init() tea.Cmd {
 	for provider, providerKey := range m.pendingAPIKeys {
 		cmds = append(cmds, setProviderKeyCmd(m.config.BaseURL, provider, providerKey, m.config.APIKey))
 	}
-	// Schedule a status message when plugin warnings were collected at startup.
+	// Schedule a status message for anything collected at startup. Key
+	// divergence goes last so it wins the status bar over a plugin count: it is
+	// the more actionable of the two.
+	notices := m.startupNotices
 	if len(m.pluginWarnings) > 0 {
-		msg := fmt.Sprintf("%d plugin warning(s) at startup", len(m.pluginWarnings))
+		notices = append([]string{fmt.Sprintf("%d plugin warning(s) at startup", len(m.pluginWarnings))}, notices...)
+	}
+	for _, notice := range notices {
+		text := notice
 		cmds = append(cmds, func() tea.Msg {
-			return pluginWarningMsg{text: msg}
+			return startupNoticeMsg{text: text}
 		})
 	}
 	if len(cmds) > 0 {
@@ -2509,9 +2649,109 @@ func (m Model) Init() tea.Cmd {
 	return nil
 }
 
-// pluginWarningMsg is a tea.Msg that triggers a status-bar notification for
-// plugin load errors discovered at startup.
-type pluginWarningMsg struct {
+// stopConversationSSE is the selected-conversation ownership boundary. It is
+// called before every switch/new/quit so a stale stream cannot render into the
+// newly selected transcript.
+func (m *Model) stopConversationSSE() {
+	if m.cancelConversationSSE != nil {
+		m.cancelConversationSSE()
+	}
+	m.cancelConversationSSE = nil
+	m.conversationSSECh = nil
+	m.conversationLastEventID = ""
+	m.conversationSSEReconnectAttempts = 0
+	m.seenSSEEventIDs = make(map[string]struct{})
+	m.seenSSEEventIDOrder = nil
+	m.conversationReplayAwaitingMarker = false
+	m.conversationReplayLoadingHistory = false
+	m.conversationReplayLegacyHistoryLoading = false
+	m.conversationReplayBuffered = nil
+}
+
+func (m *Model) startConversationSSE() tea.Cmd {
+	if m.conversationID == "" || m.conversationSSECh != nil || m.cancelConversationSSE != nil {
+		return nil
+	}
+	return startConversationSSEFromCmd(m.config.BaseURL, m.conversationID, m.conversationLastEventID, m.config.APIKey, m.conversationReplayAwaitingMarker)
+}
+
+const maxSeenSSEEventIDs = 4096
+
+func (m *Model) seenSSEEvent(id string) bool {
+	if id == "" {
+		return false
+	}
+	if _, ok := m.seenSSEEventIDs[id]; ok {
+		return true
+	}
+	m.seenSSEEventIDs[id] = struct{}{}
+	m.seenSSEEventIDOrder = append(m.seenSSEEventIDOrder, id)
+	if len(m.seenSSEEventIDOrder) > maxSeenSSEEventIDs {
+		old := m.seenSSEEventIDOrder[0]
+		delete(m.seenSSEEventIDs, old)
+		m.seenSSEEventIDOrder = m.seenSSEEventIDOrder[1:]
+	}
+	return false
+}
+
+func (m *Model) assistantRunFinalized(runID string) bool {
+	if runID == "" {
+		runID = m.RunID
+	}
+	return runID != "" && m.assistantRunLifecycle[runID]
+}
+
+func (m *Model) setAssistantRunFinalized(runID string, finalized bool) {
+	if runID == "" {
+		runID = m.RunID
+	}
+	if runID == "" {
+		return
+	}
+	if m.assistantRunLifecycle == nil {
+		m.assistantRunLifecycle = make(map[string]bool)
+	}
+	if _, known := m.assistantRunLifecycle[runID]; !known {
+		m.assistantRunOrder = append(m.assistantRunOrder, runID)
+		if len(m.assistantRunOrder) > maxSeenSSEEventIDs {
+			old := m.assistantRunOrder[0]
+			delete(m.assistantRunLifecycle, old)
+			delete(m.assistantRunText, old)
+			delete(m.terminalRunIDs, old)
+			m.assistantRunOrder = m.assistantRunOrder[1:]
+		}
+	}
+	m.assistantRunLifecycle[runID] = finalized
+	if runID == m.RunID {
+		m.assistantTranscriptFinalized = finalized
+	}
+}
+
+func (m *Model) trackAssistantRun(runID string) {
+	if runID == "" {
+		return
+	}
+	if _, known := m.assistantRunLifecycle[runID]; known {
+		return
+	}
+	// Insert then restore the existing value; setAssistantRunFinalized also
+	// performs bounded eviction for every lifecycle owner.
+	m.setAssistantRunFinalized(runID, false)
+}
+
+func (m *Model) markRunTerminal(runID string) {
+	if runID == "" {
+		return
+	}
+	if m.terminalRunIDs == nil {
+		m.terminalRunIDs = make(map[string]bool)
+	}
+	m.terminalRunIDs[runID] = true
+}
+
+// startupNoticeMsg is a tea.Msg that puts a startup notice on the status bar.
+// Producers today are plugin load errors and divergent provider keys.
+type startupNoticeMsg struct {
 	text string
 }
 
@@ -2549,11 +2789,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vp.SetSize(msg.Width, m.layout.ViewportHeight)
 		} else {
 			m.vp = viewport.New(msg.Width, m.layout.ViewportHeight)
-			// On resume, fetch the prior conversation only after the viewport
-			// exists (first init runs exactly once, since m.ready is now true),
-			// so the rendered history cannot be wiped by this viewport creation.
+			// On resume, establish the selected conversation SSE subscription
+			// before fetching history. Its opt-in replay-complete marker forms an
+			// atomic replay-to-live boundary, preventing an empty snapshot cursor
+			// from replaying an already-rendered historic assistant response.
 			if m.config.ResumeConversationID != "" {
-				cmds = append(cmds, fetchConversationMessagesCmd(m.config.BaseURL, m.conversationID, m.config.APIKey))
+				m.conversationReplayAwaitingMarker = true
+				cmds = append(cmds, m.startConversationSSE())
 			}
 		}
 		// Preserve current history across window resizes: on subsequent resizes
@@ -2627,6 +2869,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cancelRun()
 					m.cancelRun = nil
 				}
+				// A local bridge cancellation has no guaranteed terminal SSE frame.
+				// Consume only this active run's pending /init write now, so late
+				// messages cannot turn an interrupted generation into a file write.
+				m.clearPendingInitAgentsMd(m.RunID)
 				m.interruptActiveToolCall()
 				m.runActive = false
 				cmds = append(cmds, m.setStatusMsg("Run interrupted — press ctrl+c again to quit"))
@@ -2641,6 +2887,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// No active run: hide banner if somehow visible, then quit.
 			m.interruptBanner = m.interruptBanner.Hide()
+			m.stopConversationSSE()
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Copy):
 			ok := CopyToClipboard(m.lastAssistantText)
@@ -2828,6 +3075,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.runActive && m.cancelRun != nil {
 				m.cancelRun()
+				// Escape also owns a local terminal boundary; the cancelled bridge
+				// may never deliver SSEDoneMsg, so clear only an owned /init state.
+				m.clearPendingInitAgentsMd(m.RunID)
 				m.runActive = false
 				m.cancelRun = nil
 				m.interruptActiveToolCall()
@@ -2862,8 +3112,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// 1. Active tool call present → expand/collapse it (UNCHANGED behavior).
 			// 2. Compaction block present → toggle the most recent one (epic #817 slice 4).
 			// 3. Idle (no run, no active tool, no block) → toggle plan mode (UNCHANGED).
-			if m.activeToolCallID != "" {
-				// Highest priority: expand/collapse the active tool call.
+			if m.toolGroup.Len() > 1 {
+				// A run of tool calls is collapsed into one summary line, so the
+				// group is what there is to reveal or hide. Expanding a single
+				// member would change nothing while the group is collapsed
+				// (issue #1308).
+				m.toggleToolGroup()
+			} else if m.activeToolCallID != "" {
+				// A lone tool call renders as itself, so expand/collapse it.
 				if m.toolExpanded == nil {
 					m.toolExpanded = make(map[string]bool)
 				}
@@ -2905,6 +3161,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.searchResults = nil
 				m.searchQuery = ""
 				m.searchSelectedIdx = 0
+				return m, tea.Batch(cmds...)
+			}
+			// Enter is claimed here before the generic overlay router. Sessions
+			// must still pass through the picker so its local selection becomes
+			// the model message that owns history rehydration.
+			if m.overlayActive && m.activeOverlay == "sessions" {
+				var spCmd tea.Cmd
+				m.sessionPicker, spCmd = m.sessionPicker.Update(msg)
+				if spCmd != nil {
+					cmds = append(cmds, wrapSessionPickerCmd(spCmd))
+				}
 				return m, tea.Batch(cmds...)
 			}
 			// When the profiles overlay is active, Enter confirms selection via the picker.
@@ -3306,19 +3573,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var spCmd tea.Cmd
 			m.sessionPicker, spCmd = m.sessionPicker.Update(msg)
 			if spCmd != nil {
-				// The session picker emits sessionpicker.SessionSelectedMsg on Enter
-				// and sessionpicker.SessionDeletedMsg on 'd'.
-				// Unwrap both to our own message types so the switch-case below handles them.
-				cmds = append(cmds, func() tea.Msg {
-					raw := spCmd()
-					if sel, ok := raw.(sessionpicker.SessionSelectedMsg); ok {
-						return SessionPickerSelectedMsg{SessionID: sel.Entry.ID}
-					}
-					if del, ok := raw.(sessionpicker.SessionDeletedMsg); ok {
-						return SessionDeletedMsg{ID: del.ID}
-					}
-					return raw
-				})
+				cmds = append(cmds, wrapSessionPickerCmd(spCmd))
 			}
 			return m, tea.Batch(cmds...)
 		case m.overlayActive && m.activeOverlay == "undo":
@@ -3611,10 +3866,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if msg.String() == "s" && m.modelSwitcher.BrowseLevel() == 1 && !m.modelSwitcher.SearchActive() {
 						m.modelSwitcher = m.modelSwitcher.ToggleStar()
 						// Persist to config.
-						if persistCfg, err := harnessconfig.Load(); err == nil {
-							persistCfg.StarredModels = m.modelSwitcher.StarredIDs()
-							_ = harnessconfig.Save(persistCfg)
-						}
+						starred := m.modelSwitcher.StarredIDs()
+						_ = persistConfigField(func(c *harnessconfig.Config) { c.StarredModels = starred })
 						return m, tea.Batch(cmds...)
 					}
 					// All other printable characters accumulate into search query.
@@ -3670,10 +3923,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Persist command history to config on every submit.
 		// The input has already pushed the entry into its history at this point.
 		m.historyStore = m.input.HistoryState()
-		if persistCfg, err := harnessconfig.Load(); err == nil {
-			persistCfg.HistoryEntries = m.historyStore.Entries()
-			_ = harnessconfig.Save(persistCfg)
-		}
+		entries := m.historyStore.Entries()
+		_ = persistConfigField(func(c *harnessconfig.Config) { c.HistoryEntries = entries })
 		// Close the dropdown whenever a command is submitted.
 		m.slashComplete = m.slashComplete.Close()
 		// Shell mode (epic #811, slice 2): run the command locally from the TUI
@@ -3856,16 +4107,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case RunStartedMsg:
+		wasSelectedConversation := m.conversationID != ""
 		m.RunID = msg.RunID
+		if m.pendingInitAgentsMd && m.pendingInitRunID == "" {
+			m.pendingInitRunID = msg.RunID
+		}
 		m.runActive = true
+		earlyAssistantText := m.assistantRunText[msg.RunID]
+		m.lastAssistantText = earlyAssistantText
+		m.assistantTranscriptFinalized = false
+		m.setAssistantRunFinalized(msg.RunID, false)
+		if earlyAssistantText == "" {
+			m.responseStarted = false
+			m.activeAssistantLineCount = 0
+		}
 		m.clearThinkingBar()
 		m.spinner = spinner.New(spinnerSeed(m.config)).WithStyles(spinnerStylesFromTheme(m.theme)).Start()
 		cmds = append(cmds, spinnerTickCmd())
-		// The harness auto-assigns conversation_id = run_id when none is
-		// supplied. Record this as the conversationID for subsequent turns so
-		// that follow-up messages are linked to the same conversation.
+		// Continuations provide their inherited conversation identity. A blank
+		// TUI adopts it; an already selected conversation remains authoritative
+		// for its own lifecycle rather than being replaced by an unrelated
+		// RunStartedMsg. Ordinary fresh runs retain the established run-ID
+		// fallback because the harness auto-assigns conversation_id = run_id.
 		if m.conversationID == "" {
-			m.conversationID = msg.RunID
+			m.conversationID = strings.TrimSpace(msg.ConversationID)
+			if m.conversationID == "" {
+				m.conversationID = msg.RunID
+			}
+		}
+		// A fresh first turn has no prior selected conversation to observe; its
+		// run bridge is sufficient until its terminal frame establishes the
+		// long-lived idle subscription. Existing/resumed selections keep their
+		// conversation bridge throughout a new in-flight run for overlap safety.
+		if wasSelectedConversation {
+			if cmd := m.startConversationSSE(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 		// Track the session in the persistent store so it appears in /sessions.
 		if m.sessionStore != nil {
@@ -3911,11 +4188,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runActive = false
 		m.cancelRun = nil
 		m.clearThinkingBar()
-		// A completed /init run writes its markdown to <workspace>/AGENTS.md.
-		if m.pendingInitAgentsMd {
-			m.pendingInitAgentsMd = false
-			cmds = append(cmds, m.completeInitAgentsMd())
-		}
+		cmds = append(cmds, m.completeInitAgentsMd(msg.RunID))
 
 	case RunFailedMsg:
 		m.runActive = false
@@ -3924,8 +4197,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeAssistantLineCount = 0
 		m.responseStarted = false
 		m.clearThinkingBar()
-		if m.pendingInitAgentsMd {
-			m.pendingInitAgentsMd = false
+		if m.clearPendingInitAgentsMd(msg.RunID) || (msg.RunID == "" && m.clearUnboundPendingInitAgentsMd()) {
 			cmds = append(cmds, m.setStatusMsg("AGENTS.md generation failed"))
 		}
 		errMsg := "run failed"
@@ -3934,6 +4206,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.vp.AppendLine("✗ " + errMsg)
 		m.vp.AppendLine("")
+		if cmd := m.startConversationSSE(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 
 	case OverlayOpenMsg:
 		m.overlayActive = true
@@ -4224,10 +4499,62 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 		}
-		// Track the most recent event ID so a mid-run reconnect (see the
-		// SSEDoneMsg case below) can resume exactly here via Last-Event-ID.
+		// Keep replay cursor and identity dedupe scoped to the stream that
+		// delivered this event. The server uses the same durable event identity
+		// on run and conversation feeds, so overlap renders exactly once.
+		if msg.Conversation && msg.ConversationID != m.conversationID {
+			return m, nil
+		}
+		// The replay-boundary handshake starts the SSE subscription before the
+		// atomic marker snapshot. Empty-cursor historical replay therefore must
+		// not render. Once the marker arrives, every later event is handled by
+		// the existing normal live-event reducer below.
+		if msg.Conversation && m.conversationReplayAwaitingMarker {
+			if msg.ID != "" {
+				m.conversationLastEventID = msg.ID
+			}
+			if msg.EventType == "conversation.replay.completed" {
+				var snapshot struct {
+					Messages    []ConversationMessage `json:"messages"`
+					LastEventID string                `json:"last_event_id"`
+				}
+				if err := json.Unmarshal(msg.Raw, &snapshot); err != nil {
+					m.vp.AppendLine("⚠ invalid conversation replay snapshot: " + err.Error())
+				} else {
+					m.appendConversationMessages(snapshot.Messages)
+					// Empty is a valid durable-watermark fallback. In that case
+					// retain the last suppressed replay event ID for reconnect.
+					if snapshot.LastEventID != "" {
+						m.conversationLastEventID = snapshot.LastEventID
+					}
+				}
+				m.conversationReplayAwaitingMarker = false
+			}
+			if m.conversationSSECh != nil {
+				cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+			}
+			return m, tea.Batch(cmds...)
+		}
+		if msg.Conversation {
+			if msg.ID != "" {
+				m.conversationLastEventID = msg.ID
+			}
+		} else {
+			// Track the most recent event ID so a mid-run reconnect (see the
+			// SSEDoneMsg case below) can resume exactly here via Last-Event-ID.
+			if msg.ID != "" {
+				m.lastEventID = msg.ID
+			}
+		}
 		if msg.ID != "" {
-			m.lastEventID = msg.ID
+			if m.seenSSEEvent(msg.ID) {
+				if msg.Conversation && m.conversationSSECh != nil {
+					cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+				} else if !msg.Conversation && m.sseCh != nil {
+					cmds = append(cmds, pollSSECmd(m.sseCh))
+				}
+				return m, tea.Batch(cmds...)
+			}
 		}
 		// Any SSE activity may append below a pending steer echo, so the echo
 		// can no longer be assumed to sit at the viewport tail (slice 4).
@@ -4235,17 +4562,62 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Route event to viewport based on type.
 		switch msg.EventType {
 		case "assistant.message.delta":
+			runID := msg.RunID
+			if runID == "" {
+				runID = m.RunID
+			}
+			m.trackAssistantRun(runID)
 			var p struct {
 				Content string `json:"content"`
 			}
-			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.Content != "" {
+			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.Content != "" &&
+				!m.assistantRunFinalized(runID) {
+				if !m.responseStarted {
+					m.lastAssistantText = ""
+				}
 				// Accumulate and re-render the assistant message through the
 				// glamour-backed message bubble. Re-rendering the full
 				// accumulated text each delta (rather than appending raw chunks
 				// with AppendChunk) is what enables markdown rendering on the
 				// live stream and avoids chunk-boundary line corruption.
 				m.lastAssistantText += p.Content
+				if runID != "" {
+					m.assistantRunText[runID] = m.lastAssistantText
+				}
 				m.renderActiveAssistantBubble()
+			}
+		case "assistant.message":
+			runID := msg.RunID
+			if runID == "" {
+				runID = m.RunID
+			}
+			m.trackAssistantRun(runID)
+			var p struct {
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal(msg.Raw, &p); err == nil {
+				if msg.Conversation && !m.runActive && runID != "" && runID != m.RunID && !m.assistantRunFinalized(runID) {
+					m.assistantTranscriptFinalized = false
+					m.lastAssistantText = ""
+					m.responseStarted = false
+					m.activeAssistantLineCount = 0
+				}
+				if p.Content == "" || m.assistantRunFinalized(runID) ||
+					(m.responseStarted && p.Content == m.lastAssistantText) {
+					break
+				}
+				// assistant.message is the authoritative full response. Most
+				// providers precede it with deltas, but valid non-streaming
+				// providers may emit only this terminal message.
+				m.lastAssistantText = p.Content
+				if runID != "" {
+					m.assistantRunText[runID] = p.Content
+				}
+				m.renderActiveAssistantBubble()
+				if m.terminalRunIDs[runID] && !m.assistantRunFinalized(runID) {
+					m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{Role: "assistant", Content: p.Content, Timestamp: time.Now()})
+					m.setAssistantRunFinalized(runID, true)
+				}
 			}
 		case "assistant.thinking.delta":
 			var p struct {
@@ -4376,25 +4748,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingAutoCompactID = ""
 			}
 		case "usage.delta":
-			var p struct {
-				CumulativeUsage struct {
-					TotalTokens int `json:"total_tokens"`
-				} `json:"cumulative_usage"`
-				CumulativeCostUSD float64 `json:"cumulative_cost_usd"`
-			}
-			if err := json.Unmarshal(msg.Raw, &p); err == nil {
-				m.cumulativeCostUSD = p.CumulativeCostUSD
-				m.statusBar.SetCost(m.cumulativeCostUSD)
-				m.totalTokens = p.CumulativeUsage.TotalTokens
-				// Update today's data point for the stats panel.
-				m.usageDataPoints = upsertTodayDataPoint(m.usageDataPoints, 1, p.CumulativeCostUSD)
-				m.statsPanel = statspanel.New(m.usageDataPoints)
-				// Update context grid token count.
-				m.contextGrid.UsedTokens = m.totalTokens
-				m.statusBar.SetContext(m.totalTokens, m.contextWindowTotal())
-				// Keep the /cost overlay's snapshot current even while it is open.
-				m.costDisplay = m.costDisplay.Update(costSnapshotFromModel(&m))
-			}
+			m.applyUsageDelta(msg.Raw)
 		case "run.waiting_for_user":
 			// Extract run_id from the event payload, then fetch pending questions.
 			var p struct {
@@ -4408,6 +4762,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "run.resumed":
 			// Dismiss the ask-user overlay when the run resumes.
 			m.askUser = askUserState{}
+		case "run.completed", "run.failed":
+			// A conversation stream deliberately remains alive after an
+			// individual run terminates. Finalize that run's assistant bubble so
+			// a later cron/callback run appends a new response instead of
+			// replacing the prior external continuation in the idle transcript.
+			terminalRunID := msg.RunID
+			if msg.Conversation && !m.runActive && (terminalRunID == "" || terminalRunID != m.RunID) {
+				if m.lastAssistantText != "" && !m.assistantRunFinalized(terminalRunID) {
+					m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{
+						Role:      "assistant",
+						Content:   m.lastAssistantText,
+						Timestamp: time.Now(),
+					})
+				}
+				m.assistantTranscriptFinalized = false
+				m.setAssistantRunFinalized(terminalRunID, true)
+				m.lastAssistantText = ""
+				m.responseStarted = false
+				m.activeAssistantLineCount = 0
+			}
 		case "steering.received":
 			// Server-confirmed steering injection (harness drainSteering): the
 			// steered text was appended to the run as a user message at the last
@@ -4425,17 +4799,84 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		// Continue polling the SSE channel.
-		if m.sseCh != nil {
+		if msg.Conversation && m.conversationSSECh != nil {
+			cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+		} else if !msg.Conversation && m.sseCh != nil {
 			cmds = append(cmds, pollSSECmd(m.sseCh))
 		}
 
+	case SSEConversationReplayBoundaryMsg:
+		if !msg.Conversation || msg.ConversationID != m.conversationID || !m.conversationReplayAwaitingMarker {
+			break
+		}
+		if !msg.Supported {
+			// The marker is additive. Cancel the opened stream even after HTTP
+			// 200 before the legacy GET-first fallback: frames already queued
+			// behind this bridge-status message would otherwise race the snapshot.
+			m.conversationReplayAwaitingMarker = false
+			m.conversationReplayLegacyHistoryLoading = true
+			if m.cancelConversationSSE != nil {
+				m.cancelConversationSSE()
+			}
+			m.cancelConversationSSE = nil
+			m.conversationSSECh = nil
+			cmds = append(cmds, fetchConversationMessagesCmd(m.config.BaseURL, m.conversationID, m.config.APIKey))
+		}
+		if msg.Supported && m.conversationSSECh != nil {
+			cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+		}
+
 	case SSEErrorMsg:
-		m.vp.AppendLine("⚠ stream error: " + msg.Err.Error())
-		if m.sseCh != nil {
+		if msg.Conversation && msg.ConversationID != m.conversationID {
+			return m, nil
+		}
+		if !(msg.Conversation && m.conversationReplayLegacyHistoryLoading) {
+			m.vp.AppendLine("⚠ stream error: " + msg.Err.Error())
+		}
+		if msg.Conversation && m.conversationSSECh != nil {
+			cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+		} else if !msg.Conversation && m.sseCh != nil {
 			cmds = append(cmds, pollSSECmd(m.sseCh))
 		}
 
 	case SSEDoneMsg:
+		if msg.Conversation && msg.ConversationID != m.conversationID {
+			return m, nil
+		}
+		// A real terminal from a previous run can race a resumed selected
+		// conversation's newly-created run bridge. Bridge lifecycle sentinels
+		// intentionally have no RunID and retain the existing reconnect policy.
+		if !msg.Conversation && msg.RunID != "" && msg.RunID != m.RunID {
+			return m, nil
+		}
+		if msg.Conversation {
+			if m.conversationReplayLegacyHistoryLoading {
+				if m.cancelConversationSSE != nil {
+					m.cancelConversationSSE()
+					m.cancelConversationSSE = nil
+				}
+				m.conversationSSECh = nil
+				break
+			}
+			if msg.EventType == "bridge.fatal" {
+				m.conversationSSECh = nil
+				if m.cancelConversationSSE != nil {
+					m.cancelConversationSSE()
+					m.cancelConversationSSE = nil
+				}
+				break
+			}
+			if m.conversationID != "" && m.conversationSSEReconnectAttempts < maxSSEReconnectAttempts {
+				m.conversationSSEReconnectAttempts++
+				if m.cancelConversationSSE != nil {
+					m.cancelConversationSSE()
+					m.cancelConversationSSE = nil
+				}
+				m.conversationSSECh = nil
+				cmds = append(cmds, reconnectConversationSSECmd(m.config.BaseURL, m.conversationID, m.conversationLastEventID, m.config.APIKey, m.conversationSSEReconnectAttempts, m.conversationReplayAwaitingMarker))
+			}
+			break
+		}
 		// "bridge.fatal" marks a permanent failure (401/403/404 — see
 		// isNonRetryableSSEStatus in bridge.go) that a reconnect cannot fix;
 		// it is treated as terminal here specifically so it is NOT retried
@@ -4443,6 +4884,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// below (the SSEErrorMsg delivered immediately before this already
 		// carried a single, specific, actionable explanation).
 		isTerminal := msg.EventType == "run.completed" || msg.EventType == "run.failed" || msg.EventType == "bridge.fatal"
+		if isTerminal {
+			m.markRunTerminal(msg.RunID)
+		}
 
 		// The connection ended without a genuine run.completed/run.failed
 		// event — e.g. the server dropped the TCP connection mid-burst. The
@@ -4466,6 +4910,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vp.AppendLine("")
 		}
 		m.sseReconnectAttempts = 0
+		if msg.EventType == "run.completed" {
+			cmds = append(cmds, m.completeInitAgentsMd(m.RunID))
+		} else {
+			// Every non-successful terminal or exhausted reconnect path abandons
+			// this run's pending write. A later run must never inherit it.
+			if m.clearPendingInitAgentsMd(m.RunID) {
+				cmds = append(cmds, m.setStatusMsg("AGENTS.md generation failed"))
+			}
+		}
 		m.runActive = false
 		m.sseCh = nil
 		m.responseStarted = false
@@ -4476,12 +4929,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancelRun = nil
 		}
 		// Record completed assistant response in transcript.
-		if m.lastAssistantText != "" {
+		if m.lastAssistantText != "" && !m.assistantRunFinalized(m.RunID) {
 			m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{
 				Role:      "assistant",
 				Content:   m.lastAssistantText,
 				Timestamp: time.Now(),
 			})
+			m.setAssistantRunFinalized(m.RunID, true)
 		}
 		if msg.EventType == "run.failed" {
 			for _, line := range formatRunError(msg.Error) {
@@ -4489,6 +4943,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.vp.AppendLine("")
+		if cmd := m.startConversationSSE(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 
 	case SSEReconnectedMsg:
 		// A backed-off reconnect attempt (see reconnectSSECmd) has
@@ -4507,9 +4964,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cancelRun = msg.Cancel
 		cmds = append(cmds, pollSSECmd(m.sseCh))
 
+	case conversationSSEStartedMsg:
+		if msg.ConversationID != m.conversationID || m.conversationSSECh != nil {
+			if msg.Cancel != nil {
+				msg.Cancel()
+			}
+			break
+		}
+		m.conversationSSECh = msg.Ch
+		m.cancelConversationSSE = msg.Cancel
+		cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+
+	case conversationSSEReconnectedMsg:
+		if msg.ConversationID != m.conversationID || m.conversationSSECh != nil {
+			if msg.Cancel != nil {
+				msg.Cancel()
+			}
+			break
+		}
+		m.conversationSSECh = msg.Ch
+		m.cancelConversationSSE = msg.Cancel
+		cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+
 	case SSEDropMsg:
 		// Dropped message — continue polling.
-		if m.sseCh != nil {
+		if msg.Conversation && msg.ConversationID != m.conversationID {
+			return m, nil
+		}
+		if msg.Conversation && m.conversationSSECh != nil {
+			cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+		} else if !msg.Conversation && m.sseCh != nil {
 			cmds = append(cmds, pollSSECmd(m.sseCh))
 		}
 
@@ -4568,6 +5052,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modelSwitcher = m.modelSwitcher.WithModels(msg.Models).SetLoading(false)
 		m.modelSwitcher = m.modelSwitcher.WithStarred(currentStarred)
 		m.serverModels = msg.Models
+		// The list is where the declared window comes from, so refresh it now
+		// that the entries have arrived (issue #1306).
+		m.applyContextWindowForSelectedModel()
+		m.statusBar.SetContext(m.totalTokens, m.contextWindowTotal())
 		// For OpenRouter models, availability depends solely on the OpenRouter API key.
 		if msg.Source == "openrouter" {
 			orKeySet := m.providerKeyConfigured("openrouter")
@@ -4594,6 +5082,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modelSwitcher = modelswitcher.New(msg.ModelID)
 		m.modelSwitcher = m.modelSwitcher.WithCurrentReasoning(msg.ReasoningEffort)
 		m.modelSwitcher = m.modelSwitcher.WithStarred(currentStarred)
+		// The window belongs to the newly selected model, so re-read it before
+		// the status bar is refreshed below (issue #1306).
+		m.applyContextWindowForSelectedModel()
+		m.statusBar.SetContext(m.totalTokens, m.contextWindowTotal())
 		m.statusBar.SetModel(m.statusBarModelLabel())
 		// Keep the /cost overlay's model label current even if it is already
 		// open and no usage.delta event arrives before the next render.
@@ -4618,9 +5110,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case GatewaySelectedMsg:
 		m.selectedGateway = msg.Gateway
-		hcfg, _ := harnessconfig.Load()
-		hcfg.Gateway = msg.Gateway
-		_ = harnessconfig.Save(hcfg)
+		// Refuses to write when the stored config cannot be read, rather than
+		// overwriting it with an empty one (issue #1300).
+		_ = persistConfigField(func(c *harnessconfig.Config) { c.Gateway = msg.Gateway })
 		m.statusBar.SetModel(m.statusBarModelLabel())
 		label := "Gateway: Direct"
 		if msg.Gateway == "openrouter" {
@@ -4659,12 +5151,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case APIKeySetMsg:
 		// Save to persistent config.
-		hcfg, _ := harnessconfig.Load()
-		if hcfg.APIKeys == nil {
-			hcfg.APIKeys = make(map[string]string)
-		}
-		hcfg.APIKeys[msg.Provider] = msg.Key
-		_ = harnessconfig.Save(hcfg)
+		_ = persistConfigField(func(c *harnessconfig.Config) {
+			if c.APIKeys == nil {
+				c.APIKeys = make(map[string]string)
+			}
+			c.APIKeys[msg.Provider] = msg.Key
+		})
 		// Refresh provider list.
 		cmds = append(cmds, fetchProvidersCmd(m.config.BaseURL, m.config.APIKey))
 		cmds = append(cmds, m.setStatusMsg("Key saved for "+msg.Provider))
@@ -4713,7 +5205,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Switch into the fork. The transcript stays: the fork holds the
 			// same history, so there is nothing to re-fetch or clear. New turns
 			// land only in the fork from here on.
+			m.stopConversationSSE()
 			m.conversationID = msg.NewID
+			cmds = append(cmds, m.startConversationSSE())
 			m.statusBar.SetTitle(m.sessionTitle())
 			cmds = append(cmds, m.setStatusMsg(fmt.Sprintf("Forked %s → %s; you are now in the fork", msg.SrcID, msg.NewID)))
 		}
@@ -4726,8 +5220,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, spinnerTickCmd())
 		}
 
-	case pluginWarningMsg:
-		// Show a transient notice that some plugins failed to load.
+	case startupNoticeMsg:
+		// Show a transient notice collected while building the model.
 		cmds = append(cmds, m.setStatusMsg(msg.text))
 
 	case ProfilesLoadedMsg:
@@ -4777,13 +5271,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.themeName = msg.Entry.Name
 		m.SetTheme(th)
-		if hcfg, herr := harnessconfig.Load(); herr == nil && hcfg != nil {
-			hcfg.Theme = msg.Entry.Name
-			_ = harnessconfig.Save(hcfg)
-		}
+		themeName := msg.Entry.Name
+		_ = persistConfigField(func(c *harnessconfig.Config) { c.Theme = themeName })
 		cmds = append(cmds, m.setStatusMsg("Theme: "+msg.Entry.Name))
 
 	case SessionPickerSelectedMsg:
+		m.stopConversationSSE()
 		m.conversationID = msg.SessionID
 		m.sessionPicker = m.sessionPicker.Close()
 		m.overlayActive = false
@@ -4799,10 +5292,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeAssistantLineCount = 0
 		m.clearPendingSteers()
 		m.clearCompactionBlocks()
-		// Show a system message so the user knows the session switch happened.
-		m.vp.AppendLine("↩ Resumed session " + msg.SessionID + ". Previous messages are on the server.")
+		// Establish the selected conversation's boundary stream before accepting
+		// any history. A supported server returns one atomic snapshot followed by
+		// normal live frames; an unsupported server is cancelled before the
+		// existing legacy GET fallback runs.
+		m.conversationReplayAwaitingMarker = true
+		m.vp.AppendLine("↻ Loading conversation " + msg.SessionID + "…")
 		m.vp.AppendLine("")
-		cmds = append(cmds, m.setStatusMsg("Switched to session "+msg.SessionID[:min8(msg.SessionID)]))
+		cmds = append(cmds,
+			m.setStatusMsg("Loading conversation "+msg.SessionID[:min8(msg.SessionID)]),
+			m.startConversationSSE(),
+		)
 
 	case SessionDeletedMsg:
 		// Remove from the persistent store and refresh the picker list.
@@ -4821,15 +5321,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 
 	case ConversationHistoryMsg:
+		if msg.ConversationID != m.conversationID {
+			break
+		}
+		// A GET result from an older attempt cannot race an accepted atomic
+		// marker snapshot into the transcript.
+		if m.conversationReplayAwaitingMarker {
+			break
+		}
 		m.appendConversationMessages(msg.Messages)
+		if msg.LastEventID != "" {
+			m.conversationLastEventID = msg.LastEventID
+		}
+		legacySnapshotOnly := m.conversationReplayLegacyHistoryLoading && msg.LastEventID == ""
+		m.conversationReplayLegacyHistoryLoading = false
 		shortID := msg.ConversationID
 		if len(shortID) > 8 {
 			shortID = shortID[:8]
 		}
+		if legacySnapshotOnly {
+			// An unsupported server did not pair its GET snapshot with an event
+			// watermark. Reopening SSE from an empty cursor would replay the
+			// rendered history, and no content-based client heuristic can tell it
+			// apart from a legitimate same-text later turn. Keep the snapshot
+			// truthful and fail closed until the server supports the atomic marker.
+			cmds = append(cmds, m.setStatusMsg(fmt.Sprintf("Resumed conversation %s in snapshot-only mode; upgrade harness server for live continuations", shortID)))
+			break
+		}
 		cmds = append(cmds, m.setStatusMsg(fmt.Sprintf("Resumed conversation %s (%d messages)", shortID, len(msg.Messages))))
+		cmds = append(cmds, m.startConversationSSE())
 
 	case ConversationHistoryErrorMsg:
+		if msg.ConversationID != m.conversationID {
+			break
+		}
+		m.conversationReplayLoadingHistory = false
+		m.conversationReplayLegacyHistoryLoading = false
+		m.conversationReplayBuffered = nil
 		cmds = append(cmds, m.setStatusMsg(fmt.Sprintf("Could not load conversation %s: %s", msg.ConversationID, msg.Err)))
+		cmds = append(cmds, m.startConversationSSE())
 
 	case UndoResultMsg:
 		switch {
@@ -5315,7 +5845,18 @@ func (m Model) viewAPIKeysOverlay() string {
 		}
 		status := unsetStyle.Render("\u25cb unset")
 		if p.Configured {
-			status = configuredStyle.Render("\u25cf set")
+			// Attribute the key to its source so a failing request can be traced
+			// to a credential. Never render key material here (issue #1297).
+			label := "\u25cf set"
+			switch src := m.providerKeySource(p.Name); src {
+			case keySourceConflict:
+				label += " (" + src.label() + ")"
+				status = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(label)
+			case keySourceNone:
+				status = configuredStyle.Render(label)
+			default:
+				status = configuredStyle.Render(label + " (" + src.label() + ")")
+			}
 		}
 		detail := p.APIKeyEnv
 		if p.AuthType == "subscription" {

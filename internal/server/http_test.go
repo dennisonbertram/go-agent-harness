@@ -14,13 +14,40 @@ import (
 	"testing"
 	"time"
 
+	"go-agent-harness/internal/checkpoints"
 	"go-agent-harness/internal/harness"
+	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/store"
 )
 
 type staticProvider struct {
 	result harness.CompletionResult
+}
+
+type alreadyResolvedInputBroker struct {
+	ready chan struct{}
+}
+
+func (b *alreadyResolvedInputBroker) Ask(ctx context.Context, req htools.AskUserQuestionRequest) (map[string]string, time.Time, error) {
+	pending := htools.AskUserQuestionPending{
+		RunID: req.RunID, CallID: req.CallID, Tool: htools.AskUserQuestionToolName,
+		Questions: req.Questions, DeadlineAt: time.Now().Add(req.Timeout),
+	}
+	if req.OnPending != nil {
+		req.OnPending(ctx, pending)
+	}
+	close(b.ready)
+	<-ctx.Done()
+	return nil, time.Time{}, ctx.Err()
+}
+
+func (b *alreadyResolvedInputBroker) Pending(string) (htools.AskUserQuestionPending, bool) {
+	return htools.AskUserQuestionPending{}, false
+}
+
+func (*alreadyResolvedInputBroker) Submit(string, map[string]string) error {
+	return checkpoints.ErrAlreadyResolved
 }
 
 func (s *staticProvider) Complete(_ context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {
@@ -48,6 +75,39 @@ func (s *scriptedProvider) Complete(_ context.Context, _ harness.CompletionReque
 // SSE keep-alive pings and other scenarios that require an idle event stream.
 type waitingProvider struct {
 	done chan struct{}
+}
+
+type transientWaitingEventStore struct {
+	*store.MemoryStore
+	mu       sync.Mutex
+	attempts int
+	failed   chan struct{}
+	retried  chan struct{}
+}
+
+func newTransientWaitingEventStore() *transientWaitingEventStore {
+	return &transientWaitingEventStore{
+		MemoryStore: store.NewMemoryStore(),
+		failed:      make(chan struct{}),
+		retried:     make(chan struct{}),
+	}
+}
+
+func (s *transientWaitingEventStore) AppendEvent(ctx context.Context, event *store.Event) error {
+	if event.EventType == string(harness.EventRunWaitingForUser) {
+		s.mu.Lock()
+		s.attempts++
+		attempt := s.attempts
+		s.mu.Unlock()
+		switch attempt {
+		case 1:
+			close(s.failed)
+			return errors.New("transient waiting event append failure")
+		case 2:
+			close(s.retried)
+		}
+	}
+	return s.MemoryStore.AppendEvent(ctx, event)
 }
 
 func (w *waitingProvider) Complete(ctx context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {
@@ -393,6 +453,65 @@ func TestRunInputEndpoints(t *testing.T) {
 	}
 }
 
+func TestRunInputAlreadyResolvedCheckpointReturnsStableConflict(t *testing.T) {
+	broker := &alreadyResolvedInputBroker{ready: make(chan struct{})}
+	provider := &scriptedProvider{turns: []harness.CompletionResult{{
+		ToolCalls: []harness.ToolCall{{
+			ID: "call_input_resolved", Name: htools.AskUserQuestionToolName,
+			Arguments: `{"questions":[{"question":"Where next?","header":"Route","options":[{"label":"Docs","description":"Read docs"},{"label":"Code","description":"Read code"}],"multiSelect":false}]}`,
+		}},
+	}}}
+	registry := harness.NewDefaultRegistryWithOptions(t.TempDir(), harness.DefaultRegistryOptions{
+		ApprovalMode: harness.ToolApprovalModeFullAuto, AskUserBroker: broker, AskUserTimeout: time.Second,
+	})
+	runner := harness.NewRunner(provider, registry, harness.RunnerConfig{
+		DefaultModel: "gpt-5-nano", MaxSteps: 2, AskUserBroker: broker, AskUserTimeout: time.Second,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	createRes, err := http.Post(ts.URL+"/v1/runs", "application/json", bytes.NewBufferString(`{"prompt":"Need input"}`))
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	defer createRes.Body.Close()
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(createRes.Body).Decode(&created); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	select {
+	case <-broker.ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for pending input")
+	}
+
+	resp, err := http.Post(
+		ts.URL+"/v1/runs/"+created.RunID+"/input",
+		"application/json",
+		bytes.NewBufferString(`{"answers":{"Where next?":"Docs"}}`),
+	)
+	if err != nil {
+		t.Fatalf("post input: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusConflict)
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode conflict: %v", err)
+	}
+	if body.Error.Code != "no_pending_input" {
+		t.Fatalf("code = %q, want no_pending_input", body.Error.Code)
+	}
+}
+
 func TestRunInputEndpointsMissingRunAndInvalidJSON(t *testing.T) {
 	t.Parallel()
 
@@ -446,6 +565,7 @@ func TestConversationMessagesEndpoint(t *testing.T) {
 	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "done"}}, harness.NewRegistry(), harness.RunnerConfig{
 		DefaultModel: "gpt-4.1-mini",
 		MaxSteps:     2,
+		Store:        store.NewMemoryStore(),
 	})
 
 	ts := httptest.NewServer(New(runner))
@@ -501,13 +621,17 @@ func TestConversationMessagesEndpoint(t *testing.T) {
 	}
 
 	var payload struct {
-		Messages []harness.Message `json:"messages"`
+		Messages    []harness.Message `json:"messages"`
+		LastEventID string            `json:"last_event_id"`
 	}
 	if err := json.NewDecoder(convRes.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode conversation messages: %v", err)
 	}
 	if len(payload.Messages) == 0 {
 		t.Fatalf("expected non-empty messages array")
+	}
+	if payload.LastEventID == "" {
+		t.Fatal("expected non-empty last_event_id paired with completed messages")
 	}
 }
 
@@ -953,6 +1077,121 @@ func TestLastEventIDSkipsSeenEvents(t *testing.T) {
 	if strings.Contains(reconnectStr, fmt.Sprintf("id: %s:1\n", created.RunID)) {
 		t.Fatalf("reconnect should not contain event :1")
 	}
+}
+
+func TestLastEventIDAfterTransientEventRetryReturnsOnlyUnseenEvents(t *testing.T) {
+	t.Parallel()
+
+	provider := &scriptedProvider{turns: []harness.CompletionResult{
+		{
+			ToolCalls: []harness.ToolCall{{
+				ID:        "call_retry_wait_event",
+				Name:      htools.AskUserQuestionToolName,
+				Arguments: `{"questions":[{"question":"Continue?","header":"Continue","options":[{"label":"Yes","description":"Continue"},{"label":"No","description":"Stop"}],"multiSelect":false}]}`,
+			}},
+		},
+		{Content: "done after retry"},
+	}}
+	broker := harness.NewInMemoryAskUserQuestionBroker(time.Now)
+	persistence := newTransientWaitingEventStore()
+	const timeout = 2 * time.Second
+	runner := harness.NewRunner(provider, harness.NewDefaultRegistryWithOptions(t.TempDir(), harness.DefaultRegistryOptions{
+		ApprovalMode:   harness.ToolApprovalModeFullAuto,
+		AskUserBroker:  broker,
+		AskUserTimeout: timeout,
+	}), harness.RunnerConfig{
+		DefaultModel:   "gpt-4.1-mini",
+		MaxSteps:       4,
+		AskUserBroker:  broker,
+		AskUserTimeout: timeout,
+		Store:          persistence,
+	})
+
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+	res, err := http.Post(ts.URL+"/v1/runs", "application/json", bytes.NewBufferString(`{"prompt":"retry pending event"}`))
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	defer res.Body.Close()
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	select {
+	case <-persistence.retried:
+	case <-time.After(timeout):
+		t.Fatal("waiting event append was not retried")
+	}
+	if err := runner.SubmitInput(created.RunID, map[string]string{"Continue?": "Yes"}); err != nil {
+		t.Fatalf("SubmitInput: %v", err)
+	}
+
+	fullRes, err := http.Get(ts.URL + "/v1/runs/" + created.RunID + "/events")
+	if err != nil {
+		t.Fatalf("full events: %v", err)
+	}
+	fullBody, err := io.ReadAll(fullRes.Body)
+	fullRes.Body.Close()
+	if err != nil {
+		t.Fatalf("read full events: %v", err)
+	}
+	fullIDs, waitingIndex := sseIDsAndWaitingIndex(string(fullBody))
+	if waitingIndex < 0 {
+		t.Fatalf("full replay has no waiting event:\n%s", fullBody)
+	}
+	for i, id := range fullIDs {
+		want := fmt.Sprintf("%s:%d", created.RunID, i)
+		if id != want {
+			t.Fatalf("event IDs are not contiguous at index %d: got %q, want %q; all=%v", i, id, want, fullIDs)
+		}
+	}
+
+	reconnectReq, err := http.NewRequest(http.MethodGet, ts.URL+"/v1/runs/"+created.RunID+"/events", nil)
+	if err != nil {
+		t.Fatalf("new reconnect request: %v", err)
+	}
+	reconnectReq.Header.Set("Last-Event-ID", fullIDs[waitingIndex])
+	reconnectRes, err := http.DefaultClient.Do(reconnectReq)
+	if err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	reconnectBody, err := io.ReadAll(reconnectRes.Body)
+	reconnectRes.Body.Close()
+	if err != nil {
+		t.Fatalf("read reconnect events: %v", err)
+	}
+	reconnectIDs, _ := sseIDsAndWaitingIndex(string(reconnectBody))
+	wantReconnect := fullIDs[waitingIndex+1:]
+	if fmt.Sprint(reconnectIDs) != fmt.Sprint(wantReconnect) {
+		t.Fatalf("reconnect IDs = %v, want only unseen IDs %v; body:\n%s", reconnectIDs, wantReconnect, reconnectBody)
+	}
+}
+
+func sseIDsAndWaitingIndex(body string) ([]string, int) {
+	ids := make([]string, 0)
+	waitingIndex := -1
+	for _, frame := range strings.Split(body, "\n\n") {
+		var id, eventType string
+		for _, line := range strings.Split(frame, "\n") {
+			switch {
+			case strings.HasPrefix(line, "id: "):
+				id = strings.TrimPrefix(line, "id: ")
+			case strings.HasPrefix(line, "event: "):
+				eventType = strings.TrimPrefix(line, "event: ")
+			}
+		}
+		if id == "" {
+			continue
+		}
+		ids = append(ids, id)
+		if eventType == string(harness.EventRunWaitingForUser) {
+			waitingIndex = len(ids) - 1
+		}
+	}
+	return ids, waitingIndex
 }
 
 // TestLastEventID_AdversarialValuesDoNotPanic is an ATTACK test (C1): a

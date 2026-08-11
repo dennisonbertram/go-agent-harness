@@ -253,3 +253,32 @@ func TestStatusbarTitleClearRestoresBaseline(t *testing.T) {
 		t.Errorf("clearing the title must restore the baseline bar:\nbaseline: %q\ncleared:  %q", baseline, sb.View())
 	}
 }
+
+// TestContextMeterClampsAtHundredPercent is the regression test for the status
+// bar half of issue #1307. A context-occupancy meter cannot exceed its window;
+// the /context overlay already clamps, so the two surfaces must agree.
+func TestContextMeterClampsAtHundredPercent(t *testing.T) {
+	sb := statusbar.New(200)
+	sb.SetContext(262000, 200000)
+
+	view := sb.View()
+	if !strings.Contains(view, "100%") {
+		t.Errorf("used above total must render 100%%, got: %q", view)
+	}
+	for _, over := range []string{"131%", "101%"} {
+		if strings.Contains(view, over) {
+			t.Errorf("meter rendered %s, which is impossible for occupancy: %q", over, view)
+		}
+	}
+}
+
+// TestContextMeterReportsTrueMidRangePercent is the false-positive control: the
+// clamp must not be achievable by pinning the meter to a constant.
+func TestContextMeterReportsTrueMidRangePercent(t *testing.T) {
+	sb := statusbar.New(200)
+	sb.SetContext(50000, 200000)
+
+	if view := sb.View(); !strings.Contains(view, "25%") {
+		t.Errorf("expected 25%% for 50000/200000, got: %q", view)
+	}
+}

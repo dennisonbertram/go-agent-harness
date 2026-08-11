@@ -147,6 +147,19 @@ func TestSubagentRunnerHandoffRunPrompt(t *testing.T) {
 	}
 }
 
+func TestSubagentRunnerHandoffRunForkedSkill(t *testing.T) {
+	t.Parallel()
+	handoff, _ := newHandoffTestRunner(t)
+
+	result, err := handoff.RunForkedSkill(t.Context(), htools.ForkConfig{Prompt: "fork through handoff"})
+	if err != nil {
+		t.Fatalf("RunForkedSkill: %v", err)
+	}
+	if result.Output != handoffTestContent {
+		t.Fatalf("RunForkedSkill output = %q, want %q", result.Output, handoffTestContent)
+	}
+}
+
 func TestSubagentRunnerHandoffCancelRun(t *testing.T) {
 	t.Parallel()
 	handoff, runner := newHandoffTestRunner(t)

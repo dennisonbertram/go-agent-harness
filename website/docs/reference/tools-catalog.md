@@ -163,7 +163,7 @@ Registered when `EnableCron && CronClient != nil`.
 
 | Tool | What it does |
 |------|--------------|
-| `cron_create` | Create a recurring job. Params: `name`, `schedule` (5-field UTC cron), `command`, `timeout_seconds` (default 30). |
+| `cron_create` | Create a recurring job. Required: `name`, `schedule` (5-field UTC cron), and explicit `execution_type` (`shell` or `harness`). `shell` requires a non-empty `command` for headless execution and records command output in history; `harness` requires a non-empty `prompt`, rejects `command`, and starts an assistant continuation in the creating conversation. `timeout_seconds` defaults to 30. |
 | `cron_list` | List all cron jobs. |
 | `cron_get` | Get a job and its 5 most recent executions by ID. |
 | `cron_delete` | Delete a cron job (soft-delete). |

@@ -3,11 +3,15 @@ package script
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -331,6 +335,130 @@ func TestScriptHandler_Timeout(t *testing.T) {
 	if elapsed > 5*time.Second {
 		t.Errorf("expected timeout within 5s, took %v", elapsed)
 	}
+}
+
+type scriptHandlerResult struct {
+	err     error
+	elapsed time.Duration
+}
+
+// TestScriptHandler_TimeoutKillsDescendantHoldingStdio guards #1216. A script
+// starts a real background child that keeps the handler's stdout/stderr pipes
+// open, records its PID, and waits. Parent cancellation after the proven start
+// barrier must return promptly and kill that child rather than letting Cmd.Wait
+// block until its natural exit.
+func TestScriptHandler_TimeoutKillsDescendantHoldingStdio(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell scripts not supported on Windows")
+	}
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "descendant.pid")
+	startedFile := filepath.Join(dir, "descendant.started")
+	// This fixture must not use the configured handler timeout as a process-start
+	// deadline under full concurrent race load. TestScriptHandler_Timeout keeps
+	// the independent one-second configured-timeout contract.
+	toolJSON := `{"name":"stdio_holder","description":"holds inherited stdio","parameters":{"type":"object","properties":{}},"timeout_seconds":30}`
+	script := fmt.Sprintf("#!/bin/sh\nsleep 30 &\nchild=$!\nprintf '%%s\\n' \"$child\" > %q\ntouch %q\nwait \"$child\"\n", pidFile, startedFile)
+	makeToolDir(t, dir, "stdio-holder", toolJSON, script, true)
+
+	loaded, err := LoadScriptTools(dir)
+	if err != nil {
+		t.Fatalf("LoadScriptTools: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one tool, got %d", len(loaded))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resultCh := make(chan scriptHandlerResult, 1)
+	go func() {
+		start := time.Now()
+		_, err := loaded[0].Handler(ctx, json.RawMessage(`{}`))
+		resultCh <- scriptHandlerResult{err: err, elapsed: time.Since(start)}
+	}()
+
+	pid, err := waitForScriptPID(pidFile, startedFile, resultCh, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = syscall.Kill(pid, syscall.SIGKILL) }()
+	cancelAt := time.Now()
+	cancel()
+
+	select {
+	case got := <-resultCh:
+		if got.err == nil {
+			t.Fatal("expected cancellation error")
+		}
+		if postCancel := time.Since(cancelAt); postCancel >= 5*time.Second {
+			t.Fatalf("handler took %v after parent cancellation (total setup+handler duration %v)", postCancel, got.elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not return promptly after parent cancellation")
+	}
+	assertScriptProcessGone(t, pid, 3*time.Second)
+}
+
+func TestWaitForScriptPIDReportsEarlyHandlerResult(t *testing.T) {
+	resultCh := make(chan scriptHandlerResult, 1)
+	resultCh <- scriptHandlerResult{err: errors.New("fixture exited before publishing PID")}
+
+	_, err := waitForScriptPID("missing.pid", "missing.started", resultCh, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "fixture exited before publishing PID") {
+		t.Fatalf("early handler result = %v, want its actual error", err)
+	}
+}
+
+func waitForScriptPID(pidFile, startedFile string, resultCh <-chan scriptHandlerResult, timeout time.Duration) (int, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case result := <-resultCh:
+			return 0, fmt.Errorf("script handler exited before descendant PID became ready after %v: %w", result.elapsed, result.err)
+		default:
+		}
+		if _, err := os.Stat(startedFile); err == nil {
+			data, readErr := os.ReadFile(pidFile)
+			if readErr == nil {
+				pid, convErr := strconv.Atoi(strings.TrimSpace(string(data)))
+				if convErr == nil && pid > 0 {
+					return pid, nil
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case result := <-resultCh:
+		return 0, fmt.Errorf("script handler exited before descendant PID became ready after %v: %w", result.elapsed, result.err)
+	default:
+		return 0, fmt.Errorf("descendant PID did not become ready within %v", timeout)
+	}
+}
+
+func assertScriptProcessGone(t *testing.T, pid int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if runtime.GOOS == "linux" {
+			if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err != nil || scriptProcessStateIsZombie(data) {
+				return
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("descendant PID %d remained alive after %v", pid, timeout)
+}
+
+func scriptProcessStateIsZombie(stat []byte) bool {
+	if idx := strings.LastIndexByte(string(stat), ')'); idx >= 0 && idx+2 < len(stat) {
+		return stat[idx+2] == 'Z'
+	}
+	return false
 }
 
 // TestScriptHandler_EnvIsolation verifies that secret env vars are not passed to scripts.

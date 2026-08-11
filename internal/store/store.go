@@ -5,8 +5,31 @@ package store
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
 )
+
+// ErrConversationOwnerConflict is returned by CreateRun when the run's
+// conversation has already been durably claimed by another tenant or agent.
+// Built-in stores couple the first ownership claim and run insert atomically.
+var ErrConversationOwnerConflict = errors.New("conversation owner conflict")
+
+// ErrCronRunDispatchLeaseLost is returned when a process tries to accept a
+// cron start after another process has acquired its durable dispatch lease.
+var ErrCronRunDispatchLeaseLost = errors.New("cron run dispatch lease lost")
+
+func normalizeConversationOwner(tenantID, agentID string) (string, string) {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		agentID = "default"
+	}
+	return tenantID, agentID
+}
 
 // RunStatus mirrors harness.RunStatus to avoid a circular import.
 type RunStatus string
@@ -51,6 +74,33 @@ type Run struct {
 	Recap          *WorkflowRecap `json:"recap,omitempty"`
 	CreatedAt      time.Time      `json:"created_at"`
 	UpdatedAt      time.Time      `json:"updated_at"`
+}
+
+// CronRunStart is the durable idempotency binding for an authenticated
+// cronsd-to-harnessd start request. Fingerprint is a one-way digest of the
+// scoped request; prompt contents are never stored here.
+type CronRunStart struct {
+	TenantID           string
+	IdempotencyKey     string
+	Fingerprint        string
+	RunID              string
+	Accepted           bool
+	DispatchOwner      string
+	DispatchLeaseUntil time.Time
+	CreatedAt          time.Time
+}
+
+// CronRunStartStore is an optional durable extension implemented by the
+// built-in stores. ClaimCronRunStart atomically creates a reservation or
+// returns the existing tenant/key binding. AcquireCronRunStartDispatchLease
+// atomically fences dispatch across processes and permits takeover only after
+// expiry. RenewCronRunStartDispatchLease extends only a live lease held by the
+// same owner. MarkCronRunStartAccepted succeeds only for the current owner.
+type CronRunStartStore interface {
+	ClaimCronRunStart(ctx context.Context, start CronRunStart) (persisted CronRunStart, claimed bool, err error)
+	AcquireCronRunStartDispatchLease(ctx context.Context, tenantID, idempotencyKey, owner string, now, leaseUntil time.Time) (persisted CronRunStart, acquired bool, err error)
+	RenewCronRunStartDispatchLease(ctx context.Context, tenantID, idempotencyKey, owner string, now, leaseUntil time.Time) (persisted CronRunStart, renewed bool, err error)
+	MarkCronRunStartAccepted(ctx context.Context, tenantID, idempotencyKey, owner string) error
 }
 
 // Message holds a single message persisted for a run.
@@ -129,7 +179,10 @@ type Store interface {
 	APIKeyStore
 
 	// CreateRun persists a new run record. Returns an error if a run with the
-	// same ID already exists.
+	// same ID already exists. When ConversationID is non-empty, built-in stores
+	// atomically claim its normalized tenant+agent owner in the same operation;
+	// a different owner returns ErrConversationOwnerConflict and no run or
+	// ownership claim is persisted.
 	CreateRun(ctx context.Context, run *Run) error
 
 	// UpdateRun overwrites an existing run record with the supplied values.

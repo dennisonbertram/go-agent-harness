@@ -540,6 +540,14 @@ type AskUserQuestionRequest struct {
 	CallID    string
 	Questions []AskUserQuestion
 	Timeout   time.Duration
+	// OnPending is started after the question is readable through Pending. Ask
+	// does not consume an answer until notification finishes, so wait-state
+	// publication cannot be overtaken by a quick submission. Its context
+	// expires with the question deadline. Implementations MUST honor its
+	// cancellation in every blocking persistence or publication step and
+	// return promptly; Ask deliberately preserves an accepted answer instead
+	// of synthesizing a timeout when publication is still running.
+	OnPending AskUserQuestionPendingNotifier
 }
 
 type AskUserQuestionPending struct {
@@ -550,6 +558,8 @@ type AskUserQuestionPending struct {
 	DeadlineAt time.Time         `json:"deadline_at"`
 }
 
+type AskUserQuestionPendingNotifier func(context.Context, AskUserQuestionPending)
+
 type AskUserQuestionBroker interface {
 	Ask(ctx context.Context, req AskUserQuestionRequest) (answers map[string]string, answeredAt time.Time, err error)
 	Pending(runID string) (AskUserQuestionPending, bool)
@@ -557,6 +567,11 @@ type AskUserQuestionBroker interface {
 }
 
 type contextKey string
+
+// RecipeStepAuthorizer validates a recipe member before the recipe executor
+// invokes its prebuilt handler. It lets the runner preserve per-run policy at
+// this indirection boundary without making recipe depend on the runner.
+type RecipeStepAuthorizer func(stepIndex int, stepName, toolName string, args json.RawMessage) (json.RawMessage, error)
 
 const ContextKeyRunID contextKey = "run_id"
 const ContextKeyToolCallID contextKey = "tool_call_id"
@@ -567,7 +582,37 @@ const ContextKeyOutputStreamer contextKey = "output_streamer"
 const ContextKeyMessageReplacer contextKey = "message_replacer"
 const ContextKeySandboxScope contextKey = "sandbox_scope"
 const ContextKeyPlanModeGate contextKey = "plan_mode_gate"
+const contextKeyRecipeStepAuthorizer contextKey = "recipe_step_authorizer"
+const contextKeyAskUserQuestionPendingNotifier contextKey = "ask_user_question_pending_notifier"
 const contextKeyForkDepth contextKey = "fork_depth"
+
+func WithAskUserQuestionPendingNotifier(ctx context.Context, notifier AskUserQuestionPendingNotifier) context.Context {
+	return context.WithValue(ctx, contextKeyAskUserQuestionPendingNotifier, notifier)
+}
+
+// WithRecipeStepAuthorizer attaches the current run's member-step policy to a
+// run_recipe call. Nil means no runner-specific recipe restriction applies.
+func WithRecipeStepAuthorizer(ctx context.Context, authorizer RecipeStepAuthorizer) context.Context {
+	return context.WithValue(ctx, contextKeyRecipeStepAuthorizer, authorizer)
+}
+
+// RecipeStepAuthorizerFromContext returns the recipe member-step policy, if
+// the call originated from a runner that installed one.
+func RecipeStepAuthorizerFromContext(ctx context.Context) RecipeStepAuthorizer {
+	if ctx == nil {
+		return nil
+	}
+	authorizer, _ := ctx.Value(contextKeyRecipeStepAuthorizer).(RecipeStepAuthorizer)
+	return authorizer
+}
+
+func AskUserQuestionPendingNotifierFromContext(ctx context.Context) AskUserQuestionPendingNotifier {
+	if ctx == nil {
+		return nil
+	}
+	notifier, _ := ctx.Value(contextKeyAskUserQuestionPendingNotifier).(AskUserQuestionPendingNotifier)
+	return notifier
+}
 
 // DefaultMaxForkDepth is the maximum recursion depth for spawned subagents.
 // Agents at depth >= DefaultMaxForkDepth may not spawn further children.
@@ -630,10 +675,14 @@ func ExtraAllowedRootsFromContext(ctx context.Context) ([]string, bool) {
 }
 
 type RunMetadata struct {
-	RunID          string
-	TenantID       string
-	ConversationID string
-	AgentID        string
+	RunID             string
+	TenantID          string
+	ConversationID    string
+	AgentID           string
+	Model             string
+	ProviderName      string
+	AllowFallback     bool
+	FallbackProviders []string
 }
 
 // ToolCall mirrors harness.ToolCall in the tools package so the tools package
@@ -748,6 +797,12 @@ func SandboxScopeFromContext(ctx context.Context) (SandboxScope, bool) {
 
 // CronClient provides access to the cron scheduler daemon.
 var ErrCronJobNotFound = errors.New("cron job not found")
+var ErrCronJobConflict = errors.New("cron job update conflict")
+
+// ErrCronJobValidation marks a caller-correctable cron request error. The
+// harness HTTP facade renders it as 400 validation_error while preserving
+// not-found, conflict, and dependency failures as their existing statuses.
+var ErrCronJobValidation = errors.New("cron job validation failed")
 
 type CronClient interface {
 	CreateJob(ctx context.Context, req CronCreateJobRequest) (CronJob, error)
@@ -755,6 +810,7 @@ type CronClient interface {
 	GetJob(ctx context.Context, id string) (CronJob, error)
 	UpdateJob(ctx context.Context, id string, req CronUpdateJobRequest) (CronJob, error)
 	DeleteJob(ctx context.Context, id string) error
+	DeleteJobCAS(ctx context.Context, id string, expectedUpdatedAt time.Time) error
 	ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]CronExecution, error)
 	Health(ctx context.Context) error
 }
@@ -806,9 +862,10 @@ type CronCreateJobRequest struct {
 
 // CronUpdateJobRequest is the request for updating a cron job.
 type CronUpdateJobRequest struct {
-	Schedule   *string `json:"schedule,omitempty"`
-	ExecConfig *string `json:"execution_config,omitempty"`
-	Status     *string `json:"status,omitempty"`
-	TimeoutSec *int    `json:"timeout_seconds,omitempty"`
-	Tags       *string `json:"tags,omitempty"`
+	Schedule          *string    `json:"schedule,omitempty"`
+	ExecConfig        *string    `json:"execution_config,omitempty"`
+	Status            *string    `json:"status,omitempty"`
+	TimeoutSec        *int       `json:"timeout_seconds,omitempty"`
+	Tags              *string    `json:"tags,omitempty"`
+	ExpectedUpdatedAt *time.Time `json:"expected_updated_at,omitempty"`
 }

@@ -137,9 +137,12 @@ func TestHarnessClient_ListRuns(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]any{
+			// The server sends id and a nested cost_totals, not run_id/cost_usd.
+			// This fixture previously encoded the struct's wrong tags, which is
+			// how the mismatch stayed green (issue #1314).
 			"runs": []map[string]any{
-				{"run_id": "run-1", "status": "completed", "cost_usd": 0.1},
-				{"run_id": "run-2", "status": "running", "cost_usd": 0.2},
+				{"id": "run-1", "status": "completed", "cost_totals": map[string]any{"cost_usd_total": 0.1}},
+				{"id": "run-2", "status": "running", "cost_totals": map[string]any{"cost_usd_total": 0.2}},
 			},
 		})
 	}))
@@ -172,5 +175,103 @@ func TestHarnessClient_ListRuns_Empty(t *testing.T) {
 	}
 	if len(runs) != 0 {
 		t.Errorf("got %d runs, want 0", len(runs))
+	}
+}
+
+// realRunResponseBody is copied from a live GET /v1/runs/{id}. The fixture is
+// deliberately the server's actual shape rather than one written to match the
+// struct — a fixture built from the struct is what let this mismatch survive
+// (issue #1314).
+const realRunResponseBody = `{
+  "id": "run_2adedadc-a0f2-46d2-99a5-60b632b70e95",
+  "prompt": "Reply with exactly the word: OK",
+  "model": "gpt-4.1-mini",
+  "status": "completed",
+  "output": "OK",
+  "conversation_id": "conv_abc",
+  "usage_totals": {"prompt_tokens_total": 14257, "completion_tokens_total": 5, "total_tokens": 14262},
+  "cost_totals": {"cost_usd_total": 0.0057072, "last_turn_cost_usd": 0.0057072, "cost_status": "available"},
+  "created_at": "2026-08-11T12:00:00Z"
+}`
+
+func TestGetRunDecodesServerRunShape(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(realRunResponseBody))
+	}))
+	defer srv.Close()
+
+	c := NewHarnessClient(srv.URL)
+	got, err := c.GetRun(context.Background(), "run_2adedadc-a0f2-46d2-99a5-60b632b70e95")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+
+	// False-positive control: status already decoded before the fix, so if this
+	// fails the fixture itself is wrong rather than the mapping.
+	if got.Status != "completed" {
+		t.Fatalf("Status = %q, want completed — fixture is wrong", got.Status)
+	}
+	if got.RunID != "run_2adedadc-a0f2-46d2-99a5-60b632b70e95" {
+		t.Errorf("RunID = %q, want the server's id field", got.RunID)
+	}
+	if got.ConversationID != "conv_abc" {
+		t.Errorf("ConversationID = %q, want conv_abc", got.ConversationID)
+	}
+	if got.CostUSD != 0.0057072 {
+		t.Errorf("CostUSD = %v, want 0.0057072 from cost_totals.cost_usd_total", got.CostUSD)
+	}
+	if got.Output != "OK" {
+		t.Errorf("Output = %q, want the run's output text", got.Output)
+	}
+}
+
+// TestGetRunStatusHandlesEmptyOutputAndZeroCost is the false-positive control:
+// the fix must not be "always report something non-zero".
+func TestGetRunHandlesEmptyOutputAndZeroCost(t *testing.T) {
+	const body = `{"id":"run_x","status":"running","output":"","cost_totals":{"cost_usd_total":0}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	got, err := NewHarnessClient(srv.URL).GetRun(context.Background(), "run_x")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.Status != "running" {
+		t.Errorf("Status = %q, want running", got.Status)
+	}
+	if got.Output != "" {
+		t.Errorf("Output = %q, want empty", got.Output)
+	}
+	if got.CostUSD != 0 {
+		t.Errorf("CostUSD = %v, want 0", got.CostUSD)
+	}
+}
+
+// TestListRunsDecodesServerRunShape covers the same mismatch in list_runs.
+func TestListRunsDecodesServerRunShape(t *testing.T) {
+	const body = `{"runs":[
+	  {"id":"run_a","status":"completed","cost_totals":{"cost_usd_total":0.25}},
+	  {"id":"run_b","status":"failed","cost_totals":{"cost_usd_total":0}}
+	]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	got, err := NewHarnessClient(srv.URL).ListRuns(context.Background(), ListRunsParams{})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d runs, want 2", len(got))
+	}
+	if got[0].RunID != "run_a" || got[0].CostUSD != 0.25 {
+		t.Errorf("run[0] = %+v, want RunID run_a and CostUSD 0.25", got[0])
+	}
+	if got[1].RunID != "run_b" || got[1].CostUSD != 0 {
+		t.Errorf("run[1] = %+v, want RunID run_b and CostUSD 0", got[1])
 	}
 }

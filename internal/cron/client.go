@@ -7,19 +7,81 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"time"
 )
 
 // Client is an HTTP client for the cronsd API.
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+	apiKey     string
+}
+
+// ClientOption configures a cronsd client.
+type ClientOption func(*Client)
+
+// WithAPIKey authenticates management requests to cronsd. The credential is
+// transmitted only in the Authorization header.
+func WithAPIKey(apiKey string) ClientOption {
+	return func(client *Client) {
+		client.apiKey = apiKey
+	}
+}
+
+// GetJobByName performs the distinct operator lookup. Model-facing callers use
+// GetJob, whose route is ID-only.
+func (c *Client) GetJobByName(ctx context.Context, name string) (Job, error) {
+	if name == "" {
+		return Job{}, fmt.Errorf("name is required")
+	}
+	query := url.Values{"name": []string{name}}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/jobs/by-name?"+query.Encode(), nil)
+	if err != nil {
+		return Job{}, fmt.Errorf("create request: %w", err)
+	}
+	withScopeHeaders(httpReq)
+	c.authorize(httpReq)
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return Job{}, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Job{}, c.parseError(resp)
+	}
+	var job Job
+	if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
+		return Job{}, fmt.Errorf("decode response: %w", err)
+	}
+	return job, nil
+}
+
+func withScopeHeaders(req *http.Request) {
+	if scope, ok := ScopeFromContext(req.Context()); ok {
+		req.Header.Set("X-Cron-Tenant-ID", scope.TenantID)
+		req.Header.Set("X-Cron-Conversation-ID", scope.ConversationID)
+		req.Header.Set("X-Cron-Agent-ID", scope.AgentID)
+	}
 }
 
 // NewClient creates a new Client for the given base URL.
-func NewClient(baseURL string) *Client {
-	return &Client{
+func NewClient(baseURL string, options ...ClientOption) *Client {
+	client := &Client{
 		baseURL:    baseURL,
 		httpClient: &http.Client{},
+	}
+	for _, option := range options {
+		if option != nil {
+			option(client)
+		}
+	}
+	return client
+}
+
+func (c *Client) authorize(request *http.Request) {
+	if c.apiKey != "" {
+		request.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 }
 
@@ -34,6 +96,8 @@ func (c *Client) CreateJob(ctx context.Context, req CreateJobRequest) (Job, erro
 		return Job{}, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	withScopeHeaders(httpReq)
+	c.authorize(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -58,6 +122,8 @@ func (c *Client) ListJobs(ctx context.Context) ([]Job, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
+	withScopeHeaders(httpReq)
+	c.authorize(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -78,12 +144,14 @@ func (c *Client) ListJobs(ctx context.Context) ([]Job, error) {
 	return result.Jobs, nil
 }
 
-// GetJob retrieves a cron job by ID or name.
+// GetJob retrieves a cron job by ID. Operator name lookup is GetJobByName.
 func (c *Client) GetJob(ctx context.Context, id string) (Job, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/jobs/"+id, nil)
 	if err != nil {
 		return Job{}, fmt.Errorf("create request: %w", err)
 	}
+	withScopeHeaders(httpReq)
+	c.authorize(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -113,6 +181,8 @@ func (c *Client) UpdateJob(ctx context.Context, id string, req UpdateJobRequest)
 		return Job{}, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	withScopeHeaders(httpReq)
+	c.authorize(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -133,10 +203,29 @@ func (c *Client) UpdateJob(ctx context.Context, id string, req UpdateJobRequest)
 
 // DeleteJob deletes a cron job.
 func (c *Client) DeleteJob(ctx context.Context, id string) error {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/v1/jobs/"+id, nil)
+	return c.deleteJob(ctx, id, nil)
+}
+
+// DeleteJobCAS deletes only when updated_at still matches the version read by
+// the caller. DeleteJob remains the unversioned operator API.
+func (c *Client) DeleteJobCAS(ctx context.Context, id string, expectedUpdatedAt time.Time) error {
+	body, err := json.Marshal(DeleteJobRequest{ExpectedUpdatedAt: &expectedUpdatedAt})
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+	return c.deleteJob(ctx, id, body)
+}
+
+func (c *Client) deleteJob(ctx context.Context, id string, body []byte) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/v1/jobs/"+id, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
+	if body != nil {
+		httpReq.Header.Set("Content-Type", "application/json")
+	}
+	withScopeHeaders(httpReq)
+	c.authorize(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -157,6 +246,8 @@ func (c *Client) ListExecutions(ctx context.Context, jobID string, limit, offset
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
+	withScopeHeaders(httpReq)
+	c.authorize(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -177,12 +268,14 @@ func (c *Client) ListExecutions(ctx context.Context, jobID string, limit, offset
 	return result.Executions, nil
 }
 
-// Health checks the health endpoint.
+// Health checks authenticated readiness. The unauthenticated /healthz route
+// is liveness-only and cannot prove that management requests are usable.
 func (c *Client) Health(ctx context.Context) error {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/healthz", nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/readyz", nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
+	c.authorize(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -191,7 +284,7 @@ func (c *Client) Health(ctx context.Context) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("health check failed: status %d", resp.StatusCode)
+		return fmt.Errorf("readiness check failed: status %d", resp.StatusCode)
 	}
 	return nil
 }
@@ -209,8 +302,17 @@ func (c *Client) parseError(resp *http.Response) error {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error.Message != "" {
+		if resp.StatusCode == http.StatusBadRequest && errResp.Error.Code == "validation_error" {
+			return NewValidationError(errResp.Error.Message)
+		}
 		if resp.StatusCode == http.StatusNotFound && errResp.Error.Code == "not_found" {
 			return ErrJobNotFound
+		}
+		if resp.StatusCode == http.StatusConflict && errResp.Error.Code == "conflict" {
+			return ErrJobConflict
+		}
+		if resp.StatusCode == http.StatusConflict && errResp.Error.Code == "ambiguous" {
+			return ErrJobAmbiguous
 		}
 		return fmt.Errorf("HTTP %d: %s: %s", resp.StatusCode, errResp.Error.Code, errResp.Error.Message)
 	}

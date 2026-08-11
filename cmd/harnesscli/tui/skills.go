@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,21 @@ import (
 // unclaimed by builtin and plugin commands.
 const skillNamespace = "skill:"
 
+// resolveTUISkillsDir mirrors harnessd's global skill-root contract for the
+// TUI-local slash-command catalog. A relative override must not be silently
+// rebased to the interactive process CWD or replaced with the legacy global
+// root, because that would show skills different from the connected daemon.
+func resolveTUISkillsDir(globalDir string) (string, error) {
+	override := strings.TrimSpace(os.Getenv("HARNESS_SKILLS_DIR"))
+	if override == "" {
+		return filepath.Join(globalDir, "skills"), nil
+	}
+	if !filepath.IsAbs(override) {
+		return "", fmt.Errorf("HARNESS_SKILLS_DIR must be an absolute path")
+	}
+	return filepath.Clean(override), nil
+}
+
 // loadTUISkills loads the skill registry for the TUI from the same sources
 // harnessd uses: the global skills directory, the workspace skills directory,
 // and enabled plugin bundle skill directories. It never fails hard — a broken
@@ -29,6 +45,13 @@ func loadTUISkills(workspace string) (*skills.Registry, *skills.Resolver) {
 	globalDir := os.Getenv("HARNESS_GLOBAL_DIR")
 	if globalDir == "" {
 		globalDir = filepath.Join(home, ".go-harness")
+	}
+	globalSkillsDir, skillsDirErr := resolveTUISkillsDir(globalDir)
+	if skillsDirErr != nil {
+		// The daemon rejects this startup configuration. The TUI cannot repair a
+		// daemon environment, but it must fail closed locally rather than load
+		// the legacy root and present a misleading slash-command catalog.
+		globalSkillsDir = ""
 	}
 
 	var workspaceDir string
@@ -49,7 +72,7 @@ func loadTUISkills(workspace string) (*skills.Registry, *skills.Resolver) {
 
 	registry := skills.NewRegistry()
 	loader := skills.NewLoader(skills.LoaderConfig{
-		GlobalDir:    filepath.Join(globalDir, "skills"),
+		GlobalDir:    globalSkillsDir,
 		WorkspaceDir: workspaceDir,
 		PluginDirs:   pluginSkillDirs,
 	})

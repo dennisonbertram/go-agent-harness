@@ -16,9 +16,20 @@ import (
 
 var validSkillName = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
+// SkillReloader makes an authored skill visible before create_skill returns.
+// It is deliberately separate from skill packs: authored SKILL.md files use
+// the ordinary skill registry and must not be interpreted as pack manifests.
+type SkillReloader interface {
+	ReloadSkills(context.Context) error
+}
+
 // CreateSkillTool returns a deferred tool that lets the agent create validated
 // SKILL.md files in the configured skills directory.
-func CreateSkillTool(skillsDir string) tools.Tool {
+func CreateSkillTool(skillsDir string, reloaders ...SkillReloader) tools.Tool {
+	var reloader SkillReloader
+	if len(reloaders) > 0 {
+		reloader = reloaders[0]
+	}
 	def := tools.Definition{
 		Name:         "create_skill",
 		Description:  descriptions.Load("create_skill"),
@@ -57,7 +68,7 @@ func CreateSkillTool(skillsDir string) tools.Tool {
 		},
 	}
 
-	handler := func(_ context.Context, raw json.RawMessage) (string, error) {
+	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
 		var args struct {
 			Name        string   `json:"name"`
 			Description string   `json:"description"`
@@ -127,6 +138,11 @@ func CreateSkillTool(skillsDir string) tools.Tool {
 		}
 		if closeErr != nil {
 			return "", fmt.Errorf("close skill file %s: %w", skillFile, closeErr)
+		}
+		if reloader != nil {
+			if err := reloader.ReloadSkills(ctx); err != nil {
+				return "", fmt.Errorf("reload created skill %q: %w", name, err)
+			}
 		}
 
 		return tools.MarshalToolResult(map[string]any{

@@ -47,8 +47,18 @@ func TestConversationHistoryMsg_RendersUserAndAssistantMessages(t *testing.T) {
 	cfg.ResumeConversationID = "conv-abcdef1234"
 	m := tui.New(cfg)
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	// ConversationHistoryMsg is rendered by the explicit legacy GET-first
+	// fallback. A current opt-in server instead sends its atomic snapshot in
+	// the replay-boundary SSE marker, so establish the compatibility state
+	// before injecting this history result.
+	mLegacy, _ := m2.(tui.Model).Update(tui.SSEConversationReplayBoundaryMsg{
+		Conversation:   true,
+		ConversationID: "conv-abcdef1234",
+		Supported:      false,
+		StatusCode:     200,
+	})
 
-	m3, _ := m2.(tui.Model).Update(tui.ConversationHistoryMsg{
+	m3, _ := mLegacy.(tui.Model).Update(tui.ConversationHistoryMsg{
 		ConversationID: "conv-abcdef1234",
 		Messages: []tui.ConversationMessage{
 			{Role: "user", Content: "what is the capital of France"},
@@ -73,7 +83,9 @@ func TestConversationHistoryMsg_RendersUserAndAssistantMessages(t *testing.T) {
 // a failed history fetch reports a clear status message and leaves the model
 // usable (no crash, no active-run side effects).
 func TestConversationHistoryErrorMsg_SetsClearStatusWithoutCrashing(t *testing.T) {
-	m := tui.New(tui.DefaultTUIConfig())
+	cfg := tui.DefaultTUIConfig()
+	cfg.ResumeConversationID = "conv-missing"
+	m := tui.New(cfg)
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
 	m3, _ := m2.(tui.Model).Update(tui.ConversationHistoryErrorMsg{
@@ -87,5 +99,31 @@ func TestConversationHistoryErrorMsg_SetsClearStatusWithoutCrashing(t *testing.T
 	}
 	if after.RunActive() {
 		t.Error("RunActive() must remain false after a history load error")
+	}
+}
+
+// TestStaleConversationHistoryErrorIgnoredAfterSwitch proves an error from a
+// no-longer-selected conversation cannot overwrite the selected session's
+// status or start a stale conversation stream.
+func TestStaleConversationHistoryErrorIgnoredAfterSwitch(t *testing.T) {
+	cfg := tui.DefaultTUIConfig()
+	cfg.ResumeConversationID = "conv-current"
+	m := tui.New(cfg)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	m3, cmd := m2.(tui.Model).Update(tui.ConversationHistoryErrorMsg{
+		ConversationID: "conv-stale",
+		Err:            "HTTP 404: not found",
+	})
+	after := m3.(tui.Model)
+
+	if cmd != nil {
+		t.Fatal("stale history error must not start a conversation stream")
+	}
+	if after.StatusMsg() != "" {
+		t.Fatalf("StatusMsg() = %q, want unchanged empty status", after.StatusMsg())
+	}
+	if after.RunActive() {
+		t.Fatal("RunActive() must remain false after a stale history error")
 	}
 }

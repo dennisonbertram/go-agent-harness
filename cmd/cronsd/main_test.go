@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -65,13 +66,30 @@ func TestRunWithSignalsNilChannel(t *testing.T) {
 	}
 }
 
+func TestRunWithSignalsRejectsMissingIngressProtectionBeforeStartup(t *testing.T) {
+	err := runWithSignals(make(chan os.Signal), func(key string) string {
+		if key == "CRONSD_HARNESS_URL" {
+			return "http://harnessd.example"
+		}
+		if key == "CRONSD_HARNESS_API_KEY" {
+			return "privileged-outbound-secret"
+		}
+		return ""
+	})
+	if err == nil || !strings.Contains(err.Error(), "CRONSD_INGRESS_API_KEY") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestRunWithSignalsGracefulShutdown(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test-cronsd.db")
 
 	env := map[string]string{
-		"CRONSD_ADDR":    "127.0.0.1:0",
-		"CRONSD_DB_PATH": dbPath,
+		"CRONSD_ADDR":              "127.0.0.1:0",
+		"CRONSD_DB_PATH":           dbPath,
+		"CRONSD_INGRESS_API_KEY":   "test-ingress-secret",
+		"CRONSD_INGRESS_TENANT_ID": "tenant-test",
 	}
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
@@ -100,8 +118,10 @@ func TestRunWithSignalsDefaultEnv(t *testing.T) {
 
 	// Test with nil getenv (should use os.Getenv).
 	env := map[string]string{
-		"CRONSD_ADDR":    "127.0.0.1:0",
-		"CRONSD_DB_PATH": dbPath,
+		"CRONSD_ADDR":              "127.0.0.1:0",
+		"CRONSD_DB_PATH":           dbPath,
+		"CRONSD_INGRESS_API_KEY":   "test-ingress-secret",
+		"CRONSD_INGRESS_TENANT_ID": "tenant-test",
 	}
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
@@ -132,6 +152,8 @@ func TestRunDelegatesToRunWithSignals(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CRONSD_ADDR", "127.0.0.1:0")
 	t.Setenv("CRONSD_DB_PATH", dir+"/test-run.db")
+	t.Setenv("CRONSD_INGRESS_API_KEY", "test-ingress-secret")
+	t.Setenv("CRONSD_INGRESS_TENANT_ID", "tenant-test")
 
 	done := make(chan error, 1)
 	go func() {
@@ -166,8 +188,10 @@ func TestRunWithSignalsBadDBPath(t *testing.T) {
 	badPath := filepath.Join(blocker, "subdir", "cronsd.db")
 
 	env := map[string]string{
-		"CRONSD_ADDR":    "127.0.0.1:0",
-		"CRONSD_DB_PATH": badPath,
+		"CRONSD_ADDR":              "127.0.0.1:0",
+		"CRONSD_DB_PATH":           badPath,
+		"CRONSD_INGRESS_API_KEY":   "test-ingress-secret",
+		"CRONSD_INGRESS_TENANT_ID": "tenant-test",
 	}
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)

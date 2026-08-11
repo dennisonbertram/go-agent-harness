@@ -22,7 +22,7 @@ func TestFetchConversationMessagesCmd_Success(t *testing.T) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}]}`))
+		_, _ = w.Write([]byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}],"last_event_id":"run-scheduled:7"}`))
 	}))
 	defer ts.Close()
 
@@ -45,6 +45,9 @@ func TestFetchConversationMessagesCmd_Success(t *testing.T) {
 	if got.ConversationID != "conv-history-1" {
 		t.Errorf("ConversationID: want %q, got %q", "conv-history-1", got.ConversationID)
 	}
+	if got.LastEventID != "run-scheduled:7" {
+		t.Errorf("LastEventID: want %q, got %q", "run-scheduled:7", got.LastEventID)
+	}
 	if len(got.Messages) != 2 {
 		t.Fatalf("Messages length: want 2, got %d", len(got.Messages))
 	}
@@ -53,6 +56,30 @@ func TestFetchConversationMessagesCmd_Success(t *testing.T) {
 	}
 	if got.Messages[1].Role != "assistant" || got.Messages[1].Content != "hello" {
 		t.Errorf("Messages[1]: want {assistant hello}, got %+v", got.Messages[1])
+	}
+}
+
+// A new TUI may connect to an older harnessd during a rolling/local upgrade.
+// The additive field must therefore decode as an empty safe cursor when absent.
+func TestFetchConversationMessagesCmd_OldServerOmitsWatermark(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"role":"assistant","content":"hello"}]}`))
+	}))
+	defer ts.Close()
+
+	msg := fetchConversationMessagesCmd(ts.URL, "conv-old-server", "")()
+	got, ok := msg.(ConversationHistoryMsg)
+	if !ok {
+		t.Fatalf("expected ConversationHistoryMsg, got %T", msg)
+	}
+	if got.LastEventID != "" {
+		t.Fatalf("LastEventID = %q, want empty for old server", got.LastEventID)
+	}
+	if len(got.Messages) != 1 || got.Messages[0].Content != "hello" {
+		t.Fatalf("Messages = %+v, want old-server history preserved", got.Messages)
 	}
 }
 

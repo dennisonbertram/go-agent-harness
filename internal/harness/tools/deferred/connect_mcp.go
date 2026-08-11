@@ -33,9 +33,10 @@ type MCPConnector interface {
 // mid-session and registers its tools into the running registry.
 func ConnectMCPTool(registrar DynamicToolRegistrar, connector MCPConnector) tools.Tool {
 	def := tools.Definition{
-		Name:         "connect_mcp",
-		Description:  descriptions.Load("connect_mcp"),
-		Action:       tools.ActionExecute,
+		Name:        "connect_mcp",
+		Description: descriptions.Load("connect_mcp"),
+		// Connecting and listing a server crosses an outbound HTTP/SSE boundary.
+		Action:       tools.ActionFetch,
 		Mutating:     true,
 		ParallelSafe: false,
 		Tier:         tools.TierDeferred,

@@ -1,6 +1,7 @@
 package tui_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,6 +91,225 @@ func TestInitCommand_GeneratesAndWritesAgentsMd(t *testing.T) {
 	}
 	if got := m.StatusMsg(); !strings.Contains(got, "AGENTS.md") {
 		t.Errorf("StatusMsg() = %q, want confirmation of the written path", got)
+	}
+}
+
+// TestInitCommand_SSEAssistantMessageThenCompletedWritesAgentsMd exercises the
+// real network lifecycle: the authoritative full assistant.message is followed
+// by SSEDoneMsg(run.completed), rather than the synthetic completion message
+// used by older unit tests.
+func TestInitCommand_SSEAssistantMessageThenCompletedWritesAgentsMd(t *testing.T) {
+	m, ws := initModelForInit(t)
+	m = sendSlashCommand(m, "/init")
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-init-sse"})
+	m = m2.(tui.Model)
+
+	markdown := "# SSE Project\n\n## Test\n\n`go test ./...`"
+	raw, err := json.Marshal(struct {
+		Content string `json:"content"`
+	}{Content: markdown})
+	if err != nil {
+		t.Fatalf("marshal assistant message: %v", err)
+	}
+	m2, _ = m.Update(tui.SSEEventMsg{EventType: "assistant.message", Raw: raw})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.SSEDoneMsg{EventType: "run.completed"})
+	m = m2.(tui.Model)
+
+	content, ok := readAgentsFile(t, ws)
+	if !ok {
+		t.Fatal("AGENTS.md was not written after actual SSE completion")
+	}
+	if content != markdown+"\n" {
+		t.Errorf("AGENTS.md content = %q, want %q", content, markdown+"\n")
+	}
+	if got := m.StatusMsg(); !strings.Contains(got, "Wrote") || !strings.Contains(got, "AGENTS.md") {
+		t.Errorf("StatusMsg() = %q, want actual write confirmation", got)
+	}
+}
+
+func TestInitCommand_SSEFailedTerminalWritesNothing(t *testing.T) {
+	m, ws := initModelForInit(t)
+	m = sendSlashCommand(m, "/init")
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-init-sse-failed"})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.SSEEventMsg{EventType: "assistant.message", Raw: []byte(`{"content":"# Must Not Persist"}`)})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.SSEDoneMsg{EventType: "run.failed", Error: "provider failed"})
+	m = m2.(tui.Model)
+	if _, ok := readAgentsFile(t, ws); ok {
+		t.Fatal("failed SSE terminal must not write AGENTS.md")
+	}
+	if got := m.StatusMsg(); !strings.Contains(got, "generation failed") {
+		t.Errorf("StatusMsg() = %q, want failed /init explanation", got)
+	}
+}
+
+func TestInitCommand_FileAppearingDuringSSEGenerationIsNotOverwritten(t *testing.T) {
+	m, ws := initModelForInit(t)
+	m = sendSlashCommand(m, "/init")
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-init-sse-race"})
+	m = m2.(tui.Model)
+	path := filepath.Join(ws, "AGENTS.md")
+	if err := os.WriteFile(path, []byte("TOOL_CREATED"), 0o600); err != nil {
+		t.Fatalf("create concurrent AGENTS.md: %v", err)
+	}
+	m2, _ = m.Update(tui.SSEEventMsg{EventType: "assistant.message", Raw: []byte(`{"content":"# Generated"}`)})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.SSEDoneMsg{EventType: "run.completed"})
+	m = m2.(tui.Model)
+	content, ok := readAgentsFile(t, ws)
+	if !ok || content != "TOOL_CREATED" {
+		t.Fatalf("concurrently-created AGENTS.md was changed: exists=%v content=%q", ok, content)
+	}
+	if got := m.StatusMsg(); !strings.Contains(got, "appeared while generating") {
+		t.Errorf("StatusMsg() = %q, want conflict explanation", got)
+	}
+}
+
+func TestInitCommand_SSEFatalTerminalWritesNothing(t *testing.T) {
+	m, ws := initModelForInit(t)
+	m = sendSlashCommand(m, "/init")
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-init-sse-fatal"})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.SSEEventMsg{EventType: "assistant.message", Raw: []byte(`{"content":"# Must Not Persist"}`)})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.SSEDoneMsg{EventType: "bridge.fatal", Error: "unauthorized"})
+	m = m2.(tui.Model)
+	if _, ok := readAgentsFile(t, ws); ok {
+		t.Fatal("fatal SSE terminal must not write AGENTS.md")
+	}
+
+	// Pending /init state must not leak into a later ordinary completion.
+	m2, _ = m.Update(tui.RunStartedMsg{RunID: "run-next"})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.AssistantDeltaMsg{Delta: "# Not Agents"})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.RunCompletedMsg{RunID: "run-next"})
+	m = m2.(tui.Model)
+	if _, ok := readAgentsFile(t, ws); ok {
+		t.Fatal("fatal /init state leaked into a later run")
+	}
+}
+
+func TestInitCommand_ForeignTerminalCannotCommitPendingInit(t *testing.T) {
+	m, ws := initModelForInit(t)
+	m = sendSlashCommand(m, "/init")
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-init-owned"})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.AssistantDeltaMsg{Delta: "# Owned"})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.RunCompletedMsg{RunID: "run-foreign"})
+	m = m2.(tui.Model)
+	if _, ok := readAgentsFile(t, ws); ok {
+		t.Fatal("foreign terminal must not commit pending /init output")
+	}
+	m2, _ = m.Update(tui.RunCompletedMsg{RunID: "run-init-owned"})
+	m = m2.(tui.Model)
+	content, ok := readAgentsFile(t, ws)
+	if !ok || content != "# Owned\n" {
+		t.Fatalf("matching terminal did not later commit output: exists=%v content=%q", ok, content)
+	}
+}
+
+func TestInitCommand_ConfirmedReplacementPreservesExistingMode(t *testing.T) {
+	m, ws := initModelForInit(t)
+	path := filepath.Join(ws, "AGENTS.md")
+	if err := os.WriteFile(path, []byte("ORIGINAL"), 0o600); err != nil {
+		t.Fatalf("seed AGENTS.md: %v", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("chmod seeded AGENTS.md: %v", err)
+	}
+	m = sendSlashCommand(m, "/init confirm")
+	m = runInitToCompletion(t, m, "# Regenerated")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat replaced AGENTS.md: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("replaced AGENTS.md mode = %o, want preserved 600", got)
+	}
+}
+
+func TestInitCommand_LocalCancellationCannotCommitLateOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		cancel func(t *testing.T, m tui.Model) tui.Model
+	}{
+		{
+			name: "confirmed ctrl+c",
+			cancel: func(t *testing.T, m tui.Model) tui.Model {
+				t.Helper()
+				m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+				m = m2.(tui.Model)
+				m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+				return m2.(tui.Model)
+			},
+		},
+		{
+			name: "escape",
+			cancel: func(t *testing.T, m tui.Model) tui.Model {
+				t.Helper()
+				m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				return m2.(tui.Model)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m, ws := initModelForInit(t)
+			localCancelled := false
+			m = m.WithCancelRun(func() { localCancelled = true })
+			m = sendSlashCommand(m, "/init")
+			m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-init-cancelled"})
+			m = m2.(tui.Model)
+			m = tc.cancel(t, m)
+			if !localCancelled || m.RunActive() {
+				t.Fatalf("local cancellation was not completed: cancelled=%v active=%v", localCancelled, m.RunActive())
+			}
+
+			// The bridge has been cancelled, so a late message or either a foreign
+			// or matching terminal must not revive permission to write this file.
+			m2, _ = m.Update(tui.AssistantDeltaMsg{Delta: "# Must Not Persist"})
+			m = m2.(tui.Model)
+			m2, _ = m.Update(tui.RunCompletedMsg{RunID: "run-foreign"})
+			m = m2.(tui.Model)
+			m2, _ = m.Update(tui.RunCompletedMsg{RunID: "run-init-cancelled"})
+			m = m2.(tui.Model)
+			if _, ok := readAgentsFile(t, ws); ok {
+				t.Fatal("cancelled /init must not write AGENTS.md after late output")
+			}
+		})
+	}
+}
+
+func TestInitCommand_ReconnectExhaustionCannotCommitLateOutput(t *testing.T) {
+	m, ws := initModelForInit(t)
+	m = sendSlashCommand(m, "/init")
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-init-lost"})
+	m = m2.(tui.Model)
+
+	// The bridge permits five reconnect attempts. The sixth close is the
+	// deterministic exhausted path that must abandon the pending write even
+	// though no run.failed terminal was delivered.
+	for range 6 {
+		m2, _ = m.Update(tui.SSEDoneMsg{EventType: "bridge.closed"})
+		m = m2.(tui.Model)
+	}
+	if m.RunActive() {
+		t.Fatal("reconnect exhaustion must end the active run")
+	}
+
+	// A stale post-loss response and even a matching synthetic completion cannot
+	// reauthorize an `/init` file write after the lost bridge consumed state.
+	m2, _ = m.Update(tui.AssistantDeltaMsg{Delta: "# Must Not Persist"})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.RunCompletedMsg{RunID: "run-init-lost"})
+	m = m2.(tui.Model)
+	if _, ok := readAgentsFile(t, ws); ok {
+		t.Fatal("reconnect-lost /init must not write AGENTS.md after late output")
 	}
 }
 
@@ -219,6 +439,30 @@ func TestInitCommand_RunFailureWritesNothing(t *testing.T) {
 
 	if _, ok := readAgentsFile(t, ws); ok {
 		t.Error("stale /init state leaked into a later run and wrote AGENTS.md")
+	}
+}
+
+// TestInitCommand_UnboundStartFailureCannotLeakIntoLaterRun verifies that a
+// transport failure before the harness accepts /init has no run ID to match.
+// That unbound pending state must be abandoned rather than bound to the next
+// ordinary RunStartedMsg.
+func TestInitCommand_UnboundStartFailureCannotLeakIntoLaterRun(t *testing.T) {
+	m, ws := initModelForInit(t)
+
+	m = sendSlashCommand(m, "/init")
+	m2, _ := m.Update(tui.RunFailedMsg{Error: "start run: connection refused"})
+	m = m2.(tui.Model)
+
+	// A later ordinary run must not inherit the failed /init's pending write.
+	m2, _ = m.Update(tui.RunStartedMsg{RunID: "run-next"})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.AssistantDeltaMsg{Delta: "# Not Agents\n"})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.RunCompletedMsg{RunID: "run-next"})
+	m = m2.(tui.Model)
+
+	if _, ok := readAgentsFile(t, ws); ok {
+		t.Error("unbound /init start failure leaked into a later run and wrote AGENTS.md")
 	}
 }
 

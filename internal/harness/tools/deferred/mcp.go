@@ -97,9 +97,9 @@ func ReadMCPResourceTool(reg tools.MCPRegistry) tools.Tool {
 
 // DynamicMCPTools generates deferred tools dynamically from MCP server tool listings.
 func DynamicMCPTools(ctx context.Context, reg tools.MCPRegistry) ([]tools.Tool, error) {
-	byServer, err := reg.ListTools(ctx)
-	if err != nil {
-		return nil, err
+	byServer, discoveryErr := reg.ListTools(ctx)
+	if len(byServer) == 0 && discoveryErr != nil {
+		return nil, discoveryErr
 	}
 	result := make([]tools.Tool, 0)
 	for server, defs := range byServer {
@@ -116,7 +116,7 @@ func DynamicMCPTools(ctx context.Context, reg tools.MCPRegistry) ([]tools.Tool, 
 				Mutating:     true,
 				ParallelSafe: false,
 				Tier:         tools.TierDeferred,
-				Tags:         []string{"mcp", "integration", "external"},
+				Tags:         []string{"mcp", "integration", "external", "dynamic", "mcp_server:" + server},
 				Parameters:   d.Parameters,
 			}
 			handler := func(ctx context.Context, args json.RawMessage) (string, error) {
@@ -125,5 +125,5 @@ func DynamicMCPTools(ctx context.Context, reg tools.MCPRegistry) ([]tools.Tool, 
 			result = append(result, tools.Tool{Definition: definition, Handler: handler})
 		}
 	}
-	return result, nil
+	return result, discoveryErr
 }

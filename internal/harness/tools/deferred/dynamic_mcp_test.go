@@ -125,6 +125,9 @@ func TestDynamicMCPTools_SanitizesNamesAndForwardsCallsPerTool(t *testing.T) {
 		if !containsTag(tl.Definition.Tags, "mcp") {
 			t.Errorf("%s: expected 'mcp' tag, got %v", name, tl.Definition.Tags)
 		}
+		if !containsTag(tl.Definition.Tags, "mcp_server:"+want.server) {
+			t.Errorf("%s: expected exact MCP server provenance tag, got %v", name, tl.Definition.Tags)
+		}
 
 		// Invoke the handler and confirm it dispatches to *this* tool's
 		// original (server, name) pair, not another generated tool's.

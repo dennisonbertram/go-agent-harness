@@ -19,6 +19,7 @@ import (
 	"go-agent-harness/internal/provider/codex"
 	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/relay"
+	istore "go-agent-harness/internal/store"
 	"go-agent-harness/internal/subagents"
 	scriptworkflow "go-agent-harness/internal/workflow"
 )
@@ -427,6 +428,8 @@ func TestBuildServerOptionsForwardsBootstrapRuntime(t *testing.T) {
 		providerRegistry: catalog.NewProviderRegistryWithEnv(cat, func(string) string { return "" }),
 		triggers:         runtime,
 		relayWorkerStore: relayStore,
+		profilesProject:  "/tmp/project-profiles",
+		profilesUser:     "/tmp/user-profiles",
 	})
 
 	if opts.Runner != runner {
@@ -458,6 +461,9 @@ func TestBuildServerOptionsForwardsBootstrapRuntime(t *testing.T) {
 	}
 	if opts.RelayWorkerStore != relayStore {
 		t.Fatal("expected relay worker store")
+	}
+	if opts.ProfilesProject != "/tmp/project-profiles" || opts.ProfilesUser != "/tmp/user-profiles" || opts.ProfilesDir != "/tmp/user-profiles" {
+		t.Fatalf("profile paths were not forwarded consistently: project=%q user=%q dir=%q", opts.ProfilesProject, opts.ProfilesUser, opts.ProfilesDir)
 	}
 }
 
@@ -749,8 +755,8 @@ func TestBuildPersistenceBootstrapInitializesStoresAndCleaner(t *testing.T) {
 		t.Fatalf("buildPersistenceBootstrap: %v", err)
 	}
 	defer func() {
-		if bootstrap.convCleanerCancel != nil {
-			bootstrap.convCleanerCancel()
+		if bootstrap.convCleaner != nil {
+			bootstrap.convCleaner.Shutdown()
 		}
 		if bootstrap.relayWorkerStore != nil {
 			_ = bootstrap.relayWorkerStore.Close()
@@ -769,8 +775,8 @@ func TestBuildPersistenceBootstrapInitializesStoresAndCleaner(t *testing.T) {
 	if bootstrap.conversationStore == nil {
 		t.Fatal("expected conversation store")
 	}
-	if bootstrap.convCleanerCancel == nil {
-		t.Fatal("expected conversation cleaner cancel func")
+	if bootstrap.convCleaner == nil {
+		t.Fatal("expected conversation cleaner lifecycle")
 	}
 	if bootstrap.relayWorkerStore == nil {
 		t.Fatal("expected relay worker store")
@@ -784,6 +790,98 @@ func TestBuildPersistenceBootstrapInitializesStoresAndCleaner(t *testing.T) {
 	}
 	if _, err := os.Stat(workspace + "/.harness/relay.db"); err != nil {
 		t.Fatalf("expected relay db to exist: %v", err)
+	}
+}
+
+func TestBuildPersistenceBootstrapMigratesAPIKeysOnFreshRunDB(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	bootstrap, err := buildPersistenceBootstrap(persistenceBootstrapOptions{
+		workspace: workspace,
+		getenv: func(key string) string {
+			if key == "HARNESS_RUN_DB" {
+				return ".harness/runs.db"
+			}
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildPersistenceBootstrap: %v", err)
+	}
+	defer func() {
+		if bootstrap.runStore != nil {
+			_ = bootstrap.runStore.Close()
+		}
+	}()
+	if bootstrap.runStore == nil {
+		t.Fatal("expected run store")
+	}
+
+	rawToken, key, err := istore.GenerateAPIKey(
+		"tenant-fresh-run-db",
+		"fresh-store cron auth",
+		[]string{istore.ScopeRunsWrite},
+	)
+	if err != nil {
+		t.Fatalf("GenerateAPIKey: %v", err)
+	}
+	if err := bootstrap.runStore.CreateAPIKey(context.Background(), key); err != nil {
+		t.Fatalf("CreateAPIKey on fresh bootstrapped run DB: %v", err)
+	}
+	validated, err := bootstrap.runStore.ValidateAPIKey(context.Background(), rawToken)
+	if err != nil {
+		t.Fatalf("ValidateAPIKey on fresh bootstrapped run DB: %v", err)
+	}
+	if validated.TenantID != key.TenantID {
+		t.Fatalf("validated tenant = %q, want %q", validated.TenantID, key.TenantID)
+	}
+}
+
+// Regression #1147: durable delayed callbacks reserve their continuation run
+// identity before due-time dispatch. The default callbacks-enabled harness
+// must therefore own a run store even when the operator did not separately set
+// HARNESS_RUN_DB; otherwise Runner.EnsureRunWithIDContext rejects every due
+// callback as an admission failure.
+func TestBuildPersistenceBootstrapCreatesDefaultRunStoreForCallbacks(t *testing.T) {
+
+	workspace := t.TempDir()
+	bootstrap, err := buildPersistenceBootstrap(persistenceBootstrapOptions{
+		workspace:        workspace,
+		callbacksEnabled: true,
+		getenv: func(key string) string {
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildPersistenceBootstrap: %v", err)
+	}
+	defer func() {
+		if bootstrap.runStore != nil {
+			_ = bootstrap.runStore.Close()
+		}
+	}()
+
+	if bootstrap.runStore == nil {
+		t.Fatal("callbacks-enabled default bootstrap must provide a durable run store")
+	}
+	if !bootstrap.implicitRunStore {
+		t.Fatal("default callback run store must preserve the historical auth-disabled default")
+	}
+	if _, err := os.Stat(filepath.Join(workspace, ".harness", "runs.db")); err != nil {
+		t.Fatalf("expected default callback run DB: %v", err)
+	}
+}
+
+func TestBuildServerOptionsKeepsImplicitCallbackStoreUnauthenticated(t *testing.T) {
+	options := buildServerOptions(serverBootstrapOptions{authDisabled: true})
+	if !options.AuthDisabled {
+		t.Fatal("implicit callback run store must not enable API-key auth by itself")
+	}
+
+	explicitOptions := buildServerOptions(serverBootstrapOptions{})
+	if explicitOptions.AuthDisabled {
+		t.Fatal("explicit run-store mode must retain the server's normal auth default")
 	}
 }
 

@@ -3,12 +3,32 @@ package deferred
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 )
+
+type failingSkillReloader struct{}
+
+func (failingSkillReloader) ReloadSkills(context.Context) error { return errors.New("reload failed") }
+
+func TestCreateSkillTool_PropagatesReloadFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tool := CreateSkillTool(dir, failingSkillReloader{})
+	_, err := tool.Handler(context.Background(), mustMarshal(t, map[string]any{
+		"name": "reload-failure", "description": "reload error propagation", "trigger": "when testing", "content": "This content is deliberately long enough to satisfy all normal skill validation requirements.",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "reload created skill") {
+		t.Fatalf("expected propagated reload failure, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "reload-failure", "SKILL.md")); statErr != nil {
+		t.Fatalf("durable write should remain inspectable after reload failure: %v", statErr)
+	}
+}
 
 // TestCreateSkillToolHappyPath verifies that a valid skill is created on disk.
 func TestCreateSkillToolHappyPath(t *testing.T) {

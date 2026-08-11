@@ -45,6 +45,7 @@ type CronClient interface {
 	GetJob(ctx context.Context, id string) (tools.CronJob, error)
 	UpdateJob(ctx context.Context, id string, req tools.CronUpdateJobRequest) (tools.CronJob, error)
 	DeleteJob(ctx context.Context, id string) error
+	DeleteJobCAS(ctx context.Context, id string, expectedUpdatedAt time.Time) error
 	ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]tools.CronExecution, error)
 	Health(ctx context.Context) error
 }
@@ -89,9 +90,10 @@ type ServerOptions struct {
 	HTTPClient      *http.Client
 	MCPConnector    MCPConnector
 	SubagentManager subagents.Manager
-	// CallbackLister enumerates pending delayed callbacks across all
-	// conversations for GET /v1/tasks (epic #814). Optional; when nil the
-	// tasks union simply contains no callback entries.
+	// CallbackLister enumerates every durable delayed-callback state across all
+	// conversations for GET /v1/tasks. Optional; when nil the tasks union simply
+	// contains no callback entries. Listing failures fail the request rather
+	// than presenting partial callback status as complete.
 	CallbackLister CallbackLister
 	// CallbackCanceler cancels pending delayed callbacks for
 	// POST /v1/callbacks/{id}/cancel (epic #814 slice 4). Optional; when nil
@@ -108,6 +110,12 @@ type ServerOptions struct {
 	// When provided, GET /v1/runs supports filtering and completed runs are
 	// retrievable after the runner forgets them.
 	Store store.Store
+	// MCPHandler, when non-nil, is mounted at /mcp *inside* the authenticated
+	// mux. It was previously mounted alongside this handler by the caller, which
+	// left it outside every middleware and therefore unauthenticated while /v1
+	// was protected (issue #1328).
+	MCPHandler http.Handler
+
 	// AuthDisabled skips Bearer token authentication for all requests (issue #9).
 	// Set to true in tests that do not provision API keys.
 	AuthDisabled bool
@@ -211,6 +219,7 @@ type ServerOptions struct {
 // NewWithOptions creates an HTTP handler with the full set of optional dependencies.
 func NewWithOptions(opts ServerOptions) http.Handler {
 	s := &Server{
+		mcpHandler:        opts.MCPHandler,
 		runner:            opts.Runner,
 		catalog:           opts.Catalog,
 		providerRegistry:  opts.ProviderRegistry,
@@ -289,6 +298,13 @@ func (s *Server) buildMux() http.Handler {
 	// auth wraps a handler with Bearer token authentication.
 	auth := s.authMiddleware
 
+	// The MCP endpoint drives runs, steering, and conversation reads, so it goes
+	// behind the same authentication as /v1. Mounting it outside this mux left
+	// it completely unauthenticated (issue #1328).
+	if s.mcpHandler != nil {
+		mux.Handle("/mcp", auth(s.mcpHandler))
+	}
+
 	// read wraps a handler requiring runs:read scope (after auth).
 	// Combine as: auth(read(handler)) — auth runs first, then scope check.
 	read := s.requireScope(store.ScopeRunsRead)
@@ -299,6 +315,10 @@ func (s *Server) buildMux() http.Handler {
 	// The handler dispatches internally so scope is enforced per-method inside
 	// handleRuns / handleRunByID.
 	s.registerRunRoutes(mux, auth)
+	// /v1/cron/runs is the authenticated, correlation-preserving boundary used
+	// by standalone cronsd. It is separate from the general run endpoint so a
+	// scheduled prompt cannot be confused with shell execution metadata.
+	mux.Handle("/v1/cron/runs", auth(http.HandlerFunc(s.handleCronRun)))
 
 	// /v1/conversations/ — mixed methods; scope enforced inside handler.
 	s.registerConversationRoutes(mux, auth)
@@ -417,6 +437,8 @@ func (s *Server) buildMux() http.Handler {
 }
 
 type Server struct {
+	// mcpHandler is mounted at /mcp behind the same middleware as /v1.
+	mcpHandler        http.Handler
 	runner            *harness.Runner
 	catalog           *catalog.Catalog
 	providerRegistry  *catalog.ProviderRegistry
@@ -469,9 +491,9 @@ type Server struct {
 
 	subagentManager subagents.Manager
 
-	// callbackLister enumerates pending delayed callbacks across all
-	// conversations for GET /v1/tasks (epic #814). When nil, callbacks are
-	// simply absent from the union.
+	// callbackLister enumerates every durable delayed-callback state across all
+	// conversations for GET /v1/tasks. When nil, callbacks are simply absent
+	// from the union.
 	callbackLister CallbackLister
 
 	// callbackCanceler cancels pending delayed callbacks for
@@ -525,6 +547,22 @@ type Server struct {
 	triggerDedupOnce sync.Once
 	triggerDedup     *trigger.DeliveryDedupCache
 
+	// cronRunStartOnce lazily initializes the process-local replay cache for
+	// authenticated cronsd starts. Entries exist only while one start is in
+	// flight; durable bindings and leases own sequential/restart replay.
+	cronRunStartOnce sync.Once
+	cronRunStarts    *cronRunStartCache
+	// cronRunDispatchOwner is stable for this Server so retries can renew the
+	// same durable dispatch lease while separate harnessd processes are fenced.
+	cronRunDispatchOwnerOnce      sync.Once
+	cronRunDispatchOwner          string
+	cronRunDispatchLeaseDuration  time.Duration
+	cronRunDispatchPollInterval   time.Duration
+	cronRunDispatchHeartbeatTicks <-chan time.Time
+	cronRunLeaseHeartbeatStopped  chan<- string
+	cronRunLeaseHeartbeatMu       sync.Mutex
+	cronRunLeaseHeartbeats        map[string]*cronRunLeaseHeartbeat
+
 	// relayWorkerStore is an optional persistence layer for Go Relay worker
 	// registration and heartbeats.
 	relayWorkerStore relay.WorkerStore
@@ -557,6 +595,13 @@ type Server struct {
 	replayDriftOnce    sync.Once
 	replayDriftSem     chan struct{}
 	driftRunnerFactory replayDriftRunnerFactory
+}
+
+func (s *Server) cronRunStartCache() *cronRunStartCache {
+	s.cronRunStartOnce.Do(func() {
+		s.cronRunStarts = newCronRunStartCache()
+	})
+	return s.cronRunStarts
 }
 
 func (s *Server) hardenHandler(next http.Handler) http.Handler {

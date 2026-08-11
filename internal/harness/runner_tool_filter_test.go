@@ -577,7 +577,7 @@ func TestRunForkedSkill_InheritsParentSystemPrompt(t *testing.T) {
 		RunID:    parentRun.ID,
 		TenantID: "default",
 	}
-	ctx := context.WithValue(context.Background(), htools.ContextKeyRunMetadata, parentMeta)
+	ctx := context.WithValue(trustedExistingParentForkContext(runner, parentRun.ID), htools.ContextKeyRunMetadata, parentMeta)
 
 	// Reset captured prompt for the forked run
 	mu.Lock()
@@ -638,7 +638,7 @@ func TestRunForkedSkill_InheritsParentPermissions(t *testing.T) {
 
 	// Call RunForkedSkill with parent run context
 	parentMeta := htools.RunMetadata{RunID: parentRun.ID, TenantID: "default"}
-	ctx := context.WithValue(context.Background(), htools.ContextKeyRunMetadata, parentMeta)
+	ctx := context.WithValue(trustedExistingParentForkContext(runner, parentRun.ID), htools.ContextKeyRunMetadata, parentMeta)
 
 	config := htools.ForkConfig{
 		Prompt:    "forked task",

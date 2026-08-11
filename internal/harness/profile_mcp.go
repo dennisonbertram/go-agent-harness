@@ -3,43 +3,51 @@ package harness
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"go-agent-harness/internal/config"
+	"go-agent-harness/internal/profiles"
 )
 
-// loadProfileMCPServers loads the mcp_servers section from a named profile TOML
-// file located in profilesDir. It returns the server map from the profile layer only.
-//
-// Returns nil, nil when the profile file does not exist (non-fatal: the profile
-// may simply not define any MCP servers, or the profile itself may not exist).
-//
-// Returns a non-nil error only for:
-//   - Invalid profile names (path traversal, empty name).
-//   - TOML parse errors in the profile file.
+// loadProfileMCPServers loads a user-tier profile's MCP servers. It retains
+// the legacy missing-profile-as-nonfatal contract for callers without a
+// project profile directory.
 func loadProfileMCPServers(profilesDir, profileName string) (map[string]config.MCPServerConfig, error) {
 	if err := config.ValidateProfileName(profileName); err != nil {
 		return nil, err
 	}
-
-	// Check if the profile file exists before attempting to load.
-	// config.Load treats a missing profile as a hard error ("profile not found"),
-	// but for MCP server activation the profile not existing is non-fatal
-	// (the profile may not define any MCP servers).
 	profilePath := filepath.Join(profilesDir, profileName+".toml")
 	if _, statErr := os.Stat(profilePath); os.IsNotExist(statErr) {
 		return nil, nil
 	}
-
-	opts := config.LoadOptions{
-		ProfilesDir: profilesDir,
-		ProfileName: profileName,
-		// No UserConfigPath, no ProjectConfigPath — we only want the profile layer.
-	}
-	cfg, err := config.Load(opts)
+	cfg, err := config.Load(config.LoadOptions{ProfilesDir: profilesDir, ProfileName: profileName})
 	if err != nil {
 		return nil, err
 	}
 	return cfg.MCPServers, nil
+}
+
+// loadProfileMCPServersWithDirs uses the same project > user > built-in
+// resolution order as the rest of named-profile execution. A missing profile
+// remains non-fatal because MCP activation is optional for a run.
+func loadProfileMCPServersWithDirs(projectDir, userDir, profileName string) (map[string]config.MCPServerConfig, error) {
+	if projectDir == "" {
+		return loadProfileMCPServers(userDir, profileName)
+	}
+	if err := config.ValidateProfileName(profileName); err != nil {
+		return nil, err
+	}
+	p, err := profiles.LoadProfileWithDirs(profileName, projectDir, userDir)
+	if err != nil {
+		if os.IsNotExist(err) || strings.Contains(err.Error(), "not found") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if p == nil {
+		return nil, nil
+	}
+	return p.MCPServers, nil
 }
 
 // defaultProfilesDir returns the default profiles directory (~/.harness/profiles/).

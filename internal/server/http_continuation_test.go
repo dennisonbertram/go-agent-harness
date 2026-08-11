@@ -8,12 +8,36 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"go-agent-harness/internal/harness"
 )
+
+func writeSelectedProfileForHTTP(t *testing.T, dir string) {
+	t.Helper()
+	const profile = `
+[meta]
+name = "tui-restricted"
+[runner]
+model = "profile-http-model"
+max_steps = 2
+system_prompt = "PROFILE_HTTP_SYSTEM"
+reasoning_effort = "low"
+[tools]
+allow = ["read"]
+[permissions]
+allow_bash = false
+allow_file_write = false
+allow_net_access = false
+`
+	if err := os.WriteFile(filepath.Join(dir, "tui-restricted.toml"), []byte(profile), 0o600); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+}
 
 // continuationServerProvider returns scripted results on successive calls.
 type continuationServerProvider struct {
@@ -109,8 +133,81 @@ func createAndCompleteRun(t *testing.T, ts *httptest.Server, prompt string) stri
 	return created.RunID
 }
 
+// TestSelectedProfileTwoTurnAPIConversation is #1188's HTTP acceptance path.
+// It mirrors TUI startRunCmd: both ordinary messages carry the selected profile
+// and share a conversation ID. The fake provider proves the profile model and
+// filtered tool surface reach both turns instead of merely populating a picker.
+func TestSelectedProfileTwoTurnAPIConversation(t *testing.T) {
+	profilesDir := t.TempDir()
+	writeSelectedProfileForHTTP(t, profilesDir)
+	provider := &capturingContinuationServerProvider{turns: []harness.CompletionResult{{Content: "first profile reply"}, {Content: "second profile reply"}}}
+	runner := harness.NewRunner(provider, harness.NewRegistry(), harness.RunnerConfig{DefaultModel: "server-default", ProfilesDir: profilesDir})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	post := func(prompt, conversationID string) string {
+		t.Helper()
+		payload, err := json.Marshal(map[string]string{"prompt": prompt, "conversation_id": conversationID, "profile": "tui-restricted"})
+		if err != nil {
+			t.Fatalf("marshal run: %v", err)
+		}
+		response, err := http.Post(ts.URL+"/v1/runs", "application/json", bytes.NewReader(payload))
+		if err != nil {
+			t.Fatalf("post run: %v", err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusAccepted {
+			raw, _ := io.ReadAll(response.Body)
+			t.Fatalf("post run status = %d: %s", response.StatusCode, raw)
+		}
+		var created struct {
+			RunID string `json:"run_id"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
+			t.Fatalf("decode run: %v", err)
+		}
+		waitForRunStatus(t, ts, created.RunID, "completed")
+		return created.RunID
+	}
+
+	first := post("first selected-profile turn", "")
+	second := post("second selected-profile turn", first)
+	if first == second {
+		t.Fatal("ordinary follow-up must create a distinct run")
+	}
+	requests := provider.captured()
+	if len(requests) != 2 {
+		t.Fatalf("provider requests = %d, want 2", len(requests))
+	}
+	for index, request := range requests {
+		if request.Model != "profile-http-model" {
+			t.Errorf("request %d model = %q, want profile model", index, request.Model)
+		}
+		if request.ReasoningEffort != "low" {
+			t.Errorf("request %d reasoning effort = %q, want profile value", index, request.ReasoningEffort)
+		}
+		foundProfilePrompt := false
+		for _, message := range request.Messages {
+			if message.Role == "system" && message.Content == "PROFILE_HTTP_SYSTEM" {
+				foundProfilePrompt = true
+			}
+		}
+		if !foundProfilePrompt {
+			t.Errorf("request %d did not include selected profile system prompt", index)
+		}
+		for _, tool := range request.Tools {
+			if tool.Name == "bash" || tool.Name == "write" || tool.Name == "web_fetch" {
+				t.Errorf("request %d exposed profile-denied tool %q", index, tool.Name)
+			}
+		}
+	}
+}
+
 // TestContinueRunEndpointBasic verifies the happy path: POST /v1/runs/{id}/continue
-// on a completed run succeeds with 202 and returns a new run_id.
+// on a completed run succeeds with 202 and returns a new run_id plus the
+// inherited conversation identity. The latter is required by clients that
+// continue a run from a blank session: the child run ID is not itself a
+// conversation ID.
 func TestContinueRunEndpointBasic(t *testing.T) {
 	t.Parallel()
 
@@ -143,8 +240,9 @@ func TestContinueRunEndpointBasic(t *testing.T) {
 	}
 
 	var reply struct {
-		RunID  string `json:"run_id"`
-		Status string `json:"status"`
+		RunID          string `json:"run_id"`
+		Status         string `json:"status"`
+		ConversationID string `json:"conversation_id"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&reply); err != nil {
 		t.Fatalf("decode continue response: %v", err)
@@ -154,6 +252,9 @@ func TestContinueRunEndpointBasic(t *testing.T) {
 	}
 	if reply.RunID == runID {
 		t.Fatalf("expected new run_id, got same: %s", runID)
+	}
+	if reply.ConversationID != runID {
+		t.Fatalf("conversation_id = %q, want inherited source conversation %q", reply.ConversationID, runID)
 	}
 
 	// Wait for the continuation run to complete.

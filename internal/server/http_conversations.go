@@ -71,12 +71,15 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		if s.blockConversationCrossTenant(w, r, convID) {
 			return
 		}
-		msgs, ok := s.runner.ConversationMessages(convID)
+		snapshot, ok := s.runner.ConversationMessagesSnapshot(convID, TenantIDFromContext(r.Context()))
 		if !ok {
 			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("conversation %q not found", convID))
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"messages":      snapshot.Messages,
+			"last_event_id": snapshot.LastEventID,
+		})
 		return
 	}
 
@@ -261,11 +264,30 @@ func (s *Server) handleConversationEvents(w http.ResponseWriter, r *http.Request
 	}
 
 	lastEventID := strings.TrimSpace(r.Header.Get("Last-Event-ID"))
-	history, stream, cancel, replay, err := s.runner.SubscribeConversationFrom(
-		convID,
-		TenantIDFromContext(r.Context()),
-		lastEventID,
-	)
+	replayBoundary := strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Harness-Conversation-Replay-Boundary")), "snapshot")
+	var snapshot harness.ConversationMessageSnapshot
+	var history []harness.Event
+	var stream <-chan harness.Event
+	var cancel func()
+	var replay harness.ConversationReplayInfo
+	var err error
+	if replayBoundary {
+		// The marker snapshot must be produced in the exact Runner critical
+		// section that both registers the subscriber and selects replay. A
+		// later GET can observe a future message before its corresponding live
+		// frame reaches the client, which is an unresolvable duplicate race.
+		snapshot, history, stream, cancel, replay, err = s.runner.SubscribeConversationSnapshotFrom(
+			convID,
+			TenantIDFromContext(r.Context()),
+			lastEventID,
+		)
+	} else {
+		history, stream, cancel, replay, err = s.runner.SubscribeConversationFrom(
+			convID,
+			TenantIDFromContext(r.Context()),
+			lastEventID,
+		)
+	}
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("conversation %q not found", convID))
 		return
@@ -281,6 +303,9 @@ func (s *Server) handleConversationEvents(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	if replayBoundary {
+		w.Header().Set("X-Harness-Conversation-Replay-Boundary", "snapshot")
+	}
 	if replay.ResyncRequired {
 		w.Header().Set("X-Harness-Conversation-Resync", "required")
 	}
@@ -295,6 +320,16 @@ func (s *Server) handleConversationEvents(w http.ResponseWriter, r *http.Request
 
 	for _, event := range history {
 		if err := writeSSE(w, event); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
+	// The opt-in marker carries the immutable snapshot captured with this
+	// subscription/replay. Clients suppress all pre-marker frames, render this
+	// snapshot exactly once, then route every post-marker frame as normal live
+	// SSE. It deliberately has no SSE id, so it cannot alter the event cursor.
+	if replayBoundary && !replay.MoreAvailable {
+		if err := writeConversationReplayCompletedSSE(w, snapshot); err != nil {
 			return
 		}
 		flusher.Flush()
@@ -329,6 +364,21 @@ func (s *Server) handleConversationEvents(w http.ResponseWriter, r *http.Request
 			flusher.Flush()
 		}
 	}
+}
+
+func writeConversationReplayCompletedSSE(w io.Writer, snapshot harness.ConversationMessageSnapshot) error {
+	payload, err := json.Marshal(struct {
+		Messages    []harness.Message `json:"messages"`
+		LastEventID string            `json:"last_event_id"`
+	}{
+		Messages:    snapshot.Messages,
+		LastEventID: snapshot.LastEventID,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "event: conversation.replay.completed\ndata: {\"type\":\"conversation.replay.completed\",\"payload\":%s}\n\n", payload)
+	return err
 }
 
 func (s *Server) handleListRewindPoints(w http.ResponseWriter, r *http.Request, convID string) {

@@ -10,18 +10,22 @@ import (
 
 // mockStore implements Store for testing.
 type mockStore struct {
-	MigrateFunc         func(ctx context.Context) error
-	CreateJobFunc       func(ctx context.Context, job Job) (Job, error)
-	GetJobFunc          func(ctx context.Context, id string) (Job, error)
-	GetJobByNameFunc    func(ctx context.Context, name string) (Job, error)
-	ListJobsFunc        func(ctx context.Context) ([]Job, error)
-	UpdateJobFunc       func(ctx context.Context, job Job) error
-	TouchJobRunFunc     func(ctx context.Context, jobID string, lastRun, nextRun, updatedAt time.Time) error
-	DeleteJobFunc       func(ctx context.Context, id string) error
-	CreateExecutionFunc func(ctx context.Context, exec Execution) (Execution, error)
-	UpdateExecutionFunc func(ctx context.Context, exec Execution) error
-	ListExecutionsFunc  func(ctx context.Context, jobID string, limit, offset int) ([]Execution, error)
-	CloseFunc           func() error
+	MigrateFunc              func(ctx context.Context) error
+	CreateJobFunc            func(ctx context.Context, job Job) (Job, error)
+	GetJobFunc               func(ctx context.Context, id string) (Job, error)
+	GetJobByNameFunc         func(ctx context.Context, name string) (Job, error)
+	ListJobsFunc             func(ctx context.Context) ([]Job, error)
+	UpdateJobFunc            func(ctx context.Context, job Job) error
+	UpdateJobCASFunc         func(ctx context.Context, job Job, expectedUpdatedAt time.Time) error
+	TouchJobRunFunc          func(ctx context.Context, jobID string, lastRun, nextRun, updatedAt time.Time) error
+	DeleteJobFunc            func(ctx context.Context, id string) error
+	DeleteJobCASFunc         func(ctx context.Context, id string, expectedUpdatedAt time.Time) error
+	CreateExecutionFunc      func(ctx context.Context, exec Execution) (Execution, error)
+	AdmitExecutionFunc       func(ctx context.Context, job Job, exec Execution) (Execution, bool, error)
+	UpdateExecutionFunc      func(ctx context.Context, exec Execution) error
+	ListExecutionsFunc       func(ctx context.Context, jobID string, limit, offset int) ([]Execution, error)
+	ListActiveExecutionsFunc func(ctx context.Context) ([]Execution, error)
+	CloseFunc                func() error
 }
 
 func (m *mockStore) Migrate(ctx context.Context) error {
@@ -66,6 +70,13 @@ func (m *mockStore) UpdateJob(ctx context.Context, job Job) error {
 	return nil
 }
 
+func (m *mockStore) UpdateJobCAS(ctx context.Context, job Job, expectedUpdatedAt time.Time) error {
+	if m.UpdateJobCASFunc != nil {
+		return m.UpdateJobCASFunc(ctx, job, expectedUpdatedAt)
+	}
+	return m.UpdateJob(ctx, job)
+}
+
 func (m *mockStore) TouchJobRun(ctx context.Context, jobID string, lastRun, nextRun, updatedAt time.Time) error {
 	if m.TouchJobRunFunc != nil {
 		return m.TouchJobRunFunc(ctx, jobID, lastRun, nextRun, updatedAt)
@@ -80,11 +91,26 @@ func (m *mockStore) DeleteJob(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *mockStore) DeleteJobCAS(ctx context.Context, id string, expectedUpdatedAt time.Time) error {
+	if m.DeleteJobCASFunc != nil {
+		return m.DeleteJobCASFunc(ctx, id, expectedUpdatedAt)
+	}
+	return m.DeleteJob(ctx, id)
+}
+
 func (m *mockStore) CreateExecution(ctx context.Context, exec Execution) (Execution, error) {
 	if m.CreateExecutionFunc != nil {
 		return m.CreateExecutionFunc(ctx, exec)
 	}
 	return exec, nil
+}
+
+func (m *mockStore) AdmitExecution(ctx context.Context, job Job, exec Execution) (Execution, bool, error) {
+	if m.AdmitExecutionFunc != nil {
+		return m.AdmitExecutionFunc(ctx, job, exec)
+	}
+	created, err := m.CreateExecution(ctx, exec)
+	return created, err == nil && exec.Status != ExecStatusSkipped, err
 }
 
 func (m *mockStore) UpdateExecution(ctx context.Context, exec Execution) error {
@@ -97,6 +123,13 @@ func (m *mockStore) UpdateExecution(ctx context.Context, exec Execution) error {
 func (m *mockStore) ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]Execution, error) {
 	if m.ListExecutionsFunc != nil {
 		return m.ListExecutionsFunc(ctx, jobID, limit, offset)
+	}
+	return nil, nil
+}
+
+func (m *mockStore) ListActiveExecutions(ctx context.Context) ([]Execution, error) {
+	if m.ListActiveExecutionsFunc != nil {
+		return m.ListActiveExecutionsFunc(ctx)
 	}
 	return nil, nil
 }
@@ -152,6 +185,7 @@ func testJob(name string) Job {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	return Job{
 		ID:         uuid.New().String(),
+		TenantID:   testIngressTenant,
 		Name:       name,
 		Schedule:   "*/5 * * * *",
 		ExecType:   ExecTypeShell,

@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -13,8 +14,7 @@ import (
 func TestCheckpointApprovalBrokerPersistsPendingApproval(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
-	checkpointSvc := checkpoints.NewService(checkpoints.NewMemoryStore(), func() time.Time { return now })
+	checkpointSvc := checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now)
 	broker := NewCheckpointApprovalBroker(checkpointSvc)
 
 	done := make(chan error, 1)
@@ -70,6 +70,179 @@ func TestCheckpointApprovalBrokerPersistsPendingApproval(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("Ask completion: %v", err)
+	}
+}
+
+// TestCheckpointApprovalBrokerRegisterIsImmediatelyResolvable proves the
+// durable broker creates its checkpoint before a caller publishes an approval
+// event, and preserves an approval that arrives before Wait begins.
+func TestCheckpointApprovalBrokerRegisterIsImmediatelyResolvable(t *testing.T) {
+	t.Parallel()
+
+	checkpointSvc := checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now)
+	broker := NewCheckpointApprovalBroker(checkpointSvc)
+	waiter, err := broker.Register(context.Background(), ApprovalRequest{
+		RunID:   "run-checkpoint-ready",
+		CallID:  "call-checkpoint-ready",
+		Tool:    "write",
+		Args:    `{"path":"ready.txt"}`,
+		Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	pending := waiter.Pending()
+	if pending.RunID != "run-checkpoint-ready" || pending.DeadlineAt.IsZero() {
+		t.Fatalf("registered pending = %#v, want run and deadline", pending)
+	}
+	if err := broker.Deny("run-checkpoint-ready"); err != nil {
+		t.Fatalf("Deny immediately after Register: %v", err)
+	}
+	approved, option, err := waiter.Wait(context.Background())
+	if err != nil || approved || option != "" {
+		t.Fatalf("Wait after immediate deny = (%v, %q, %v), want (false, \"\", nil)", approved, option, err)
+	}
+}
+
+// TestCheckpointApprovalBrokerPreWaitResolutionSurvivesDeadline is the
+// durable counterpart to the in-memory regression: an approve or deny that
+// commits before Wait starts cannot be overwritten by delayed expiry.
+func TestCheckpointApprovalBrokerPreWaitResolutionSurvivesDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		resolve      func(ApprovalBroker, string) error
+		wantApproved bool
+	}{
+		{name: "approve", resolve: func(b ApprovalBroker, runID string) error { return b.Approve(runID) }, wantApproved: true},
+		{name: "deny", resolve: func(b ApprovalBroker, runID string) error { return b.Deny(runID) }, wantApproved: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := NewCheckpointApprovalBroker(checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now))
+			waiter, err := broker.Register(context.Background(), ApprovalRequest{
+				RunID:   "run-checkpoint-pre-wait-" + tc.name,
+				CallID:  "call-checkpoint-pre-wait-" + tc.name,
+				Tool:    "write",
+				Timeout: 20 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			if err := tc.resolve(broker, "run-checkpoint-pre-wait-"+tc.name); err != nil {
+				t.Fatalf("%s before Wait: %v", tc.name, err)
+			}
+			time.Sleep(40 * time.Millisecond)
+			approved, _, err := waiter.Wait(context.Background())
+			if err != nil || approved != tc.wantApproved {
+				t.Fatalf("Wait after pre-deadline %s = (%v, %v), want (%v, nil)", tc.name, approved, err, tc.wantApproved)
+			}
+		})
+	}
+}
+
+func TestCheckpointApprovalBrokerExpiryWinnerRejectsLateResolution(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		resolve func(ApprovalBroker, string) error
+	}{
+		{name: "approve", resolve: func(b ApprovalBroker, runID string) error { return b.Approve(runID) }},
+		{name: "deny", resolve: func(b ApprovalBroker, runID string) error { return b.Deny(runID) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := NewCheckpointApprovalBroker(checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now))
+			runID := "run-checkpoint-expiry-wins-" + tc.name
+			waiter, err := broker.Register(context.Background(), ApprovalRequest{
+				RunID: runID, CallID: "call-expiry", Tool: "write", Timeout: 20 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			time.Sleep(40 * time.Millisecond)
+			if _, _, err := waiter.Wait(context.Background()); !IsApprovalTimeout(err) {
+				t.Fatalf("Wait = %v, want ApprovalTimeoutError", err)
+			}
+			if err := tc.resolve(broker, runID); !errors.Is(err, ErrNoPendingApproval) {
+				t.Fatalf("late %s = %v, want ErrNoPendingApproval", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestCheckpointApprovalBrokerResolutionExpiryRaceIsConsistent(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		resolve      func(ApprovalBroker, string) error
+		wantApproved bool
+	}{
+		{name: "approve", resolve: func(b ApprovalBroker, runID string) error { return b.Approve(runID) }, wantApproved: true},
+		{name: "deny", resolve: func(b ApprovalBroker, runID string) error { return b.Deny(runID) }, wantApproved: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := NewCheckpointApprovalBroker(checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now))
+			runID := "run-checkpoint-expiry-race-" + tc.name
+			waiter, err := broker.Register(context.Background(), ApprovalRequest{
+				RunID: runID, CallID: "call-expiry-race", Tool: "write", Timeout: 5 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			time.Sleep(10 * time.Millisecond)
+			start := make(chan struct{})
+			waited := make(chan approvalBrokerResult, 1)
+			resolved := make(chan error, 1)
+			go func() {
+				<-start
+				approved, _, err := waiter.Wait(context.Background())
+				waited <- approvalBrokerResult{approved: approved, err: err}
+			}()
+			go func() {
+				<-start
+				resolved <- tc.resolve(broker, runID)
+			}()
+			close(start)
+			resolveErr := <-resolved
+			waitResult := <-waited
+			switch {
+			case resolveErr == nil:
+				if waitResult.err != nil || waitResult.approved != tc.wantApproved {
+					t.Fatalf("successful %s discarded: Wait=(%v, %v)", tc.name, waitResult.approved, waitResult.err)
+				}
+			case errors.Is(resolveErr, ErrNoPendingApproval):
+				if !IsApprovalTimeout(waitResult.err) {
+					t.Fatalf("expiry won but Wait=%v, want ApprovalTimeoutError", waitResult.err)
+				}
+			default:
+				t.Fatalf("%s returned unexpected error: %v", tc.name, resolveErr)
+			}
+		})
+	}
+}
+
+// TestCheckpointApprovalBrokerWaitCancellationRetainsPendingCharacterizes the
+// existing checkpoint contract: parent cancellation returns context.Canceled
+// without expiring the durable record. Splitting Register from Wait must not
+// alter that behavior; expiry remains owned by the timeout path.
+func TestCheckpointApprovalBrokerWaitCancellationRetainsPending(t *testing.T) {
+	t.Parallel()
+
+	checkpointSvc := checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now)
+	broker := NewCheckpointApprovalBroker(checkpointSvc)
+	ctx, cancel := context.WithCancel(context.Background())
+	waiter, err := broker.Register(ctx, ApprovalRequest{
+		RunID:   "run-checkpoint-cancel",
+		CallID:  "call-checkpoint-cancel",
+		Tool:    "write",
+		Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	cancel()
+	_, _, err = waiter.Wait(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait after cancellation = %v, want context.Canceled", err)
+	}
+	if _, ok := broker.Pending("run-checkpoint-cancel"); !ok {
+		t.Fatal("cancellation unexpectedly removed the checkpoint-backed pending approval")
 	}
 }
 
@@ -134,6 +307,7 @@ func TestCheckpointAskUserBrokerPersistsQuestionsAndAnswers(t *testing.T) {
 	broker := NewCheckpointAskUserQuestionBroker(checkpointSvc, func() time.Time { return now })
 
 	done := make(chan error, 1)
+	pendingReady := make(chan htools.AskUserQuestionPending, 1)
 	go func() {
 		answers, answeredAt, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
 			RunID:  "run-ask",
@@ -147,6 +321,13 @@ func TestCheckpointAskUserBrokerPersistsQuestionsAndAnswers(t *testing.T) {
 				},
 			}},
 			Timeout: time.Minute,
+			OnPending: func(_ context.Context, pending htools.AskUserQuestionPending) {
+				if current, ok := broker.Pending("run-ask"); !ok || current.CallID != pending.CallID {
+					done <- errors.New("persisted pending input was not readable inside OnPending")
+					return
+				}
+				pendingReady <- pending
+			},
 		})
 		if err != nil {
 			done <- err
@@ -164,17 +345,12 @@ func TestCheckpointAskUserBrokerPersistsQuestionsAndAnswers(t *testing.T) {
 	}()
 
 	var pending htools.AskUserQuestionPending
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		current, ok := broker.Pending("run-ask")
-		if ok {
-			pending = current
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for pending question")
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("unexpected readiness error: %v", err)
+	case pending = <-pendingReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for pending notification")
 	}
 
 	if pending.CallID != "call-ask" {
@@ -203,6 +379,111 @@ func TestCheckpointAskUserBrokerPersistsQuestionsAndAnswers(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("Ask completion: %v", err)
+	}
+}
+
+func TestCheckpointAskUserBrokerTimeoutIncludesPendingNotification(t *testing.T) {
+	t.Parallel()
+
+	const timeout = 200 * time.Millisecond
+	checkpointSvc := checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now)
+	broker := NewCheckpointAskUserQuestionBroker(checkpointSvc, time.Now)
+	notificationStarted := make(chan struct{})
+	releaseNotification := make(chan struct{})
+	result := make(chan error, 1)
+	released := false
+	defer func() {
+		if !released {
+			close(releaseNotification)
+		}
+	}()
+
+	go func() {
+		_, _, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
+			RunID:     "run-slow-notification",
+			CallID:    "call-slow-notification",
+			Questions: askQuestionsFixture(),
+			Timeout:   timeout,
+			OnPending: func(_ context.Context, _ htools.AskUserQuestionPending) {
+				close(notificationStarted)
+				<-releaseNotification
+			},
+		})
+		result <- err
+	}()
+
+	select {
+	case <-notificationStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pending notification")
+	}
+	time.Sleep(timeout + 50*time.Millisecond)
+
+	select {
+	case err := <-result:
+		if !htools.IsAskUserQuestionTimeout(err) {
+			t.Fatalf("Ask error = %v, want timeout", err)
+		}
+	case <-time.After(timeout / 2):
+		t.Fatal("Ask did not honor its timeout while OnPending remained blocked")
+	}
+	close(releaseNotification)
+	released = true
+}
+
+func TestCheckpointAskUserBrokerKeepsAnswerSubmittedBeforeNotifierDeadline(t *testing.T) {
+	t.Parallel()
+
+	const timeout = 150 * time.Millisecond
+	checkpointSvc := checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now)
+	broker := NewCheckpointAskUserQuestionBroker(checkpointSvc, time.Now)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	type askResult struct {
+		answers map[string]string
+		err     error
+	}
+	result := make(chan askResult, 1)
+	go func() {
+		answers, _, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
+			RunID:     "run-answered-before-deadline",
+			CallID:    "call-answered-before-deadline",
+			Questions: askQuestionsFixture(),
+			Timeout:   timeout,
+			OnPending: func(_ context.Context, _ htools.AskUserQuestionPending) {
+				close(started)
+				<-release
+			},
+		})
+		result <- askResult{answers: answers, err: err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for pending publication")
+	}
+	if err := broker.Submit("run-answered-before-deadline", map[string]string{"Where next?": "Docs"}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	time.Sleep(timeout + 50*time.Millisecond)
+	select {
+	case out := <-result:
+		t.Fatalf("Ask returned before pending publication completed: %+v", out)
+	default:
+	}
+	close(release)
+	var out askResult
+	select {
+	case out = <-result:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Ask result after pending publication")
+	}
+	if out.err != nil {
+		t.Fatalf("Ask returned error after timely answer: %v", out.err)
+	}
+	if got := out.answers["Where next?"]; got != "Docs" {
+		t.Fatalf("answer = %q, want Docs", got)
 	}
 }
 

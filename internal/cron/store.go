@@ -14,6 +14,7 @@ type Store interface {
 	GetJobByName(ctx context.Context, name string) (Job, error)
 	ListJobs(ctx context.Context) ([]Job, error)
 	UpdateJob(ctx context.Context, job Job) error
+	UpdateJobCAS(ctx context.Context, job Job, expectedUpdatedAt time.Time) error
 	// TouchJobRun updates only the run-tracking columns (last_run_at,
 	// next_run_at, updated_at) for a job. Unlike UpdateJob, it never
 	// touches schedule, execution config, status, timeout, or tags, so it
@@ -21,10 +22,36 @@ type Store interface {
 	// silent revert of concurrent user edits or resurrecting a paused job.
 	TouchJobRun(ctx context.Context, jobID string, lastRun, nextRun, updatedAt time.Time) error
 	DeleteJob(ctx context.Context, id string) error // soft delete
+	DeleteJobCAS(ctx context.Context, id string, expectedUpdatedAt time.Time) error
 
 	CreateExecution(ctx context.Context, exec Execution) (Execution, error)
+	// AdmitExecution atomically creates either an active execution or a skipped
+	// overlap row for a complete conversational scope. The predicate is durable
+	// across scheduler processes, unlike Scheduler's local in-memory lease.
+	AdmitExecution(ctx context.Context, job Job, exec Execution) (created Execution, admitted bool, err error)
 	UpdateExecution(ctx context.Context, exec Execution) error
 	ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]Execution, error)
+	// ListActiveExecutions returns all executions that may still own a scoped
+	// conversation lease after a scheduler restart. Callers reconcile these
+	// rows before admitting new fires.
+	ListActiveExecutions(ctx context.Context) ([]Execution, error)
 
 	Close() error
+}
+
+// ScopedStore is implemented by stores that can enforce ownership in their
+// lookup predicates. Server uses it when an authenticated conversational scope
+// is supplied, while legacy operator calls remain supported through Store.
+type ScopedStore interface {
+	GetJobInScope(ctx context.Context, id string, scope Scope) (Job, error)
+	GetJobByNameInScope(ctx context.Context, name string, scope Scope) (Job, error)
+	ListJobsInScope(ctx context.Context, scope Scope) ([]Job, error)
+}
+
+// JobTenantClaimer is the optional durable ownership boundary for shell jobs
+// created before cron tenant columns existed. Implementations must atomically
+// assign an unowned shell job to at most one tenant and return the persisted
+// winner. A false claimed result means another tenant owns the row.
+type JobTenantClaimer interface {
+	ClaimJobTenant(ctx context.Context, jobID, tenantID string) (job Job, claimed bool, err error)
 }

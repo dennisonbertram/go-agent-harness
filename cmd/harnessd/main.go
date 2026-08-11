@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -70,36 +71,111 @@ func (a *callbackRunStarter) StartRun(prompt, conversationID, tenantID, agentID 
 	return err
 }
 
+// StartCallback admits the callback through the Runner's durable reserved-ID
+// boundary. Retrying the callback therefore reconciles the same run record
+// instead of allocating a second continuation.
+func (a *callbackRunStarter) StartCallback(ctx context.Context, info htools.CallbackInfo) (string, error) {
+	a.mu.Lock()
+	r := a.runner
+	a.mu.Unlock()
+	if r == nil {
+		return "", fmt.Errorf("runner not yet initialized")
+	}
+	run, err := r.EnsureRunWithIDContext(ctx, harness.RunRequest{
+		Prompt:            info.Prompt,
+		Model:             info.Model,
+		ProviderName:      info.ProviderName,
+		AllowFallback:     info.AllowFallback,
+		FallbackProviders: append([]string(nil), info.FallbackProviders...),
+		ConversationID:    info.ConversationID,
+		TenantID:          info.TenantID,
+		AgentID:           info.AgentID,
+	}, info.RunID)
+	if err != nil {
+		if errors.Is(err, harness.ErrRunnerClosed) {
+			return "", &htools.CallbackStartError{Err: err, Retry: false, Summary: "callback runner unavailable"}
+		}
+		if errors.Is(err, harness.ErrReservedRunIdentityConflict) || errors.Is(err, harness.ErrConversationAccessDenied) {
+			return "", &htools.CallbackStartError{Err: err, Retry: false, Summary: "callback run identity conflict"}
+		}
+		return "", err
+	}
+	return run.ID, nil
+}
+
 type providerFactory func(cfg openai.Config) (harness.Provider, error)
 
+// resolveGlobalSkillsDir establishes the one process-wide global skill root.
+// A relative override is unsafe because a daemon's working directory is not a
+// stable operator-controlled storage boundary; reject it rather than rebasing
+// a write-capable tool path. An unset (or whitespace-only) override preserves
+// the historic global-dir layout.
+func resolveGlobalSkillsDir(getenv func(string) string, globalDir string) (string, error) {
+	override := strings.TrimSpace(getenv("HARNESS_SKILLS_DIR"))
+	if override == "" {
+		return filepath.Join(globalDir, "skills"), nil
+	}
+	if !filepath.IsAbs(override) {
+		return "", fmt.Errorf("HARNESS_SKILLS_DIR must be an absolute path")
+	}
+	return filepath.Clean(override), nil
+}
+
 type conversationCleanerStarter interface {
-	Start(ctx context.Context, interval time.Duration)
+	// Start returns a channel that closes after the cleaner has stopped using
+	// its store. Bootstrap owns waiting for this acknowledgement before store
+	// teardown.
+	Start(ctx context.Context, interval time.Duration) <-chan struct{}
+}
+
+// conversationCleanerLifecycle owns one cleaner's cancellation and completion
+// acknowledgement. It is deliberately idempotent because normal shutdown and
+// deferred startup-failure cleanup share the same owner.
+type conversationCleanerLifecycle struct {
+	cancel context.CancelFunc
+	done   <-chan struct{}
+	once   sync.Once
+}
+
+func (c *conversationCleanerLifecycle) Shutdown() {
+	if c == nil {
+		return
+	}
+	c.once.Do(func() {
+		c.cancel()
+		if c.done != nil {
+			<-c.done
+		}
+	})
 }
 
 type runDeps struct {
 	newConversationCleaner func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter
+	listen                 func(network, address string) (net.Listener, error)
+	inheritedListener      func(fd, address string) (net.Listener, error)
 }
 
 type runnerConfigOptions struct {
-	DefaultProviderName  string
-	DefaultSystemPrompt  string
-	DefaultAgentIntent   string
-	AskUserTimeout       time.Duration
-	AskUserBroker        htools.AskUserQuestionBroker
-	ApprovalBroker       harness.ApprovalBroker
-	MemoryManager        om.Manager
-	WorkingMemoryStore   workingmemory.Store
-	PromptEngine         systemprompt.Engine
-	ToolApprovalMode     harness.ToolApprovalMode
-	ProviderRegistry     *catalog.ProviderRegistry
-	ConversationStore    harness.ConversationStore
-	Store                istore.Store
-	Logger               harness.Logger
-	Activations          *harness.ActivationTracker
-	GlobalMCPRegistry    htools.MCPRegistry
-	GlobalMCPServerNames []string
-	RoleModels           harness.RoleModels
-	RolloutDirOverride   string
+	DefaultProviderName       string
+	ForcedDefaultProviderName string
+	DefaultSystemPrompt       string
+	DefaultAgentIntent        string
+	AskUserTimeout            time.Duration
+	AskUserBroker             htools.AskUserQuestionBroker
+	ApprovalBroker            harness.ApprovalBroker
+	MemoryManager             om.Manager
+	WorkingMemoryStore        workingmemory.Store
+	PromptEngine              systemprompt.Engine
+	ToolApprovalMode          harness.ToolApprovalMode
+	ProviderRegistry          *catalog.ProviderRegistry
+	ConversationStore         harness.ConversationStore
+	Store                     istore.Store
+	Logger                    harness.Logger
+	Activations               *harness.ActivationTracker
+	GlobalMCPRegistry         htools.MCPRegistry
+	GlobalMCPServerNames      []string
+	RoleModels                harness.RoleModels
+	RolloutDirOverride        string
 	// Workspace is the harnessd's startup workspace path. Used both as the
 	// repo path for per-run worktree provisioning and as the base path for
 	// the per-run tool registry rebuild after workspace_type provisioning.
@@ -111,6 +187,9 @@ type runnerConfigOptions struct {
 	// default tool registry. Stashed on RunnerConfig so the runner can
 	// rebuild a workspace-rooted registry per run when isolation is used.
 	BaseRegistryOptions harness.DefaultRegistryOptions
+	// ProfilesDir is the explicit user-writable profile directory shared by
+	// named-profile resolution and per-run registry reconstruction.
+	ProfilesDir string
 }
 
 // buildRunnerConfig keeps config-driven runner behavior in one place so the
@@ -124,6 +203,7 @@ func buildRunnerConfig(harnessCfg config.Config, opts runnerConfigOptions) harne
 	return harness.RunnerConfig{
 		DefaultModel:                  harnessCfg.Model,
 		DefaultProviderName:           opts.DefaultProviderName,
+		ForcedDefaultProviderName:     opts.ForcedDefaultProviderName,
 		DefaultSystemPrompt:           opts.DefaultSystemPrompt,
 		DefaultAgentIntent:            opts.DefaultAgentIntent,
 		MaxSteps:                      harnessCfg.MaxSteps,
@@ -162,6 +242,8 @@ func buildRunnerConfig(harnessCfg config.Config, opts runnerConfigOptions) harne
 		ContextWindowSnapshotEnabled:  harnessCfg.Forensics.ContextWindowSnapshotEnabled,
 		ContextWindowWarningThreshold: harnessCfg.Forensics.ContextWindowWarningThreshold,
 		CausalGraphEnabled:            harnessCfg.Forensics.CausalGraphEnabled,
+		ProfilesProject:               filepath.Join(opts.Workspace, ".harness", "profiles"),
+		ProfilesDir:                   opts.ProfilesDir,
 		WorkspaceBaseOptions: harness.WorkspaceProvisionOptions{
 			RepoPath:        opts.Workspace,
 			WorktreeRootDir: opts.WorktreeRootDir,
@@ -234,8 +316,17 @@ func runMCPStdio(sig <-chan os.Signal) error {
 	if workspace == "" {
 		workspace = "."
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve MCP user home: %w", err)
+	}
+	profilesUser, err := resolveUserProfilesDir(filepath.Join(home, ".harness"), os.Getenv)
+	if err != nil {
+		return fmt.Errorf("resolve MCP profiles directory: %w", err)
+	}
+	profilesProject := filepath.Join(workspace, ".harness", "profiles")
 
-	runtime, err := buildMCPStdioRuntime(workspace)
+	runtime, err := buildMCPStdioRuntimeWithProfileDirs(workspace, profilesProject, profilesUser)
 	if err != nil {
 		return err
 	}
@@ -270,6 +361,8 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		newConversationCleaner: func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter {
 			return harness.NewConversationCleaner(store, retentionDays)
 		},
+		listen:            net.Listen,
+		inheritedListener: listenerFromInheritedFD,
 	})
 }
 
@@ -289,6 +382,12 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		deps.newConversationCleaner = func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter {
 			return harness.NewConversationCleaner(store, retentionDays)
 		}
+	}
+	if deps.listen == nil {
+		deps.listen = net.Listen
+	}
+	if deps.inheritedListener == nil {
+		deps.inheritedListener = listenerFromInheritedFD
 	}
 
 	// Local helpers that use the injected getenv instead of os.Getenv,
@@ -343,7 +442,11 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	home, _ := os.UserHomeDir()
 	workspace := envOrDefault("HARNESS_WORKSPACE", ".")
 	harnessConfigDir := filepath.Join(home, ".harness")
-	harnessProfilesDir := filepath.Join(harnessConfigDir, "profiles")
+	harnessProfilesDir, err := resolveUserProfilesDir(harnessConfigDir, getenv)
+	if err != nil {
+		return fmt.Errorf("resolve profiles directory: %w", err)
+	}
+	harnessProjectProfilesDir := filepath.Join(workspace, ".harness", "profiles")
 	harnessUserConfig := filepath.Join(harnessConfigDir, "config.toml")
 	harnessProjectConfig := filepath.Join(workspace, ".harness", "config.toml")
 	loadOpts := config.LoadOptions{
@@ -352,7 +455,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		ProfilesDir:       harnessProfilesDir,
 		Getenv:            getenv,
 	}
-	startupProfile, err := loadStartupProfile(profileName, filepath.Join(workspace, ".harness", "profiles"), harnessProfilesDir)
+	startupProfile, err := loadStartupProfile(profileName, harnessProjectProfilesDir, harnessProfilesDir)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -444,6 +547,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		subagentWorktreeRoot = filepath.Join(filepath.Dir(workspace), subagentWorktreeRoot)
 	}
 	cronURL := strings.TrimSpace(getenv("HARNESS_CRON_URL"))
+	cronAPIKey := strings.TrimSpace(getenv("HARNESS_CRON_API_KEY"))
 	callbacksEnabled := envBoolOrDefault("HARNESS_ENABLE_CALLBACKS", true)
 	sourcegraphEndpoint := strings.TrimSpace(getenv("HARNESS_SOURCEGRAPH_ENDPOINT"))
 	sourcegraphToken := strings.TrimSpace(getenv("HARNESS_SOURCEGRAPH_TOKEN"))
@@ -560,6 +664,10 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 
 	// Skills system
 	globalDir := envOrDefault("HARNESS_GLOBAL_DIR", filepath.Join(home, ".go-harness"))
+	globalSkillsDir, err := resolveGlobalSkillsDir(getenv, globalDir)
+	if err != nil {
+		return err
+	}
 	var skillLister htools.SkillLister
 	var skillLoader *skills.Loader     // retained for hot-reload
 	var skillRegistry *skills.Registry // retained for hot-reload
@@ -576,7 +684,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 			}
 		}
 		skillLoader = skills.NewLoader(skills.LoaderConfig{
-			GlobalDir:    filepath.Join(globalDir, "skills"),
+			GlobalDir:    globalSkillsDir,
 			WorkspaceDir: filepath.Join(workspace, ".go-harness", "skills"),
 			PluginDirs:   pluginSkillDirs,
 		})
@@ -587,7 +695,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		} else {
 			skillResolver := skills.NewResolver(skillRegistry)
 			promptEngine.SetSkillResolver(skillResolver)
-			skillLister = &skillListerAdapter{registry: skillRegistry, resolver: skillResolver, workspace: workspace}
+			skillLister = &skillListerAdapter{registry: skillRegistry, loader: skillLoader, resolver: skillResolver, workspace: workspace}
 			loaded := skillRegistry.List()
 			if len(loaded) > 0 {
 				log.Printf("loaded %d skill(s)", len(loaded))
@@ -603,6 +711,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	cronBootstrap, err := buildCronBootstrap(
 		workspace,
 		cronURL,
+		cronAPIKey,
 		harnessCfg.Cron,
 		log.Printf,
 		cronStarter,
@@ -618,14 +727,23 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	var callbackStarter *callbackRunStarter
 	var callbackBridge *harness.CallbackEventBridge
 	var callbackMgr *htools.CallbackManager
+	var callbackStore *htools.SQLiteCallbackStore
 	if callbacksEnabled {
+		callbackStore, err = htools.NewSQLiteCallbackStore(filepath.Join(workspace, ".harness", "callbacks.db"))
+		if err != nil {
+			return fmt.Errorf("open callback store: %w", err)
+		}
+		if err := callbackStore.Migrate(context.Background()); err != nil {
+			_ = callbackStore.Close()
+			return fmt.Errorf("migrate callback store: %w", err)
+		}
 		callbackStarter = &callbackRunStarter{}
 		// The bridge forwards callback lifecycle events onto the originating
 		// run's SSE stream. It is bound to the Runner lazily (see
 		// buildHTTPRuntime), mirroring callbackStarter, because the manager is
 		// constructed before the Runner exists.
 		callbackBridge = harness.NewCallbackEventBridge()
-		callbackMgr = htools.NewCallbackManager(callbackStarter, htools.WithEventSink(callbackBridge))
+		callbackMgr = htools.NewCallbackManager(callbackStarter, htools.WithEventSink(callbackBridge), htools.WithCallbackStore(callbackStore))
 		log.Printf("delayed callbacks enabled")
 	}
 
@@ -697,11 +815,15 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	persistenceBootstrap, err := buildPersistenceBootstrap(persistenceBootstrapOptions{
 		workspace:         workspace,
 		getenv:            getenv,
+		callbacksEnabled:  callbacksEnabled,
 		convRetentionDays: convRetentionDays,
 		logger:            log.Printf,
 		newCleaner:        deps.newConversationCleaner,
 	})
 	if err != nil {
+		if callbackStore != nil {
+			_ = callbackStore.Close()
+		}
 		return err
 	}
 	runStore := persistenceBootstrap.runStore
@@ -717,9 +839,9 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		defer relayWorkerStore.Close()
 	}
 	relayControl := persistenceBootstrap.relayControl
-	convCleanerCancel := persistenceBootstrap.convCleanerCancel
-	if convCleanerCancel != nil {
-		defer convCleanerCancel()
+	convCleaner := persistenceBootstrap.convCleaner
+	if convCleaner != nil {
+		defer convCleaner.Shutdown()
 	}
 
 	askUserBroker := harness.NewCheckpointAskUserQuestionBroker(checkpointService, time.Now)
@@ -730,7 +852,6 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	promptBehaviorsDir, promptTalentsDir := promptEngine.ExtensionDirs()
 	globalWorkflowsDir := filepath.Join(globalDir, "workflows")
 	workspaceWorkflowsDir := filepath.Join(workspace, ".go-harness", "workflows")
-	globalSkillsDir := filepath.Join(globalDir, "skills")
 	workspaceSkillsDir := filepath.Join(workspace, ".go-harness", "skills")
 	goWorkflowCacheDir := strings.TrimSpace(getenv("HARNESS_GO_WORKFLOW_CACHE_DIR"))
 	if goWorkflowCacheDir == "" {
@@ -793,7 +914,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		MemoryManager:      memoryManager,
 		WorkingMemoryStore: workingMemoryStore,
 		SkillLister:        skillLister,
-		SkillsDir:          filepath.Join(globalDir, "skills"),
+		SkillsDir:          globalSkillsDir,
 		ModelCatalog:       modelCatalog,
 		CronClient:         cronClient,
 		CallbackManager:    callbackMgr,
@@ -814,10 +935,13 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		ConversationStore: convStore,
 		MessageSummarizer: msgSummarizer,
 		MCPRegistry:       mcpRegistry,
+		MCPServerNames:    mcpManager.ListServers(),
 		ProfileRunStore:   profileReadStore,
 		PackRegistry:      packRegistry,
 		TodosTool:         todosToolBuilder,
 		GoalManager:       goalManager,
+		ProfilesProject:   harnessProjectProfilesDir,
+		ProfilesDir:       harnessProfilesDir,
 	}
 	if rolloutDir != "" {
 		log.Printf("rollout recording enabled: %s", rolloutDir)
@@ -826,14 +950,20 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	// complete RunnerConfig. Startup uses them now; the config reloader
 	// (POST /v1/config/reload, epic #815) reuses them to rebuild an identical
 	// config shape on every reload.
+	providerOverride := strings.TrimSpace(getenv("HARNESS_PROVIDER"))
 	assemblyDeps := runnerConfigAssemblyDeps{
 		opts: runnerConfigOptions{
 			DefaultProviderName: func() string {
-				name := strings.TrimSpace(getenv("HARNESS_PROVIDER"))
-				if name == "fake" {
+				if providerOverride == "fake" {
 					return ""
 				}
-				return name
+				return providerOverride
+			}(),
+			ForcedDefaultProviderName: func() string {
+				if providerOverride == "fake" {
+					return "fake"
+				}
+				return ""
 			}(),
 			DefaultSystemPrompt:  systemPrompt,
 			DefaultAgentIntent:   defaultAgentIntent,
@@ -859,6 +989,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 			Workspace:           workspace,
 			WorktreeRootDir:     subagentWorktreeRoot,
 			BaseRegistryOptions: baseRegistryOptions,
+			ProfilesDir:         harnessProfilesDir,
 		},
 		profileRunStore: profileWriteStore,
 		getenv:          getenv,
@@ -941,6 +1072,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		provider:             provider,
 		runnerCfg:            runnerCfg,
 		configReloader:       configReloader,
+		authDisabled:         persistenceBootstrap.implicitRunStore,
 		checkpointService:    checkpointService,
 		workflowDefinitions:  workflowDefinitions,
 		workflowStore:        workflowStore,
@@ -973,18 +1105,49 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		subagentConfigTOML:   subagentConfigTOML,
 		askUserBroker:        askUserBroker,
 		askUserTimeout:       time.Duration(askUserTimeoutSeconds) * time.Second,
+		profilesProject:      harnessProjectProfilesDir,
+		profilesUser:         harnessProfilesDir,
 	})
 	if err != nil {
 		return err
 	}
 	httpServer := runtime.httpServer
+	var listener net.Listener
+	if inheritedFD := strings.TrimSpace(getenv("HARNESS_LISTEN_FD")); inheritedFD != "" {
+		listener, err = deps.inheritedListener(inheritedFD, addr)
+		if err != nil {
+			err = fmt.Errorf("adopt HARNESS_LISTEN_FD: %w", err)
+		}
+	} else {
+		listener, err = deps.listen("tcp", addr)
+	}
+	if err != nil {
+		if callbackMgr != nil {
+			callbackMgr.Shutdown()
+		}
+		if callbackStore != nil {
+			_ = callbackStore.Close()
+		}
+		return fmt.Errorf("listen: %w", err)
+	}
+	// Runtime construction binds the callback starter and event bridge. Do not
+	// re-arm overdue work until the listener is reserved as well: otherwise a
+	// callback can fire into a half-started daemon and be lost permanently.
+	if callbackMgr != nil {
+		if err := callbackMgr.Recover(context.Background()); err != nil {
+			_ = listener.Close()
+			callbackMgr.Shutdown()
+			_ = callbackStore.Close()
+			return fmt.Errorf("recover callbacks: %w", err)
+		}
+	}
 
 	serverErr := make(chan error, 1)
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
-		log.Printf("harness server listening on %s", addr)
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("harness server listening on %s", listener.Addr())
+		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- fmt.Errorf("server error: %w", err)
 		}
 	}()
@@ -999,10 +1162,13 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	if callbackMgr != nil {
 		callbackMgr.Shutdown()
 	}
+	if callbackStore != nil {
+		_ = callbackStore.Close()
+	}
 
 	// Shut down conversation retention cleaner goroutine.
-	if convCleanerCancel != nil {
-		convCleanerCancel()
+	if convCleaner != nil {
+		convCleaner.Shutdown()
 	}
 
 	// Shut down embedded cron scheduler
@@ -1017,11 +1183,6 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	defer cancel()
 	if err := httpServer.Shutdown(ctx); err != nil {
 		log.Printf("shutdown error: %v", err)
-	}
-
-	// Shut down the embedded MCP server (stops SSE broker and poller).
-	if err := runtime.mcpServer.Shutdown(ctx); err != nil {
-		log.Printf("mcp server shutdown error: %v", err)
 	}
 
 	// Explicitly close MCP connections after the HTTP server has drained
@@ -1066,11 +1227,12 @@ type resolveDefaultProviderOptions struct {
 // Note: usage uses short keys (prompt/completion) rather than the longer
 // CompletionUsage field names to keep the shell-smoke file concise.
 type fakeProviderTurnJSON struct {
-	Content    string                 `json:"content"`
-	ToolCalls  []harness.ToolCall     `json:"tool_calls,omitempty"`
-	Usage      *fakeProviderUsageJSON `json:"usage,omitempty"`
-	CostUSD    *float64               `json:"cost_usd,omitempty"`
-	CostStatus harness.CostStatus     `json:"cost_status,omitempty"`
+	Content    string                    `json:"content"`
+	Deltas     []harness.CompletionDelta `json:"deltas,omitempty"`
+	ToolCalls  []harness.ToolCall        `json:"tool_calls,omitempty"`
+	Usage      *fakeProviderUsageJSON    `json:"usage,omitempty"`
+	CostUSD    *float64                  `json:"cost_usd,omitempty"`
+	CostStatus harness.CostStatus        `json:"cost_status,omitempty"`
 }
 
 type fakeProviderUsageJSON struct {
@@ -1092,6 +1254,7 @@ func loadFakeTurns(path string) ([]fakeprovider.Turn, error) {
 	for i, r := range raw {
 		t := fakeprovider.Turn{
 			Content:    r.Content,
+			Deltas:     r.Deltas,
 			ToolCalls:  r.ToolCalls,
 			CostUSD:    r.CostUSD,
 			CostStatus: r.CostStatus,
@@ -1526,6 +1689,7 @@ func (m observationalMemoryModel) Complete(ctx context.Context, req om.ModelRequ
 // skillListerAdapter bridges skills.Registry to htools.SkillLister.
 type skillListerAdapter struct {
 	registry  *skills.Registry
+	loader    *skills.Loader
 	resolver  *skills.Resolver
 	workspace string
 }
@@ -1586,12 +1750,33 @@ func (a *skillListerAdapter) GetSkillFilePath(name string) (string, bool) {
 }
 
 func (a *skillListerAdapter) UpdateSkillVerification(ctx context.Context, name string, verified bool, verifiedAt time.Time, verifiedBy string) error {
-	return a.registry.UpdateSkillVerification(ctx, name, verified, verifiedAt, verifiedBy)
+	if !verified {
+		return fmt.Errorf("only verified skill state can be persisted")
+	}
+	path, ok := a.registry.GetFilePath(name)
+	if !ok {
+		return fmt.Errorf("skill %q not found in registry", name)
+	}
+	if err := skills.WriteVerification(path, verifiedAt.UTC().Format(time.RFC3339), verifiedBy); err != nil {
+		return err
+	}
+	return a.ReloadSkills(ctx)
+}
+
+func (a *skillListerAdapter) ReloadSkills(_ context.Context) error {
+	if a.loader == nil {
+		return fmt.Errorf("skill loader is not configured")
+	}
+	return a.registry.Reload(a.loader)
 }
 
 // cronClientAdapter bridges cron.Client to htools.CronClient.
 type cronClientAdapter struct {
 	client *cron.Client
+}
+
+func cronJobValidationError(err error) error {
+	return fmt.Errorf("%w: %w", htools.ErrCronJobValidation, err)
 }
 
 func (a *cronClientAdapter) CreateJob(ctx context.Context, req htools.CronCreateJobRequest) (htools.CronJob, error) {
@@ -1607,6 +1792,9 @@ func (a *cronClientAdapter) CreateJob(ctx context.Context, req htools.CronCreate
 		Tags:           req.Tags,
 	})
 	if err != nil {
+		if cron.IsValidationError(err) {
+			return htools.CronJob{}, cronJobValidationError(err)
+		}
 		if cron.IsJobNotFound(err) {
 			return htools.CronJob{}, htools.ErrCronJobNotFound
 		}
@@ -1640,15 +1828,22 @@ func (a *cronClientAdapter) GetJob(ctx context.Context, id string) (htools.CronJ
 
 func (a *cronClientAdapter) UpdateJob(ctx context.Context, id string, req htools.CronUpdateJobRequest) (htools.CronJob, error) {
 	j, err := a.client.UpdateJob(ctx, id, cron.UpdateJobRequest{
-		Schedule:   req.Schedule,
-		ExecConfig: req.ExecConfig,
-		Status:     req.Status,
-		TimeoutSec: req.TimeoutSec,
-		Tags:       req.Tags,
+		Schedule:          req.Schedule,
+		ExecConfig:        req.ExecConfig,
+		Status:            req.Status,
+		TimeoutSec:        req.TimeoutSec,
+		Tags:              req.Tags,
+		ExpectedUpdatedAt: req.ExpectedUpdatedAt,
 	})
 	if err != nil {
+		if cron.IsValidationError(err) {
+			return htools.CronJob{}, cronJobValidationError(err)
+		}
 		if cron.IsJobNotFound(err) {
 			return htools.CronJob{}, htools.ErrCronJobNotFound
+		}
+		if cron.IsJobConflict(err) {
+			return htools.CronJob{}, htools.ErrCronJobConflict
 		}
 		return htools.CronJob{}, err
 	}
@@ -1659,6 +1854,19 @@ func (a *cronClientAdapter) DeleteJob(ctx context.Context, id string) error {
 	if err := a.client.DeleteJob(ctx, id); err != nil {
 		if cron.IsJobNotFound(err) {
 			return htools.ErrCronJobNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+func (a *cronClientAdapter) DeleteJobCAS(ctx context.Context, id string, expectedUpdatedAt time.Time) error {
+	if err := a.client.DeleteJobCAS(ctx, id, expectedUpdatedAt); err != nil {
+		if cron.IsJobNotFound(err) {
+			return htools.ErrCronJobNotFound
+		}
+		if cron.IsJobConflict(err) {
+			return htools.ErrCronJobConflict
 		}
 		return err
 	}
@@ -1717,27 +1925,58 @@ func cronExecFromCron(e cron.Execution) htools.CronExecution {
 
 // embeddedCronAdapter implements htools.CronClient by calling cron.Store
 // and cron.Scheduler directly, without HTTP.
+type embeddedCronScheduler interface {
+	cron.JobScheduler
+	HasEntry(string) bool
+}
+
 type embeddedCronAdapter struct {
+	mu        sync.Mutex
 	store     cron.Store
-	scheduler *cron.Scheduler
+	scheduler embeddedCronScheduler
 	clock     cron.Clock
 }
 
+func (a *embeddedCronAdapter) getJob(ctx context.Context, id string) (cron.Job, error) {
+	if scope, ok := cron.ScopeFromContext(ctx); ok {
+		if store, ok := a.store.(cron.ScopedStore); ok {
+			return store.GetJobInScope(ctx, id, scope)
+		}
+		job, err := a.store.GetJob(ctx, id)
+		if err == nil && !scope.Matches(job) {
+			return cron.Job{}, cron.ErrJobNotFound
+		}
+		return job, err
+	}
+	return a.store.GetJob(ctx, id)
+}
+
 func (a *embeddedCronAdapter) CreateJob(ctx context.Context, req htools.CronCreateJobRequest) (htools.CronJob, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if scope, ok := cron.ScopeFromContext(ctx); ok && (req.TenantID != scope.TenantID || req.ConversationID != scope.ConversationID || req.AgentID != scope.AgentID) {
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("cron create scope does not match request scope"))
+	}
 	if req.Name == "" {
-		return htools.CronJob{}, fmt.Errorf("name is required")
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("name is required"))
 	}
 	if req.Schedule == "" {
-		return htools.CronJob{}, fmt.Errorf("schedule is required")
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("schedule is required"))
 	}
 	nextRun, err := cron.NextRunTime(req.Schedule, a.clock.Now())
 	if err != nil {
-		return htools.CronJob{}, fmt.Errorf("invalid schedule: %w", err)
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError(fmt.Sprintf("invalid schedule: %v", err)))
 	}
 	if req.ExecType != cron.ExecTypeShell && req.ExecType != cron.ExecTypeHarness {
-		return htools.CronJob{}, fmt.Errorf("execution_type must be \"shell\" or \"harness\"")
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("execution_type must be \"shell\" or \"harness\""))
 	}
-	if req.TimeoutSec <= 0 {
+	if err := cron.ValidateExecutionConfig(req.ExecType, req.ExecConfig); err != nil {
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError(err.Error()))
+	}
+	if req.TimeoutSec < 0 {
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("timeout_seconds must be positive"))
+	}
+	if req.TimeoutSec == 0 {
 		req.TimeoutSec = 30
 	}
 	now := a.clock.Now()
@@ -1750,12 +1989,14 @@ func (a *embeddedCronAdapter) CreateJob(ctx context.Context, req htools.CronCrea
 		Schedule:       req.Schedule,
 		ExecType:       req.ExecType,
 		ExecConfig:     req.ExecConfig,
-		Status:         cron.StatusActive,
-		TimeoutSec:     req.TimeoutSec,
-		Tags:           req.Tags,
-		NextRunAt:      nextRun,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		// Persist non-runnable until the live entry exists. A failed registration
+		// or activation can then never become a restart-rearmable active row.
+		Status:     cron.StatusPaused,
+		TimeoutSec: req.TimeoutSec,
+		Tags:       req.Tags,
+		NextRunAt:  nextRun,
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 	job, err = a.store.CreateJob(ctx, job)
 	if err != nil {
@@ -1764,14 +2005,44 @@ func (a *embeddedCronAdapter) CreateJob(ctx context.Context, req htools.CronCrea
 		}
 		return htools.CronJob{}, fmt.Errorf("store: %w", err)
 	}
-	if addErr := a.scheduler.AddJob(job); addErr != nil {
+	activeJob := job
+	activeJob.Status = cron.StatusActive
+	if addErr := a.scheduler.AddJob(activeJob); addErr != nil {
+		a.scheduler.RemoveJob(job.ID)
 		return htools.CronJob{}, fmt.Errorf("scheduler: %w", addErr)
 	}
-	return cronJobFromCron(job), nil
+	activeJob.UpdatedAt = a.clock.Now()
+	if !activeJob.UpdatedAt.After(job.UpdatedAt) {
+		activeJob.UpdatedAt = job.UpdatedAt.Add(time.Nanosecond)
+	}
+	if err := a.store.UpdateJobCAS(ctx, activeJob, job.UpdatedAt); err != nil {
+		a.scheduler.RemoveJob(job.ID)
+		return htools.CronJob{}, fmt.Errorf("activate registered job: %w", err)
+	}
+	return cronJobFromCron(activeJob), nil
 }
 
 func (a *embeddedCronAdapter) ListJobs(ctx context.Context) ([]htools.CronJob, error) {
-	jobs, err := a.store.ListJobs(ctx)
+	var jobs []cron.Job
+	var err error
+	if scope, ok := cron.ScopeFromContext(ctx); ok {
+		if store, ok := a.store.(cron.ScopedStore); ok {
+			jobs, err = store.ListJobsInScope(ctx, scope)
+		} else {
+			jobs, err = a.store.ListJobs(ctx)
+			if err == nil {
+				filtered := jobs[:0]
+				for _, job := range jobs {
+					if scope.Matches(job) {
+						filtered = append(filtered, job)
+					}
+				}
+				jobs = filtered
+			}
+		}
+	} else {
+		jobs, err = a.store.ListJobs(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1783,39 +2054,49 @@ func (a *embeddedCronAdapter) ListJobs(ctx context.Context) ([]htools.CronJob, e
 }
 
 func (a *embeddedCronAdapter) GetJob(ctx context.Context, id string) (htools.CronJob, error) {
-	job, err := a.store.GetJob(ctx, id)
-	if err != nil {
-		if !cron.IsJobNotFound(err) {
-			return htools.CronJob{}, err
-		}
-		job, err = a.store.GetJobByName(ctx, id)
-		if err != nil {
-			if cron.IsJobNotFound(err) {
-				return htools.CronJob{}, htools.ErrCronJobNotFound
-			}
-			return htools.CronJob{}, err
-		}
-	}
-	return cronJobFromCron(job), nil
-}
-
-func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htools.CronUpdateJobRequest) (htools.CronJob, error) {
-	job, err := a.store.GetJob(ctx, id)
+	job, err := a.getJob(ctx, id)
 	if err != nil {
 		if cron.IsJobNotFound(err) {
 			return htools.CronJob{}, htools.ErrCronJobNotFound
 		}
 		return htools.CronJob{}, err
 	}
+	return cronJobFromCron(job), nil
+}
+
+// GetJobByName is reserved for explicit operator lookup; model-facing CRUD
+// reaches GetJob and remains ID-only.
+func (a *embeddedCronAdapter) GetJobByName(ctx context.Context, name string) (htools.CronJob, error) {
+	job, err := a.store.GetJobByName(ctx, name)
+	if err != nil {
+		if cron.IsJobNotFound(err) {
+			return htools.CronJob{}, htools.ErrCronJobNotFound
+		}
+		return htools.CronJob{}, err
+	}
+	return cronJobFromCron(job), nil
+}
+
+func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htools.CronUpdateJobRequest) (htools.CronJob, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	job, err := a.getJob(ctx, id)
+	if err != nil {
+		if cron.IsJobNotFound(err) {
+			return htools.CronJob{}, htools.ErrCronJobNotFound
+		}
+		return htools.CronJob{}, err
+	}
+	originalJob := job
 
 	if req.Schedule != nil {
 		trimmed := strings.TrimSpace(*req.Schedule)
 		if trimmed == "" {
-			return htools.CronJob{}, fmt.Errorf("schedule must not be empty")
+			return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("schedule must not be empty"))
 		}
 		nextRun, err := cron.NextRunTime(*req.Schedule, a.clock.Now())
 		if err != nil {
-			return htools.CronJob{}, fmt.Errorf("invalid schedule: %w", err)
+			return htools.CronJob{}, cronJobValidationError(cron.NewValidationError(fmt.Sprintf("invalid schedule: %v", err)))
 		}
 		job.Schedule = *req.Schedule
 		job.NextRunAt = nextRun
@@ -1824,27 +2105,23 @@ func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htoo
 		job.ExecConfig = *req.ExecConfig
 	}
 	if req.TimeoutSec != nil {
+		if *req.TimeoutSec <= 0 {
+			return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("timeout_seconds must be positive"))
+		}
 		job.TimeoutSec = *req.TimeoutSec
 	}
 	if req.Tags != nil {
 		job.Tags = *req.Tags
 	}
+	if err := cron.ValidateExecutionConfig(job.ExecType, job.ExecConfig); err != nil {
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError(err.Error()))
+	}
 
 	if req.Status != nil {
 		if *req.Status != cron.StatusActive && *req.Status != cron.StatusPaused {
-			return htools.CronJob{}, fmt.Errorf("status must be \"active\" or \"paused\"")
+			return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("status must be \"active\" or \"paused\""))
 		}
-		oldStatus := job.Status
 		job.Status = *req.Status
-
-		if *req.Status == cron.StatusPaused && oldStatus != cron.StatusPaused {
-			a.scheduler.RemoveJob(job.ID)
-		}
-		if *req.Status == cron.StatusActive && oldStatus != cron.StatusActive {
-			if addErr := a.scheduler.AddJob(job); addErr != nil {
-				return htools.CronJob{}, fmt.Errorf("scheduler: %w", addErr)
-			}
-		}
 	}
 
 	// Gate on job.Status (the EFFECTIVE post-update status), not on
@@ -1852,23 +2129,56 @@ func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htoo
 	// internal/cron/server.go's handleUpdateJob. A schedule-only update
 	// (req.Status == nil) must not re-arm a job whose stored status is
 	// paused: job.Status already reflects that live status in that case.
-	if req.Schedule != nil && job.Status == cron.StatusActive {
-		if err := a.scheduler.UpdateJobSchedule(job); err != nil {
+	expectedUpdatedAt := job.UpdatedAt
+	if req.ExpectedUpdatedAt != nil {
+		expectedUpdatedAt = req.ExpectedUpdatedAt.UTC()
+	}
+	job.UpdatedAt = a.clock.Now()
+	if !job.UpdatedAt.After(expectedUpdatedAt) {
+		job.UpdatedAt = expectedUpdatedAt.Add(time.Nanosecond)
+	}
+	scheduleChanged := req.Schedule != nil
+	twoPhaseActivate := job.Status == cron.StatusActive && (scheduleChanged || originalJob.Status != cron.StatusActive)
+	if twoPhaseActivate {
+		prepared, err := a.scheduler.PrepareJob(job)
+		if err != nil {
 			return htools.CronJob{}, fmt.Errorf("scheduler: %w", err)
 		}
+		if err := a.store.UpdateJobCAS(ctx, job, expectedUpdatedAt); err != nil {
+			a.scheduler.AbortJob(prepared)
+			if cron.IsJobConflict(err) {
+				return htools.CronJob{}, htools.ErrCronJobConflict
+			}
+			return htools.CronJob{}, fmt.Errorf("store: %w", err)
+		}
+		a.scheduler.CommitJob(prepared)
+		return cronJobFromCron(job), nil
 	}
 
-	job.UpdatedAt = a.clock.Now()
-	if err := a.store.UpdateJob(ctx, job); err != nil {
+	if err := a.store.UpdateJobCAS(ctx, job, expectedUpdatedAt); err != nil {
 		if cron.IsJobNotFound(err) {
 			return htools.CronJob{}, htools.ErrCronJobNotFound
 		}
+		if cron.IsJobConflict(err) {
+			return htools.CronJob{}, htools.ErrCronJobConflict
+		}
 		return htools.CronJob{}, fmt.Errorf("store: %w", err)
+	}
+	if job.Status == cron.StatusPaused {
+		a.scheduler.RemoveJob(job.ID)
 	}
 	return cronJobFromCron(job), nil
 }
 
 func (a *embeddedCronAdapter) DeleteJob(ctx context.Context, id string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, err := a.getJob(ctx, id); err != nil {
+		if cron.IsJobNotFound(err) {
+			return htools.ErrCronJobNotFound
+		}
+		return err
+	}
 	if err := a.store.DeleteJob(ctx, id); err != nil {
 		if cron.IsJobNotFound(err) {
 			return htools.ErrCronJobNotFound
@@ -1879,7 +2189,35 @@ func (a *embeddedCronAdapter) DeleteJob(ctx context.Context, id string) error {
 	return nil
 }
 
+func (a *embeddedCronAdapter) DeleteJobCAS(ctx context.Context, id string, expectedUpdatedAt time.Time) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, err := a.getJob(ctx, id); err != nil {
+		if cron.IsJobNotFound(err) {
+			return htools.ErrCronJobNotFound
+		}
+		return err
+	}
+	if err := a.store.DeleteJobCAS(ctx, id, expectedUpdatedAt.UTC()); err != nil {
+		if cron.IsJobNotFound(err) {
+			return htools.ErrCronJobNotFound
+		}
+		if cron.IsJobConflict(err) {
+			return htools.ErrCronJobConflict
+		}
+		return err
+	}
+	a.scheduler.RemoveJob(id)
+	return nil
+}
+
 func (a *embeddedCronAdapter) ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]htools.CronExecution, error) {
+	if _, err := a.getJob(ctx, jobID); err != nil {
+		if cron.IsJobNotFound(err) {
+			return nil, htools.ErrCronJobNotFound
+		}
+		return nil, err
+	}
 	execs, err := a.store.ListExecutions(ctx, jobID, limit, offset)
 	if err != nil {
 		return nil, err
@@ -1902,8 +2240,31 @@ func (a *embeddedCronAdapter) Health(_ context.Context) error {
 // Without this the scheduler only ever had a shell executor, so a job declared
 // as harness work was accepted, stored, scheduled, and could never succeed.
 type cronRunStarter struct {
-	mu     sync.Mutex
-	runner *harness.Runner
+	mu       sync.Mutex
+	runner   *harness.Runner
+	onBind   func()
+	bindOnce sync.Once
+}
+
+// BindRunner finishes the late-bound embedded cron bridge. The callback is
+// deliberately invoked once, after publication of runner, so a recovered
+// execution is retried without making harnessd boot wait for its terminal
+// state. Remote cronsd has no cronRunStarter and therefore no duplicate local
+// reconciliation path.
+func (a *cronRunStarter) BindRunner(r *harness.Runner) {
+	a.mu.Lock()
+	a.runner = r
+	onBind := a.onBind
+	a.mu.Unlock()
+	if onBind != nil {
+		a.bindOnce.Do(onBind)
+	}
+}
+
+func (a *cronRunStarter) setOnBind(onBind func()) {
+	a.mu.Lock()
+	a.onBind = onBind
+	a.mu.Unlock()
 }
 
 func (a *cronRunStarter) StartRun(req cron.RunStartRequest) (string, error) {
@@ -1915,13 +2276,127 @@ func (a *cronRunStarter) StartRun(req cron.RunStartRequest) (string, error) {
 	}
 	log.Printf("cron: starting harness job_id=%s execution_id=%s", req.JobID, req.ExecutionID)
 	run, err := r.StartRun(harness.RunRequest{
-		Prompt:         req.Prompt,
-		TenantID:       req.TenantID,
-		ConversationID: req.ConversationID,
-		AgentID:        req.AgentID,
+		Prompt:            req.Prompt,
+		Model:             req.Model,
+		ProviderName:      req.ProviderName,
+		AllowFallback:     req.AllowFallback,
+		FallbackProviders: append([]string(nil), req.FallbackProviders...),
+		TenantID:          req.TenantID,
+		ConversationID:    req.ConversationID,
+		AgentID:           req.AgentID,
 	})
 	if err != nil {
 		return "", err
 	}
 	return run.ID, nil
+}
+
+// ObserveRun supplies the embedded scheduler's terminal lifecycle bridge. It
+// uses the Runner's durable event/status contract rather than inspecting
+// display text, and returns only bounded terminal summaries to cron history.
+func (a *cronRunStarter) ObserveRun(ctx context.Context, runID string) (cron.RunObservation, error) {
+	a.mu.Lock()
+	r := a.runner
+	a.mu.Unlock()
+	if r == nil {
+		return cron.RunObservation{}, cron.ErrRunObservationUnavailable
+	}
+	// Event delivery is the fast path. Polling is the safety net for an
+	// intentionally suppressed terminal event (for example StorageModeNone),
+	// and remains bounded by the scheduler's observation lifecycle/context.
+	poll := time.NewTicker(25 * time.Millisecond)
+	defer poll.Stop()
+	run, err := observeCronRun(ctx, runID, r.GetRun, r.Subscribe, poll.C)
+	if err != nil {
+		return cron.RunObservation{}, err
+	}
+	return cronRunObservation(run), nil
+}
+
+type cronRunGetter func(string) (harness.Run, bool)
+type cronRunSubscriber func(string) ([]harness.Event, <-chan harness.Event, func(), error)
+
+// observeCronRun waits for the Runner's authoritative terminal status. A
+// terminal replay event is a synchronization hint only: Runner appends it to
+// history before committing status and fanout, so a subscriber can receive the
+// event in replay after the terminal fanout snapshot has already passed it.
+// Never infer success, output, or failure from that event payload.
+func observeCronRun(ctx context.Context, runID string, getRun cronRunGetter, subscribe cronRunSubscriber, poll <-chan time.Time) (harness.Run, error) {
+	if run, ok := getRun(runID); ok && isTerminalRunStatus(run.Status) {
+		return run, nil
+	}
+	history, events, cancel, err := subscribe(runID)
+	if err != nil {
+		return harness.Run{}, fmt.Errorf("subscribe run %s: %w", runID, err)
+	}
+	defer cancel()
+
+	// Re-check after registration before interpreting replay. This covers a
+	// terminal commit that completed while Subscribe took its atomic snapshot.
+	if run, ok := getRun(runID); ok && isTerminalRunStatus(run.Status) {
+		return run, nil
+	}
+	if cronHistoryHasTerminalEvent(history) {
+		return awaitCronRunTerminalStatus(ctx, runID, getRun, poll)
+	}
+	for {
+		if run, ok := getRun(runID); ok && isTerminalRunStatus(run.Status) {
+			return run, nil
+		}
+		select {
+		case <-ctx.Done():
+			return harness.Run{}, ctx.Err()
+		case <-poll:
+			if run, ok := getRun(runID); ok && isTerminalRunStatus(run.Status) {
+				return run, nil
+			}
+		case event, ok := <-events:
+			if !ok {
+				if run, found := getRun(runID); found && isTerminalRunStatus(run.Status) {
+					return run, nil
+				}
+				return harness.Run{}, fmt.Errorf("run %s stream closed before terminal status", runID)
+			}
+			if harness.IsTerminalEvent(event.Type) {
+				return awaitCronRunTerminalStatus(ctx, runID, getRun, poll)
+			}
+		}
+	}
+}
+
+func cronHistoryHasTerminalEvent(history []harness.Event) bool {
+	for _, event := range history {
+		if harness.IsTerminalEvent(event.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func awaitCronRunTerminalStatus(ctx context.Context, runID string, getRun cronRunGetter, poll <-chan time.Time) (harness.Run, error) {
+	if run, ok := getRun(runID); ok && isTerminalRunStatus(run.Status) {
+		return run, nil
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return harness.Run{}, ctx.Err()
+		case <-poll:
+			if run, ok := getRun(runID); ok && isTerminalRunStatus(run.Status) {
+				return run, nil
+			}
+		}
+	}
+}
+
+func isTerminalRunStatus(status harness.RunStatus) bool {
+	return status == harness.RunStatusCompleted || status == harness.RunStatusFailed || status == harness.RunStatusCancelled
+}
+
+func cronRunObservation(run harness.Run) cron.RunObservation {
+	return cron.RunObservation{
+		Succeeded:     run.Status == harness.RunStatusCompleted,
+		OutputSummary: cron.BoundedExecutionSummary(run.Output),
+		Error:         cron.BoundedExecutionSummary(run.Error),
+	}
 }

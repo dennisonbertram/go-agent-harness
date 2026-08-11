@@ -115,6 +115,23 @@ func TestGetProfileHandler_ReturnsProfile(t *testing.T) {
 	}
 }
 
+func TestGetProfileHandler_BuiltInTierWithConfiguredEmptyDirs(t *testing.T) {
+	ts := profilesTestServer(t, t.TempDir(), t.TempDir())
+
+	res, err := http.Get(ts.URL + "/v1/profiles/full")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	var profile map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&profile); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if profile["source_tier"] != "built-in" {
+		t.Fatalf("source_tier = %v, want built-in", profile["source_tier"])
+	}
+}
+
 // TestGetProfileHandler_NotFound verifies GET /v1/profiles/nonexistent returns 404.
 func TestGetProfileHandler_NotFound(t *testing.T) {
 	t.Parallel()

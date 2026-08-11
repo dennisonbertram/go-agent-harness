@@ -13,8 +13,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/provider/catalog"
@@ -35,6 +37,9 @@ func (stubCronClientForRegistryTest) UpdateJob(context.Context, string, htools.C
 	return htools.CronJob{}, nil
 }
 func (stubCronClientForRegistryTest) DeleteJob(context.Context, string) error { return nil }
+func (stubCronClientForRegistryTest) DeleteJobCAS(context.Context, string, time.Time) error {
+	return nil
+}
 func (stubCronClientForRegistryTest) ListExecutions(context.Context, string, int, int) ([]htools.CronExecution, error) {
 	return nil, nil
 }
@@ -46,6 +51,46 @@ func registeredToolNames(registry *Registry) map[string]bool {
 		names[def.Name] = true
 	}
 	return names
+}
+
+type provenanceMCPRegistry struct{ mockMCPReg }
+
+func (provenanceMCPRegistry) ListTools(context.Context) (map[string][]htools.MCPToolDefinition, error) {
+	return map[string][]htools.MCPToolDefinition{
+		"calendar": {{Name: "create event", Description: "Create an event", Parameters: map[string]any{"type": "object"}}},
+	}, nil
+}
+
+func TestNewDefaultRegistryWithOptions_ProvenanceFollowsRegistrationSource(t *testing.T) {
+	t.Parallel()
+
+	registry := NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode: ToolApprovalModeFullAuto,
+		Sourcegraph:  htools.SourcegraphConfig{Endpoint: "https://sourcegraph.example.test"},
+		MCPRegistry:  &provenanceMCPRegistry{},
+	})
+	t.Cleanup(func() { _ = registry.Shutdown(t.Context()) })
+
+	byName := make(map[string]ToolMetadata)
+	for _, meta := range registry.DefinitionsWithMetadata() {
+		byName[meta.Definition.Name] = meta
+	}
+	assertProvenance := func(name, owner, condition string) {
+		t.Helper()
+		meta, ok := byName[name]
+		if !ok {
+			t.Fatalf("tool %q is not registered", name)
+		}
+		if meta.Owner != owner || meta.Condition != condition {
+			t.Fatalf("%s provenance = owner %q, condition %q; want owner %q, condition %q", name, meta.Owner, meta.Condition, owner, condition)
+		}
+	}
+
+	assertProvenance("read", "harness.default.core", "built-in runtime registry")
+	assertProvenance("create_prompt_extension", "harness.default.deferred", "built-in runtime registry")
+	assertProvenance("sourcegraph", "harness.sourcegraph", "Sourcegraph endpoint configured")
+	assertProvenance("list_mcp_resources", "harness.mcp", "MCP registry configured")
+	assertProvenance("mcp_calendar_create_event", "harness.mcp", `MCP server "calendar" advertised tool during registry discovery`)
 }
 
 // TestNewDefaultRegistryWithOptions_AllToolsHaveNonEmptyDescriptions is the
@@ -239,17 +284,113 @@ func TestCronToolsAreCoreNotDeferred(t *testing.T) {
 	}
 
 	for _, name := range []string{
-		"cron_create", "cron_list", "cron_get",
-		"cron_delete", "cron_pause", "cron_resume",
+		"cron_create", "cron_list", "cron_get", "cron_update",
+		"cron_history", "cron_delete", "cron_pause", "cron_resume",
 	} {
 		if !visible[name] {
 			t.Errorf("%q is not visible to a run without activation — the model cannot "+
 				"call it, and has been observed substituting bash and claiming success", name)
 		}
 	}
+
+	deferred := map[string]bool{}
+	for _, def := range registry.DeferredDefinitions() {
+		deferred[def.Name] = true
+	}
+	for _, name := range []string{
+		"cron_create", "cron_list", "cron_get", "cron_update",
+		"cron_history", "cron_delete", "cron_pause", "cron_resume",
+	} {
+		if deferred[name] {
+			t.Errorf("%q appears in deferred definitions — cron must be directly usable in the initial turn", name)
+		}
+	}
 }
 
-// TestNewDefaultRegistryWithOptions_CronToolRegistration pins that all six cron
+// TestCronDocumentationDescribesCoreInitialTools prevents public docs from
+// reintroducing the invalid premise that cron must be activated through
+// find_tool. The default registry makes these definitions visible to the
+// initial provider request; it does not change generic deferred selection.
+func TestCronDocumentationDescribesCoreInitialTools(t *testing.T) {
+	t.Parallel()
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate test file")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
+	for _, relative := range []string{
+		"website/docs/integrations/cron-scheduling.md",
+		"website/docs/concepts/tools-and-permissions.md",
+		"website/docs/reference/glossary.md",
+	} {
+		raw, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatalf("read %s: %v", relative, err)
+		}
+		content := string(raw)
+		if !strings.Contains(content, "core") || !strings.Contains(content, "initial") || !strings.Contains(content, "direct") {
+			t.Errorf("%s must describe cron as direct initial-turn core tools", relative)
+		}
+		if strings.Contains(content, "activate the deferred tools with `find_tool` and call `cron_create`") ||
+			strings.Contains(content, "six cron tools") ||
+			strings.Contains(content, "Because these are **deferred** tools") {
+			t.Errorf("%s still describes cron as deferred/discoverable through find_tool", relative)
+		}
+		for _, name := range []string{
+			"cron_create", "cron_list", "cron_get", "cron_update",
+			"cron_history", "cron_delete", "cron_pause", "cron_resume",
+		} {
+			if !strings.Contains(content, name) {
+				t.Errorf("%s omits core cron tool %q", relative, name)
+			}
+		}
+	}
+}
+
+// TestDefaultRegistryInitialCoreToolSchemasAreProviderCompatible exercises the
+// actual tool list sent to a fresh model run. OpenAI-compatible providers
+// require object-shaped function parameters and reject composition/constant
+// keywords at the schema root; type-specific constraints such as a property
+// enum remain valid below that root.
+//
+// Cron is included explicitly because all eight operations are core-visible:
+// checking only cron_create would let a later CRUD schema change break the
+// provider request before the model could create or manage a job.
+func TestDefaultRegistryInitialCoreToolSchemasAreProviderCompatible(t *testing.T) {
+	t.Parallel()
+
+	registry := NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode: ToolApprovalModeFullAuto,
+		CronClient:   stubCronClientForRegistryTest{},
+	})
+
+	checkedCron := make(map[string]bool)
+	for _, def := range registry.DefinitionsForRun("run-1", nil) {
+		if got := def.Parameters["type"]; got != "object" {
+			t.Errorf("initial core tool %q schema type = %#v, want object", def.Name, got)
+		}
+		for _, forbidden := range []string{"oneOf", "anyOf", "allOf", "enum", "const", "not"} {
+			if _, found := def.Parameters[forbidden]; found {
+				t.Errorf("initial core tool %q schema has forbidden top-level %q: %#v", def.Name, forbidden, def.Parameters)
+			}
+		}
+		if strings.HasPrefix(def.Name, "cron_") {
+			checkedCron[def.Name] = true
+		}
+	}
+
+	for _, name := range []string{
+		"cron_create", "cron_list", "cron_get", "cron_update",
+		"cron_history", "cron_delete", "cron_pause", "cron_resume",
+	} {
+		if !checkedCron[name] {
+			t.Errorf("%q was not checked in the initial core provider-schema set", name)
+		}
+	}
+}
+
+// TestNewDefaultRegistryWithOptions_CronToolRegistration pins that all eight cron
 // tools are registered when a CronClient is configured, and that none of them
 // leak into a registry built without one.
 func TestNewDefaultRegistryWithOptions_CronToolRegistration(t *testing.T) {
@@ -260,7 +401,10 @@ func TestNewDefaultRegistryWithOptions_CronToolRegistration(t *testing.T) {
 		CronClient:   stubCronClientForRegistryTest{},
 	})
 	present := registeredToolNames(withClient)
-	for _, name := range []string{"cron_create", "cron_list", "cron_get", "cron_delete", "cron_pause", "cron_resume"} {
+	for _, name := range []string{
+		"cron_create", "cron_list", "cron_get", "cron_update",
+		"cron_history", "cron_delete", "cron_pause", "cron_resume",
+	} {
 		if !present[name] {
 			t.Errorf("cron tool %q not registered when a CronClient is configured", name)
 		}

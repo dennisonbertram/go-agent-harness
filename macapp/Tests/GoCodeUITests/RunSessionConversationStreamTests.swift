@@ -16,11 +16,23 @@ private final class ConversationStreamStub: URLProtocol, @unchecked Sendable {
         var status: Int = 200
         var headers: [String: String] = ["Content-Type": "application/json"]
         var chunks: [Data] = []
+        /// Makes a duplicate conversation event wait until the per-run
+        /// stream has delivered its terminal accounting frame. This keeps the
+        /// regression deterministic: the per-run reducer owns accounting
+        /// first, then the conversation replay is deduped and reconciles.
+        var waitForPathToFinish: String?
+        /// A test opens this only after it observes application state. Unlike
+        /// a transport-completion barrier, this proves the reducer accepted
+        /// the prerequisite state before a stale replay is released.
+        var waitForGate: String?
     }
 
     nonisolated(unsafe) private static var handlers: [String: [Response]] = [:]
     nonisolated(unsafe) private static var recorded: [URLRequest] = []
+    nonisolated(unsafe) private static var completedPaths: Set<String> = []
+    nonisolated(unsafe) private static var openGates: Set<String> = []
     private static let lock = NSLock()
+    private static let completionCondition = NSCondition()
 
     static func queue(_ path: String, _ responses: [Response]) {
         lock.withLock { handlers[path] = responses }
@@ -31,9 +43,26 @@ private final class ConversationStreamStub: URLProtocol, @unchecked Sendable {
             handlers = [:]
             recorded = []
         }
+        completionCondition.lock()
+        completedPaths = []
+        openGates = []
+        completionCondition.unlock()
     }
 
     static var requests: [URLRequest] { lock.withLock { recorded } }
+
+    static func finished(_ path: String) -> Bool {
+        completionCondition.lock()
+        defer { completionCondition.unlock() }
+        return completedPaths.contains(path)
+    }
+
+    static func openGate(_ gate: String) {
+        completionCondition.lock()
+        openGates.insert(gate)
+        completionCondition.broadcast()
+        completionCondition.unlock()
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -48,17 +77,50 @@ private final class ConversationStreamStub: URLProtocol, @unchecked Sendable {
             Self.handlers[path] = queue.isEmpty ? [next] : queue
             return next
         }
-        let http = HTTPURLResponse(
-            url: request.url!, statusCode: response.status,
-            httpVersion: "HTTP/1.1", headerFields: response.headers)!
-        client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
-        for chunk in response.chunks {
-            client?.urlProtocol(self, didLoad: chunk)
+        DispatchQueue.global().async { [weak self] in
+            if let prerequisite = response.waitForPathToFinish {
+                Self.waitForCompletion(of: prerequisite)
+            }
+            if let gate = response.waitForGate {
+                Self.waitForGate(gate)
+            }
+            guard let self else { return }
+            let http = HTTPURLResponse(
+                url: request.url!, statusCode: response.status,
+                httpVersion: "HTTP/1.1", headerFields: response.headers)!
+            self.client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
+            for chunk in response.chunks {
+                self.client?.urlProtocol(self, didLoad: chunk)
+            }
+            self.client?.urlProtocolDidFinishLoading(self)
+            if let path = request.url?.path {
+                Self.markCompleted(path)
+            }
         }
-        client?.urlProtocolDidFinishLoading(self)
     }
 
     override func stopLoading() {}
+
+    private static func waitForCompletion(of path: String) {
+        completionCondition.lock()
+        defer { completionCondition.unlock() }
+        let deadline = Date().addingTimeInterval(5)
+        while !completedPaths.contains(path), completionCondition.wait(until: deadline) {}
+    }
+
+    private static func markCompleted(_ path: String) {
+        completionCondition.lock()
+        completedPaths.insert(path)
+        completionCondition.broadcast()
+        completionCondition.unlock()
+    }
+
+    private static func waitForGate(_ gate: String) {
+        completionCondition.lock()
+        defer { completionCondition.unlock() }
+        let deadline = Date().addingTimeInterval(5)
+        while !openGates.contains(gate), completionCondition.wait(until: deadline) {}
+    }
 }
 
 /// Exercises the fix for issue #950: harnessd exposes a conversation-wide SSE
@@ -93,6 +155,13 @@ struct RunSessionConversationStreamTests {
     private func hasAssistantText(_ session: RunSession, _ text: String) -> Bool {
         session.transcript.items.contains {
             if case .assistantMessage(let message) = $0.kind { return message.text == text }
+            return false
+        }
+    }
+
+    private func hasError(_ session: RunSession, _ text: String) -> Bool {
+        session.transcript.items.contains {
+            if case .error(let message) = $0.kind { return message == text }
             return false
         }
     }
@@ -151,7 +220,7 @@ struct RunSessionConversationStreamTests {
 
             id: run_1:2
             event: run.completed
-            data: {"id":"run_1:2","run_id":"run_1","type":"run.completed","payload":{}}
+            data: {"id":"run_1:2","run_id":"run_1","type":"run.completed","payload":{"usage_totals":{"prompt_tokens_total":120,"completion_tokens_total":10,"total_tokens":130},"cost_totals":{"cost_usd_total":0.0025,"cost_status":"available"}}}
 
 
             """
@@ -170,7 +239,19 @@ struct RunSessionConversationStreamTests {
             [
                 .init(
                     status: 200, headers: ["Content-Type": "text/event-stream"],
-                    chunks: [Data(frames.utf8)])
+                    chunks: [Data(frames.utf8)],
+                    waitForPathToFinish: "/v1/runs/run_1/events")
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/run_1/messages",
+            [
+                .init(
+                    status: 200,
+                    chunks: [
+                        Data(
+                            #"{"messages":[{"role":"user","content":"hi","step":0},{"role":"assistant","content":"hello there","step":0}]}"#
+                                .utf8)
+                    ])
             ])
 
         let session = makeSession()
@@ -191,6 +272,20 @@ struct RunSessionConversationStreamTests {
             assistantMessages.count == 1,
             "the same event arrived on the per-run stream and the conversation stream and was rendered twice"
         )
+        // The per-run stream wins the terminal race; the conversation copy is
+        // deduped but still requests durable rows. That reconciliation must
+        // retain the accounting owned by run_1 rather than clear it because
+        // the duplicate frame was not newly reduced.
+        try await wait {
+            ConversationStreamStub.requests.contains {
+                $0.url?.path == "/v1/conversations/run_1/messages"
+            }
+        }
+        #expect(session.transcript.usage.promptTokens == 120)
+        #expect(session.transcript.usage.completionTokens == 10)
+        #expect(session.transcript.usage.totalTokens == 130)
+        #expect(session.transcript.usage.costUSD == 0.0025)
+        #expect(session.transcript.usage.costStatus == "available")
 
         session.reset()
     }
@@ -297,6 +392,469 @@ struct RunSessionConversationStreamTests {
             return false
         }
         #expect(matchingReplies.count == 1)
+
+        session.reset()
+    }
+
+    /// A later scheduled run can begin after the conversation previously
+    /// completed with priced usage. Its empty terminal snapshot is still the
+    /// new run's accounting state; retaining the prior run's cost/tokens lies
+    /// about what this visible completion consumed.
+    @Test("an incomplete later terminal clears prior run accounting")
+    func incompleteLaterTerminalClearsPriorUsage() async throws {
+        ConversationStreamStub.reset()
+        let frames = """
+            id: run_a:0
+            event: run.started
+            data: {"id":"run_a:0","run_id":"run_a","type":"run.started","timestamp":"2026-08-03T00:00:01Z","payload":{}}
+
+            id: run_a:1
+            event: usage.delta
+            data: {"id":"run_a:1","run_id":"run_a","type":"usage.delta","timestamp":"2026-08-03T00:00:02Z","payload":{"cumulative_usage":{"prompt_tokens":120,"completion_tokens":10,"total_tokens":130},"cumulative_cost_usd":0.0025,"cost_status":"available"}}
+
+            id: run_a:2
+            event: run.completed
+            data: {"id":"run_a:2","run_id":"run_a","type":"run.completed","timestamp":"2026-08-03T00:00:03Z","payload":{"usage_totals":{"prompt_tokens_total":120,"completion_tokens_total":10,"total_tokens":130},"cost_totals":{"cost_usd_total":0.0025,"cost_status":"available"}}}
+
+            id: run_b:0
+            event: run.started
+            data: {"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T00:00:04Z","payload":{}}
+
+            id: run_b:1
+            event: run.completed
+            data: {"id":"run_b:1","run_id":"run_b","type":"run.completed","timestamp":"2026-08-03T00:00:05Z","payload":{}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_accounting/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(frames.utf8)])
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_accounting/messages",
+            [.init(status: 200, chunks: [Data(#"{"messages":[]}"#.utf8)])])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_accounting")
+
+        // Both terminal frames trigger a durable message reconciliation. Do
+        // not stop at the first `.completed` state: that would prove run A
+        // only and miss the run-B overwrite this regression guards.
+        try await wait {
+            ConversationStreamStub.requests.filter {
+                $0.url?.path == "/v1/conversations/conv_accounting/messages"
+            }.count >= 2
+        }
+        #expect(session.transcript.usage.promptTokens == 0)
+        #expect(session.transcript.usage.completionTokens == 0)
+        #expect(session.transcript.usage.totalTokens == 0)
+        #expect(session.transcript.usage.costUSD == 0)
+        #expect(session.transcript.usage.costStatus == "pending")
+        session.reset()
+    }
+
+    /// A submit that fails before the new run's stream can supply accounting
+    /// must not keep displaying a previous scheduled run's totals.
+    @Test("a local failure clears previous run accounting")
+    func localFailureClearsPriorUsage() async throws {
+        ConversationStreamStub.reset()
+        let firstRun = """
+            id: run_a:0
+            event: run.started
+            data: {"id":"run_a:0","run_id":"run_a","type":"run.started","timestamp":"2026-08-03T00:00:01Z","payload":{}}
+
+            id: run_a:1
+            event: run.completed
+            data: {"id":"run_a:1","run_id":"run_a","type":"run.completed","timestamp":"2026-08-03T00:00:02Z","payload":{"usage_totals":{"total_tokens":130},"cost_totals":{"cost_usd_total":0.0025,"cost_status":"available"}}}
+
+
+            """
+        let laterRun = """
+            id: run_c:0
+            event: run.started
+            data: {"id":"run_c:0","run_id":"run_c","type":"run.started","timestamp":"2026-08-03T00:00:04Z","payload":{}}
+
+            id: run_c:1
+            event: usage.delta
+            data: {"id":"run_c:1","run_id":"run_c","type":"usage.delta","timestamp":"2026-08-03T00:00:05Z","payload":{"cumulative_usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10},"cumulative_cost_usd":0.0005,"cost_status":"available"}}
+
+            id: run_c:2
+            event: run.completed
+            data: {"id":"run_c:2","run_id":"run_c","type":"run.completed","timestamp":"2026-08-03T00:00:06Z","payload":{"usage_totals":{"prompt_tokens_total":7,"completion_tokens_total":3,"total_tokens":10},"cost_totals":{"cost_usd_total":0.0005,"cost_status":"available"}}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_local_failure/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(firstRun.utf8)]),
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(laterRun.utf8)]),
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_local_failure/messages",
+            [
+                .init(status: 200, chunks: [Data(#"{"messages":[]}"#.utf8)]),
+                .init(
+                    status: 200,
+                    chunks: [
+                        Data(
+                            #"{"messages":[{"role":"assistant","content":"C durable reply","step":1}]}"#
+                                .utf8)
+                    ],
+                    waitForGate: "release_c_durable"),
+            ])
+        ConversationStreamStub.queue(
+            "/v1/runs",
+            [.init(status: 202, chunks: [Data(#"{"run_id":"run_b","status":"queued"}"#.utf8)])])
+        ConversationStreamStub.queue(
+            "/v1/runs/run_b/events",
+            [.init(status: 500, chunks: [Data(#"{"error":"stream unavailable"}"#.utf8)])])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_local_failure")
+        try await wait { session.transcript.usage.totalTokens == 130 }
+
+        session.draft = "start a new check"
+        session.submit()
+        try await wait { session.transcript.runState == .failed }
+
+        #expect(session.transcript.usage.totalTokens == 0)
+        #expect(session.transcript.usage.costUSD == 0)
+        #expect(session.transcript.usage.costStatus == "pending")
+
+        // B failed before any SSE timestamp. A later timestamped external C
+        // must be able to take ownership instead of being rejected forever by
+        // B's provisional nil timestamp.
+        try await wait {
+            session.accountingRunID == "run_c"
+                && session.transcript.runState == .completed
+                && session.transcript.usage.totalTokens == 10
+        }
+        #expect(session.transcript.usage.promptTokens == 7)
+        #expect(session.transcript.usage.completionTokens == 3)
+        #expect(session.transcript.usage.costUSD == 0.0005)
+        #expect(session.transcript.usage.costStatus == "available")
+        // C's terminal reducer state is deliberately observable before the
+        // delayed durable response. That is the historical hosted-race window.
+        #expect(!hasAssistantText(session, "C durable reply"))
+
+        ConversationStreamStub.openGate("release_c_durable")
+        try await wait {
+            session.accountingRunID == "run_c"
+                && session.transcript.runState == .completed
+                && session.transcript.usage.promptTokens == 7
+                && session.transcript.usage.completionTokens == 3
+                && session.transcript.usage.totalTokens == 10
+                && session.transcript.usage.costUSD == 0.0005
+                && session.transcript.usage.costStatus == "available"
+                && hasAssistantText(session, "C durable reply")
+        }
+        #expect(hasAssistantText(session, "C durable reply"))
+        session.reset()
+    }
+
+    /// A conversation replay is allowed to lag a newer per-run stream. Once
+    /// B owns the visible accounting, a delayed terminal for A must contribute
+    /// durable rows but must not terminalize, reconcile away, or otherwise
+    /// take over B's lifecycle/accounting state.
+    @Test("a stale terminal retains durable rows without replacing the newer run")
+    func staleTerminalDoesNotReplaceNewerRun() async throws {
+        ConversationStreamStub.reset()
+        let staleA = """
+            id: run_a:1
+            event: run.started
+            data: {"id":"run_a:1","run_id":"run_a","type":"run.started","timestamp":"2026-08-03T00:00:01Z","payload":{}}
+
+            id: run_a:2
+            event: run.completed
+            data: {"id":"run_a:2","run_id":"run_a","type":"run.completed","timestamp":"2026-08-03T00:00:02Z","payload":{"usage_totals":{"prompt_tokens_total":1,"completion_tokens_total":1,"total_tokens":2},"cost_totals":{"cost_usd_total":0.0001,"cost_status":"available"}}}
+
+
+            """
+        let runB = """
+            id: run_b:0
+            event: run.started
+            data: {"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T00:00:04Z","payload":{}}
+
+            id: run_b:1
+            event: assistant.message
+            data: {"id":"run_b:1","run_id":"run_b","type":"assistant.message","timestamp":"2026-08-03T00:00:05Z","payload":{"content":"B streamed reply"}}
+
+            id: run_b:2
+            event: run.completed
+            data: {"id":"run_b:2","run_id":"run_b","type":"run.completed","timestamp":"2026-08-03T00:00:06Z","payload":{"usage_totals":{"prompt_tokens_total":120,"completion_tokens_total":10,"total_tokens":130},"cost_totals":{"cost_usd_total":0.0025,"cost_status":"available"}}}
+
+
+            """
+        let storedJSON = """
+            {"messages":[
+              {"role":"user","content":"earlier A request","step":0},
+              {"role":"assistant","content":"A durable reply","step":0},
+              {"role":"user","content":"run B","step":1},
+              {"role":"assistant","content":"B durable reply","step":1}
+            ]}
+            """
+        // The test opens this application-level barrier only after it observes
+        // B's accepted session state below. It deliberately does not rely on
+        // the per-run HTTP response finishing before the reducer runs.
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_stale/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(staleA.utf8)],
+                    waitForGate: "release_stale_a_after_b")
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_stale/messages",
+            [.init(status: 200, chunks: [Data(storedJSON.utf8)])])
+        ConversationStreamStub.queue(
+            "/v1/runs",
+            [.init(status: 202, chunks: [Data(#"{"run_id":"run_b","status":"queued"}"#.utf8)])])
+        ConversationStreamStub.queue(
+            "/v1/runs/run_b/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(runB.utf8)])
+            ])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_stale")
+        session.draft = "run B"
+        session.submit()
+
+        try await wait {
+            session.accountingRunID == "run_b"
+                && session.transcript.runState == .completed
+                && session.transcript.usage.promptTokens == 120
+                && session.transcript.usage.completionTokens == 10
+                && session.transcript.usage.totalTokens == 130
+                && session.transcript.usage.costUSD == 0.0025
+                && session.transcript.usage.costStatus == "available"
+        }
+        // Pre-release proof: A cannot have terminalized or reconciled B yet.
+        #expect(session.accountingRunID == "run_b")
+        #expect(session.transcript.runState == .completed)
+        #expect(session.transcript.usage.promptTokens == 120)
+        #expect(session.transcript.usage.completionTokens == 10)
+        #expect(session.transcript.usage.totalTokens == 130)
+        #expect(session.transcript.usage.costUSD == 0.0025)
+        #expect(session.transcript.usage.costStatus == "available")
+        #expect(!hasAssistantText(session, "A durable reply"))
+
+        ConversationStreamStub.openGate("release_stale_a_after_b")
+        try await wait {
+            hasAssistantText(session, "A durable reply")
+                && hasAssistantText(session, "B durable reply")
+        }
+
+        // Post-release proof: stale A's durable rows appear, while B remains
+        // the authoritative run. Removing stale-terminal suppression makes
+        // these state/accounting assertions fail.
+        #expect(session.accountingRunID == "run_b")
+        #expect(session.transcript.runState == .completed)
+        #expect(session.transcript.usage.promptTokens == 120)
+        #expect(session.transcript.usage.completionTokens == 10)
+        #expect(session.transcript.usage.totalTokens == 130)
+        #expect(session.transcript.usage.costUSD == 0.0025)
+        #expect(session.transcript.usage.costStatus == "available")
+        #expect(hasAssistantText(session, "A durable reply"))
+        #expect(hasAssistantText(session, "B durable reply"))
+        let bReplies = session.transcript.items.filter {
+            if case .assistantMessage(let message) = $0.kind {
+                return message.text == "B durable reply"
+            }
+            return false
+        }
+        #expect(bReplies.count == 1, "durable reconciliation must replace, not duplicate, B rows")
+
+        session.reset()
+    }
+
+    @Test("a stale lifecycle replay cannot steal a locally allocated run before its first event")
+    func staleReplayCannotSupersedePreSSEOwner() async throws {
+        ConversationStreamStub.reset()
+        let staleA = """
+            id: run_a:1
+            event: run.started
+            data: {"id":"run_a:1","run_id":"run_a","type":"run.started","timestamp":"2026-08-03T00:00:01Z","payload":{}}
+
+            id: run_a:2
+            event: run.completed
+            data: {"id":"run_a:2","run_id":"run_a","type":"run.completed","timestamp":"2026-08-03T00:00:02Z","payload":{"usage_totals":{"total_tokens":2}}}
+
+
+            """
+        let runB = """
+            id: run_b:0
+            event: run.started
+            data: {"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T00:00:03Z","payload":{}}
+
+            id: run_b:1
+            event: run.completed
+            data: {"id":"run_b:1","run_id":"run_b","type":"run.completed","timestamp":"2026-08-03T00:00:04Z","payload":{"usage_totals":{"prompt_tokens_total":120,"completion_tokens_total":10,"total_tokens":130},"cost_totals":{"cost_usd_total":0.0025,"cost_status":"available"}}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_pre_sse/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(staleA.utf8)], waitForGate: "release_a_before_b_sse")
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_pre_sse/messages",
+            [
+                .init(
+                    status: 200,
+                    chunks: [
+                        Data(
+                            #"{"messages":[{"role":"assistant","content":"A durable reply","step":0}]}"#
+                                .utf8)
+                    ])
+            ])
+        ConversationStreamStub.queue(
+            "/v1/runs",
+            [.init(status: 202, chunks: [Data(#"{"run_id":"run_b","status":"queued"}"#.utf8)])])
+        ConversationStreamStub.queue(
+            "/v1/runs/run_b/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(runB.utf8)], waitForGate: "release_b_first_sse")
+            ])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_pre_sse")
+        session.draft = "run B"
+        session.submit()
+
+        // App-level precondition: B is allocated, but its per-run SSE is
+        // still blocked. Releasing A here reproduces the ownership race.
+        try await wait {
+            session.accountingRunID == "run_b" && session.transcript.runState == .queued
+        }
+        ConversationStreamStub.openGate("release_a_before_b_sse")
+        // This request is initiated only after A's stale terminal reaches the
+        // conversation reducer. It is an application-level fence; a mere
+        // transport completion could occur before event processing.
+        try await wait {
+            ConversationStreamStub.requests.contains {
+                $0.url?.path == "/v1/conversations/conv_pre_sse/messages"
+            }
+        }
+
+        #expect(session.accountingRunID == "run_b")
+        #expect(session.transcript.runState == .queued)
+        #expect(session.transcript.usage.totalTokens == 0)
+        #expect(!hasAssistantText(session, "A durable reply"))
+
+        ConversationStreamStub.openGate("release_b_first_sse")
+        try await wait {
+            session.accountingRunID == "run_b"
+                && session.transcript.runState == .completed
+                && session.transcript.usage.totalTokens == 130
+        }
+        #expect(session.transcript.usage.promptTokens == 120)
+        #expect(session.transcript.usage.completionTokens == 10)
+        #expect(session.transcript.usage.costUSD == 0.0025)
+        #expect(session.transcript.usage.costStatus == "available")
+
+        session.reset()
+    }
+
+    /// The stale-terminal path also rebuilds durable rows after B has failed.
+    /// B's error is event-only, so retaining its run state must retain that
+    /// error instead of returning early after `load(messages:)` erased it.
+    @Test("a stale terminal preserves the newer run's event-only failure")
+    func staleTerminalPreservesNewerFailureDetail() async throws {
+        ConversationStreamStub.reset()
+        let staleA = """
+            id: run_a:2
+            event: run.completed
+            data: {"id":"run_a:2","run_id":"run_a","type":"run.completed","timestamp":"2026-08-03T00:00:02Z","payload":{}}
+
+
+            """
+        let failedB = """
+            id: run_b:0
+            event: run.started
+            data: {"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T00:00:04Z","payload":{}}
+
+            id: run_b:1
+            event: run.failed
+            data: {"id":"run_b:1","run_id":"run_b","type":"run.failed","timestamp":"2026-08-03T00:00:05Z","payload":{"error":"B deployment probe failed","usage_totals":{"prompt_tokens_total":120,"completion_tokens_total":10,"total_tokens":130},"cost_totals":{"cost_usd_total":0.0025,"cost_status":"available"}}}
+
+
+            """
+        let storedJSON = """
+            {"messages":[
+              {"role":"assistant","content":"A durable reply","step":0},
+              {"role":"assistant","content":"B durable reply","step":1}
+            ]}
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_stale_failed/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(staleA.utf8)],
+                    waitForGate: "release_stale_a_after_failed_b")
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_stale_failed/messages",
+            [.init(status: 200, chunks: [Data(storedJSON.utf8)])])
+        ConversationStreamStub.queue(
+            "/v1/runs",
+            [.init(status: 202, chunks: [Data(#"{"run_id":"run_b","status":"queued"}"#.utf8)])])
+        ConversationStreamStub.queue(
+            "/v1/runs/run_b/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(failedB.utf8)])
+            ])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_stale_failed")
+        session.draft = "run B"
+        session.submit()
+
+        try await wait {
+            session.accountingRunID == "run_b"
+                && session.transcript.runState == .failed
+                && session.transcript.usage.totalTokens == 130
+                && hasError(session, "B deployment probe failed")
+        }
+        #expect(session.transcript.runState == .failed)
+        #expect(hasError(session, "B deployment probe failed"))
+        #expect(!hasAssistantText(session, "A durable reply"))
+
+        ConversationStreamStub.openGate("release_stale_a_after_failed_b")
+        try await wait {
+            hasAssistantText(session, "A durable reply")
+                && hasAssistantText(session, "B durable reply")
+        }
+
+        #expect(session.accountingRunID == "run_b")
+        #expect(session.transcript.runState == .failed)
+        #expect(session.transcript.usage.promptTokens == 120)
+        #expect(session.transcript.usage.completionTokens == 10)
+        #expect(session.transcript.usage.totalTokens == 130)
+        #expect(session.transcript.usage.costUSD == 0.0025)
+        #expect(session.transcript.usage.costStatus == "available")
+        #expect(hasError(session, "B deployment probe failed"))
+        #expect(hasAssistantText(session, "A durable reply"))
+        #expect(hasAssistantText(session, "B durable reply"))
 
         session.reset()
     }

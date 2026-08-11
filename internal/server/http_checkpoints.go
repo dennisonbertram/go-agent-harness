@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -162,6 +163,10 @@ func (s *Server) handleResumeCheckpoint(w http.ResponseWriter, r *http.Request, 
 	if err := s.checkpoints.Resume(r.Context(), checkpointID, req.Payload); err != nil {
 		if checkpoints.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("checkpoint %q not found", checkpointID))
+			return
+		}
+		if errors.Is(err, checkpoints.ErrAlreadyResolved) {
+			writeError(w, http.StatusConflict, "already_resolved", "checkpoint is already resolved")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())

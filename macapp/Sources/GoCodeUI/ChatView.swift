@@ -1,3 +1,4 @@
+import AppKit
 import HarnessKit
 import SwiftUI
 
@@ -27,11 +28,15 @@ struct ChatView: View {
                     selected: $selected,
                     project: project
                 )
-                if let plan = run.transcript.pendingPlan {
+                if let plan = run.transcript.pendingPlan, plan.runID == run.currentRunID {
                     PlanApprovalView(plan: plan, run: run)
-                } else if let prompt = run.pendingQuestions {
-                    AskUserView(prompt: prompt) { run.answer($0) }
-                } else if let approval = run.transcript.pendingApproval {
+                } else if let prompt = run.pendingQuestions, prompt.runID == run.currentRunID {
+                    AskUserView(prompt: prompt, answerInFlight: run.answerInFlight) {
+                        run.answer($0, expectedRunID: prompt.runID)
+                    }
+                } else if let approval = run.transcript.pendingApproval,
+                    approval.runID == run.currentRunID
+                {
                     ApprovalBar(approval: approval, run: run)
                 }
                 Composer(project: project, run: run)
@@ -99,7 +104,10 @@ struct TranscriptView: View {
                             row(for: item).id(item.id)
                         }
                         if run.isBusy {
-                            InlineRunStatus(run: run, statusMessage: statusMessage)
+                            InlineRunStatus(
+                                run: run,
+                                statusMessage: statusMessage,
+                                scheduledRunStatus: run.scheduledRunStatus)
                         }
                         Color.clear.frame(height: Spacing.hairline).id(bottomAnchor)
                     }
@@ -701,9 +709,14 @@ struct NoticeRow: View {
 struct InlineRunStatus: View {
     @Bindable var run: RunSession
     let statusMessage: String?
+    let scheduledRunStatus: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        // Capture the identity this status row rendered for. SwiftUI can keep
+        // this closure alive after a scheduled continuation selects a newer
+        // run; resolving currentRunID in the action would then stop B.
+        let renderedRunID = run.currentRunID
         MetadataRow(spacing: Spacing.standard) {
             ProgressView()
                 .controlSize(.small)
@@ -718,15 +731,34 @@ struct InlineRunStatus: View {
                     .foregroundStyle(Theme.foregroundQuaternary)
                     .lineLimit(1)
             }
+            if let scheduledRunStatus {
+                Text("· \(scheduledRunStatus)")
+                    .foregroundStyle(Theme.foregroundQuaternary)
+                    .lineLimit(1)
+                    .accessibilityLabel(scheduledRunStatus)
+            }
             Spacer()
-            if run.isBusy {
-                Button("Stop") { run.cancel() }.controlSize(.small)
+            if run.isBusy, let renderedRunID {
+                Button(run.cancelInFlight ? "Stopping…" : "Stop") {
+                    run.cancel(expectedRunID: renderedRunID)
+                }
+                .controlSize(.small)
+                .disabled(run.cancelInFlight)
             }
         }
+        .onChange(of: run.connectionError) { _, error in
+            guard let error, let application = NSApp else { return }
+            NSAccessibility.post(
+                element: application,
+                notification: .announcementRequested,
+                userInfo: [.announcement: error, .priority: NSAccessibilityPriorityLevel.high])
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private var label: String {
         if let error = run.connectionError { return error }
+        if run.cancelInFlight { return "Stopping…" }
         switch run.transcript.runState {
         case .idle: return run.planMode ? "Plan mode — ready" : "Ready"
         case .queued: return "Starting"
@@ -796,8 +828,12 @@ struct ApprovalBar: View {
                 Button(showArguments ? "Hide" : "Details") { showArguments.toggle() }
                     .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
                         Theme.foregroundTertiary)
-                Button("Deny") { run.deny() }
-                Button("Allow") { run.approve() }.buttonStyle(.borderedProminent)
+                Button("Deny") { run.deny(expectedRunID: approval.runID) }.disabled(
+                    run.runControlInFlight)
+                Button("Allow") { run.approve(expectedRunID: approval.runID) }.buttonStyle(
+                    .borderedProminent
+                )
+                .disabled(run.runControlInFlight)
             }
             if showArguments {
                 ScrollView {
@@ -816,67 +852,6 @@ struct ApprovalBar: View {
     }
 }
 
-struct AskUserView: View {
-    let prompt: AskUserPrompt
-    let onAnswer: ([String: String]) -> Void
-    @State private var answers: [String: String] = [:]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.inset) {
-            Label("The agent needs your input", systemImage: "questionmark.bubble")
-                .font(Typography.body.weight(.medium))
-
-            ForEach(prompt.questions) { question in
-                VStack(alignment: .leading, spacing: Spacing.small) {
-                    Text(question.question).font(Typography.body)
-                    if question.isFreeform {
-                        TextField(
-                            "Your answer",
-                            text: Binding(
-                                get: { answers[question.id] ?? "" },
-                                set: { answers[question.id] = $0 }))
-                    } else {
-                        ForEach(question.options ?? [], id: \.label) { option in
-                            Button {
-                                answers[question.id] = option.label
-                            } label: {
-                                HStack {
-                                    Image(
-                                        systemName: answers[question.id] == option.label
-                                            ? "largecircle.fill.circle" : "circle")
-                                    VStack(alignment: .leading) {
-                                        Text(option.label)
-                                        if let detail = option.description, !detail.isEmpty {
-                                            Text(detail).font(Typography.caption)
-                                                .foregroundStyle(Theme.foregroundTertiary)
-                                        }
-                                    }
-                                    Spacer()
-                                }
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
-
-            HStack {
-                if let deadline = prompt.deadlineAt {
-                    Text("Answer by \(deadline.formatted(date: .omitted, time: .shortened))")
-                        .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
-                }
-                Spacer()
-                Button("Send") { onAnswer(answers) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(answers.count < prompt.questions.count)
-            }
-        }
-        // Same 16pt left inset as the transcript column and the status bar.
-        .padding(.horizontal, Spacing.large).padding(.vertical, 14)
-        .background(Theme.accent.opacity(StateOpacity.subtle))
-    }
-}
-
 // MARK: - Composer
 
 struct Composer: View {
@@ -887,6 +862,9 @@ struct Composer: View {
     @State private var mentionTask: Task<Void, Never>?
 
     var body: some View {
+        // The same composer can remain on screen while a continuation replaces
+        // its active run. Send must retain the run it rendered as steering.
+        let action = ComposerAction.capture(canSteer: run.canSteer, runID: run.currentRunID)
         VStack(alignment: .leading, spacing: Spacing.standard) {
             if !mentions.isEmpty {
                 MentionPopup(matches: mentions) { match in
@@ -909,7 +887,7 @@ struct Composer: View {
                         .textFieldStyle(.plain)
                         .lineLimit(1...10)
                         .focused($focused)
-                        .onSubmit(send)
+                        .onSubmit { send(action) }
                         .onChange(of: run.draft) { _, text in updateMentions(for: text) }
 
                     HStack(spacing: Spacing.comfortable) {
@@ -929,7 +907,7 @@ struct Composer: View {
                             .buttonStyle(.plain).font(Typography.body).foregroundStyle(
                                 Theme.foregroundTertiary)
 
-                        Button(action: send) {
+                        Button(action: { send(action) }) {
                             Image(
                                 systemName: run.canSteer
                                     ? "arrow.turn.up.right" : "arrow.up.circle.fill"
@@ -940,10 +918,10 @@ struct Composer: View {
                             .font(.system(size: 34))
                         }
                         .buttonStyle(.plain)
-                        .disabled(run.draft.trimmed.isEmpty)
-                        .help(run.canSteer ? "Steer the running task" : "Send")
+                        .disabled(run.draft.trimmed.isEmpty || run.runControlInFlight)
+                        .help(action.isSteer ? "Steer the running task" : "Send")
                         .accessibilityLabel(
-                            run.canSteer ? "Steer the running task" : "Send message")
+                            action.isSteer ? "Steer the running task" : "Send message")
                     }
                 }
                 // The reference insets its composer controls 9pt from the
@@ -999,11 +977,43 @@ struct Composer: View {
 
     /// While a run is active the same control steers instead of queueing a
     /// second run, matching the TUI's mid-turn steering.
-    private func send() {
-        if run.canSteer {
-            run.steer()
-        } else if run.canSubmit {
-            project.submit()
+    private func send(_ action: ComposerAction) {
+        action.perform(
+            canSubmit: run.canSubmit,
+            steer: { run.steer(expectedRunID: $0) },
+            submit: { project.submit() })
+    }
+}
+
+/// Captured once for a rendered composer interaction. In particular, a Send
+/// closure rendered as A's steer action must remain a steer request for A if a
+/// scheduled B replaces it before the click/Return handler executes.
+enum ComposerAction: Equatable {
+    case submit
+    case steer(String)
+
+    static func capture(canSteer: Bool, runID: String?) -> Self {
+        if canSteer, let runID { return .steer(runID) }
+        return .submit
+    }
+
+    var isSteer: Bool {
+        if case .steer = self { return true }
+        return false
+    }
+
+    /// Keeps the rendered branch immutable through a delayed button/Return
+    /// callback. This is intentionally a tiny pure seam so ownership can be
+    /// regression-tested without a SwiftUI view host.
+    func perform(
+        canSubmit: Bool, steer: (String) -> Void, submit: () -> Void
+    ) {
+        switch self {
+        case .steer(let runID):
+            steer(runID)
+        case .submit:
+            guard canSubmit else { return }
+            submit()
         }
     }
 }
@@ -1228,11 +1238,12 @@ struct PlanApprovalView: View {
 
             HStack {
                 Spacer()
-                Button("Keep Planning") { run.deny() }
-                Button("Approve") { run.approve(option: selected) }
+                Button("Keep Planning") { run.deny(expectedRunID: plan.runID) }.disabled(
+                    run.runControlInFlight)
+                Button("Approve") { run.approve(expectedRunID: plan.runID, option: selected) }
                     .buttonStyle(.borderedProminent)
                     // With approaches offered, one must be chosen.
-                    .disabled(!plan.options.isEmpty && selected == nil)
+                    .disabled((!plan.options.isEmpty && selected == nil) || run.runControlInFlight)
             }
         }
         // Same 16pt left inset as the transcript column and the status bar.

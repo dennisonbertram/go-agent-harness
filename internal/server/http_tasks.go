@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -35,7 +36,7 @@ const (
 // CallbackLister enumerates delayed callbacks across all conversations for
 // the tasks union. *tools.CallbackManager satisfies it via ListAll.
 type CallbackLister interface {
-	ListAll() []tools.CallbackInfo
+	ListAllCallbacks(context.Context) ([]tools.CallbackInfo, error)
 }
 
 // CallbackCanceler cancels a pending delayed callback by ID for
@@ -49,13 +50,23 @@ type CallbackCanceler interface {
 // background work — a managed subagent, a cron job, or a pending delayed
 // callback — with the fields the /tasks panel needs to render a row.
 type Task struct {
-	ID         string    `json:"id"`
-	Type       string    `json:"type"`
-	Status     string    `json:"status"`
-	Label      string    `json:"label"`
-	StartedAt  time.Time `json:"started_at"`
-	AgeSeconds int64     `json:"age_seconds"`
-	Actions    []string  `json:"actions"`
+	ID                  string     `json:"id"`
+	Type                string     `json:"type"`
+	Status              string     `json:"status"`
+	Label               string     `json:"label"`
+	StartedAt           time.Time  `json:"started_at"`
+	AgeSeconds          int64      `json:"age_seconds"`
+	Actions             []string   `json:"actions"`
+	ConversationID      string     `json:"conversation_id,omitempty"`
+	NextRunAt           *time.Time `json:"next_run_at,omitempty"`
+	LastRunAt           *time.Time `json:"last_run_at,omitempty"`
+	FiresAt             *time.Time `json:"fires_at,omitempty"`
+	LastExecutionStatus string     `json:"last_execution_status,omitempty"`
+	RunID               string     `json:"run_id,omitempty"`
+	Attempt             int        `json:"attempt,omitempty"`
+	NextAttemptAt       time.Time  `json:"next_attempt_at,omitzero"`
+	LastError           string     `json:"last_error,omitempty"`
+	UpdatedAt           *time.Time `json:"updated_at,omitempty"`
 }
 
 // handleTasks serves GET /v1/tasks: a union of every daemon-reachable piece of
@@ -94,13 +105,32 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, job := range filterCronJobsByTenant(jobs, TenantIDFromContext(r.Context())) {
-			tasks = append(tasks, taskFromCronJob(job, now))
+			// The task list is a lifecycle projection, so request at most the
+			// newest execution per job. A failed history lookup is material: a
+			// partially populated row could falsely imply there was no failure.
+			executions, err := s.cronClient.ListExecutions(r.Context(), job.ID, 1, 0)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+				return
+			}
+			var latest *tools.CronExecution
+			for i := range executions {
+				if latest == nil || executions[i].StartedAt.After(latest.StartedAt) {
+					latest = &executions[i]
+				}
+			}
+			tasks = append(tasks, taskFromCronJob(job, latest, now))
 		}
 	}
 
 	if s.callbackLister != nil {
 		caller := TenantIDFromContext(r.Context())
-		for _, info := range s.callbackLister.ListAll() {
+		callbacks, err := s.callbackLister.ListAllCallbacks(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "list_failed", "durable callback status is unavailable")
+			return
+		}
+		for _, info := range callbacks {
 			// Mirror filterCronJobsByTenant: an empty caller tenant (auth
 			// disabled) sees everything; otherwise exact tenant match.
 			if caller != "" && info.TenantID != caller {
@@ -161,7 +191,7 @@ func taskFromSubagent(item subagents.Subagent, now time.Time) Task {
 
 // taskFromCronJob maps a cron job onto the unified DTO. Active jobs can be
 // paused, paused jobs resumed; every job can be deleted.
-func taskFromCronJob(job tools.CronJob, now time.Time) Task {
+func taskFromCronJob(job tools.CronJob, latest *tools.CronExecution, now time.Time) Task {
 	actions := []string{TaskActionDelete}
 	switch job.Status {
 	case "active":
@@ -169,30 +199,59 @@ func taskFromCronJob(job tools.CronJob, now time.Time) Task {
 	case "paused":
 		actions = []string{TaskActionResume, TaskActionDelete}
 	}
+	task := Task{
+		ID:             job.ID,
+		Type:           TaskTypeCron,
+		Status:         job.Status,
+		Label:          job.Name,
+		StartedAt:      job.CreatedAt,
+		AgeSeconds:     taskAgeSeconds(job.CreatedAt, now),
+		Actions:        actions,
+		ConversationID: job.ConversationID,
+		NextRunAt:      timePointer(job.NextRunAt),
+		LastRunAt:      timePointer(job.LastRunAt),
+		UpdatedAt:      timePointer(job.UpdatedAt),
+	}
+	if latest != nil {
+		task.LastExecutionStatus = latest.Status
+		task.RunID = latest.RunID
+		task.LastError = latest.Error
+	}
+	return task
+}
+
+// taskFromCallback maps every durable delayed-callback lifecycle state onto
+// the unified DTO. Only states whose cancellation transition can still win
+// advertise cancel; dispatching and terminal states remain visible read-only.
+func taskFromCallback(info tools.CallbackInfo, now time.Time) Task {
+	actions := []string{}
+	if info.State == tools.CallbackStatePending || info.State == tools.CallbackStateRetryWait {
+		actions = []string{TaskActionCancel}
+	}
 	return Task{
-		ID:         job.ID,
-		Type:       TaskTypeCron,
-		Status:     job.Status,
-		Label:      job.Name,
-		StartedAt:  job.CreatedAt,
-		AgeSeconds: taskAgeSeconds(job.CreatedAt, now),
-		Actions:    actions,
+		ID:             info.ID,
+		Type:           TaskTypeCallback,
+		Status:         string(info.State),
+		Label:          info.Prompt,
+		StartedAt:      info.CreatedAt,
+		AgeSeconds:     taskAgeSeconds(info.CreatedAt, now),
+		Actions:        actions,
+		ConversationID: info.ConversationID,
+		FiresAt:        timePointer(info.FiresAt),
+		RunID:          info.RunID,
+		Attempt:        info.Attempt,
+		NextAttemptAt:  info.NextAttemptAt,
+		LastError:      tools.SafeCallbackErrorSummary(info.LastError),
+		UpdatedAt:      timePointer(info.UpdatedAt),
 	}
 }
 
-// taskFromCallback maps a pending delayed callback onto the unified DTO.
-// CallbackManager.ListAll only returns pending callbacks, so the action set
-// is always [cancel].
-func taskFromCallback(info tools.CallbackInfo, now time.Time) Task {
-	return Task{
-		ID:         info.ID,
-		Type:       TaskTypeCallback,
-		Status:     string(info.State),
-		Label:      info.Prompt,
-		StartedAt:  info.CreatedAt,
-		AgeSeconds: taskAgeSeconds(info.CreatedAt, now),
-		Actions:    []string{TaskActionCancel},
+func timePointer(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
 	}
+	value = value.UTC()
+	return &value
 }
 
 // taskFromBashJob maps a tracked background bash job onto the unified DTO.
@@ -335,7 +394,12 @@ func (s *Server) handleCallbackByID(w http.ResponseWriter, r *http.Request) {
 	// (the cancel path has no separate lookup).
 	if caller := TenantIDFromContext(r.Context()); caller != "" && s.callbackLister != nil {
 		owned := false
-		for _, info := range s.callbackLister.ListAll() {
+		callbacks, err := s.callbackLister.ListAllCallbacks(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "list_failed", "durable callback status is unavailable")
+			return
+		}
+		for _, info := range callbacks {
 			if info.ID == id && info.TenantID == caller {
 				owned = true
 				break
@@ -347,6 +411,10 @@ func (s *Server) handleCallbackByID(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if _, err := s.callbackCanceler.Cancel(id); err != nil {
+		if errors.Is(err, tools.ErrCallbackCancelConflict) {
+			writeError(w, http.StatusConflict, "callback_conflict", err.Error())
+			return
+		}
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}

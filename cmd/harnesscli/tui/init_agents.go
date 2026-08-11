@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,8 +44,13 @@ func executeInitCommand(m *Model, cmd Command) ([]tea.Cmd, bool) {
 	confirmed := len(cmd.Args) == 1
 
 	ws := m.initWorkspace()
-	if _, err := os.Stat(filepath.Join(ws, "AGENTS.md")); err == nil && !confirmed {
+	target := filepath.Join(ws, "AGENTS.md")
+	_, statErr := os.Stat(target)
+	if statErr == nil && !confirmed {
 		return []tea.Cmd{m.setStatusMsg("AGENTS.md already exists — run /init confirm to overwrite")}, false
+	}
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return []tea.Cmd{m.setStatusMsg("Could not inspect AGENTS.md: " + statErr.Error())}, false
 	}
 	if m.runActive {
 		return []tea.Cmd{m.setStatusMsg("A run is already active — wait for it to finish before /init")}, false
@@ -54,6 +60,9 @@ func executeInitCommand(m *Model, cmd Command) ([]tea.Cmd, bool) {
 	// transcript keeps the literal prompt (the truthful record of what was
 	// sent); the bubble shows a short label to keep the viewport readable.
 	m.pendingInitAgentsMd = true
+	m.pendingInitRunID = ""
+	m.pendingInitTarget = target
+	m.pendingInitTargetExisted = statErr == nil
 	m.lastAssistantText = ""
 	m.responseStarted = false
 	m.activeAssistantLineCount = 0
@@ -72,19 +81,103 @@ func executeInitCommand(m *Model, cmd Command) ([]tea.Cmd, bool) {
 	}, false
 }
 
-// completeInitAgentsMd writes the markdown produced by a /init run to
-// <workspace>/AGENTS.md and reports the outcome via a status message. Called
-// from the RunCompletedMsg handler when pendingInitAgentsMd is set.
-func (m *Model) completeInitAgentsMd() tea.Cmd {
+// completeInitAgentsMd writes only the generated markdown from the exact
+// accepted successful /init run. The target is re-statted immediately before
+// commit so a tool or another process cannot silently create a file that this
+// run then replaces.
+func (m *Model) completeInitAgentsMd(runID string) tea.Cmd {
+	if !m.clearPendingInitAgentsMd(runID) {
+		return nil
+	}
 	content := extractAgentsMarkdown(m.lastAssistantText)
 	if content == "" {
 		return m.setStatusMsg("AGENTS.md not written — the run produced no markdown")
 	}
-	path := filepath.Join(m.initWorkspace(), "AGENTS.md")
-	if err := os.WriteFile(path, []byte(content+"\n"), 0o644); err != nil {
+	path := m.pendingInitTarget
+	if path == "" {
+		path = filepath.Join(m.initWorkspace(), "AGENTS.md")
+	}
+	if err := writeAgentsMarkdownAtomically(path, []byte(content+"\n"), m.pendingInitTargetExisted); err != nil {
 		return m.setStatusMsg("Could not write AGENTS.md: " + err.Error())
 	}
 	return m.setStatusMsg("Wrote " + path)
+}
+
+// clearPendingInitAgentsMd consumes only the pending state owned by runID. An
+// empty or foreign identity never grants permission to write a workspace file.
+func (m *Model) clearPendingInitAgentsMd(runID string) bool {
+	if !m.pendingInitAgentsMd || runID == "" || runID != m.pendingInitRunID {
+		return false
+	}
+	m.pendingInitAgentsMd = false
+	m.pendingInitRunID = ""
+	return true
+}
+
+// clearUnboundPendingInitAgentsMd consumes /init only when the harness failed
+// before accepting a run. startRunCmd reports those failures with an empty
+// RunID; accepting any later RunStartedMsg would otherwise let that unrelated
+// run inherit this pending workspace write. A bound or foreign identity remains
+// governed by clearPendingInitAgentsMd.
+func (m *Model) clearUnboundPendingInitAgentsMd() bool {
+	if !m.pendingInitAgentsMd || m.pendingInitRunID != "" {
+		return false
+	}
+	m.pendingInitAgentsMd = false
+	return true
+}
+
+func writeAgentsMarkdownAtomically(path string, content []byte, existedAtStart bool) (err error) {
+	info, statErr := os.Stat(path)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect target: %w", statErr)
+	}
+	if statErr == nil && !existedAtStart {
+		return fmt.Errorf("AGENTS.md appeared while generating; it was not overwritten (run /init confirm again)")
+	}
+
+	mode := os.FileMode(0o644)
+	if statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".AGENTS.md-*")
+	if err != nil {
+		return fmt.Errorf("create temporary file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err = tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("set temporary file mode: %w", err)
+	}
+	if _, err = tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temporary file: %w", err)
+	}
+	if err = tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temporary file: %w", err)
+	}
+	if err = tmp.Close(); err != nil {
+		return fmt.Errorf("close temporary file: %w", err)
+	}
+	if err = os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("replace AGENTS.md: %w", err)
+	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open workspace directory for sync: %w", err)
+	}
+	defer directory.Close()
+	if err = directory.Sync(); err != nil {
+		return fmt.Errorf("sync workspace directory: %w", err)
+	}
+	return nil
 }
 
 // initWorkspace returns the workspace root for /init, defaulting to the

@@ -107,4 +107,11 @@ func TestSQLiteStorePersistsRunsStepsAndEvents(t *testing.T) {
 	if len(events) != 1 || events[0].Type != "workflow.completed" {
 		t.Fatalf("events = %+v", events)
 	}
+	highWater, err := store.LastEventSeq(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("LastEventSeq: %v", err)
+	}
+	if highWater != 2 {
+		t.Fatalf("LastEventSeq = %d, want 2", highWater)
+	}
 }

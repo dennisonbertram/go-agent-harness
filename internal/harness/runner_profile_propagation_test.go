@@ -56,7 +56,7 @@ func TestRunForkedSkill_InheritsParentProfileName(t *testing.T) {
 	// Call RunForkedSkill with the parent run ID in context (simulating being
 	// called from within the parent run's tool execution).
 	parentMeta := htools.RunMetadata{RunID: parentRun.ID, TenantID: "default"}
-	ctx := context.WithValue(context.Background(), htools.ContextKeyRunMetadata, parentMeta)
+	ctx := context.WithValue(trustedExistingParentForkContext(runner, parentRun.ID), htools.ContextKeyRunMetadata, parentMeta)
 
 	forkCfg := htools.ForkConfig{
 		Prompt:    "child task",
@@ -119,7 +119,7 @@ func TestRunForkedSkill_NoParentProfilePropagatesEmpty(t *testing.T) {
 	}
 
 	parentMeta := htools.RunMetadata{RunID: parentRun.ID, TenantID: "default"}
-	ctx := context.WithValue(context.Background(), htools.ContextKeyRunMetadata, parentMeta)
+	ctx := context.WithValue(trustedExistingParentForkContext(runner, parentRun.ID), htools.ContextKeyRunMetadata, parentMeta)
 
 	forkCfg := htools.ForkConfig{
 		Prompt:    "child task",
@@ -215,7 +215,7 @@ func TestRunForkedSkill_StoresParentContextHandoff(t *testing.T) {
 		t.Fatalf("collect parent run events: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx := trustedExistingParentForkContext(runner, parentRun.ID)
 	ctx = context.WithValue(ctx, htools.ContextKeyRunMetadata, htools.RunMetadata{
 		RunID:          parentRun.ID,
 		TenantID:       "tenant_1",

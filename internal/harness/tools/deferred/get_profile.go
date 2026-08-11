@@ -50,15 +50,15 @@ func GetProfileToolWithDirs(projectDir, userDir string) tools.Tool {
 			return "", fmt.Errorf("get_profile: name is required")
 		}
 
-		// Load the profile using the three-tier resolution.
-		var p *profiles.Profile
-		var err error
+		var (
+			p          *profiles.Profile
+			sourceTier string
+			err        error
+		)
 		if projectDir != "" || userDir != "" {
-			p, err = profiles.LoadProfileWithDirs(args.Name, projectDir, userDir)
-		} else if userDir != "" {
-			p, err = profiles.LoadProfileFromUserDir(args.Name, userDir)
+			p, sourceTier, err = profiles.ResolveProfileWithDirsAndSourceTier(args.Name, projectDir, userDir)
 		} else {
-			p, err = profiles.LoadProfile(args.Name)
+			p, sourceTier, err = profiles.ResolveProfileWithSourceTier(args.Name)
 		}
 		if err != nil {
 			return "", fmt.Errorf("get_profile %q: %w", args.Name, err)
@@ -66,9 +66,6 @@ func GetProfileToolWithDirs(projectDir, userDir string) tools.Tool {
 		if p == nil {
 			return "", fmt.Errorf("get_profile: profile %q not found", args.Name)
 		}
-
-		// Determine source tier by re-checking where it was found.
-		sourceTier := resolveSourceTier(args.Name, projectDir, userDir)
 
 		response := map[string]any{
 			"name":               p.Meta.Name,
@@ -89,19 +86,4 @@ func GetProfileToolWithDirs(projectDir, userDir string) tools.Tool {
 	}
 
 	return tools.Tool{Definition: def, Handler: handler}
-}
-
-// resolveSourceTier determines which tier a profile was resolved from.
-func resolveSourceTier(name, projectDir, userDir string) string {
-	if projectDir != "" {
-		if _, err := profiles.LoadProfileWithDirs(name, projectDir, ""); err == nil {
-			return "project"
-		}
-	}
-	if userDir != "" {
-		if _, err := profiles.LoadProfileWithDirs(name, "", userDir); err == nil {
-			return "user"
-		}
-	}
-	return "built-in"
 }

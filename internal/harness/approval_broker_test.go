@@ -82,6 +82,149 @@ type approvalBrokerResult struct {
 	err      error
 }
 
+// TestApprovalBrokerRegisterIsImmediatelyResolvable proves the new split
+// lifecycle retains a decision that arrives before the caller begins waiting.
+// Runner event publication relies on this exact property.
+func TestApprovalBrokerRegisterIsImmediatelyResolvable(t *testing.T) {
+	t.Parallel()
+
+	broker := NewInMemoryApprovalBroker()
+	waiter, err := broker.Register(context.Background(), ApprovalRequest{
+		RunID:   "run_registered",
+		CallID:  "call_registered",
+		Tool:    "bash",
+		Args:    `{}`,
+		Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	pending := waiter.Pending()
+	if pending.RunID != "run_registered" || pending.DeadlineAt.IsZero() {
+		t.Fatalf("registered pending = %#v, want run and deadline", pending)
+	}
+	if err := broker.Approve("run_registered"); err != nil {
+		t.Fatalf("Approve immediately after Register: %v", err)
+	}
+	approved, option, err := waiter.Wait(context.Background())
+	if err != nil || !approved || option != "" {
+		t.Fatalf("Wait after immediate approve = (%v, %q, %v), want (true, \"\", nil)", approved, option, err)
+	}
+}
+
+// TestApprovalBrokerPreWaitResolutionSurvivesDeadline proves a decision that
+// successfully resolves the registered entry before Wait starts remains the
+// authoritative outcome even if Wait is scheduled after DeadlineAt.
+func TestApprovalBrokerPreWaitResolutionSurvivesDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		resolve      func(*InMemoryApprovalBroker, string) error
+		wantApproved bool
+	}{
+		{name: "approve", resolve: func(b *InMemoryApprovalBroker, runID string) error { return b.Approve(runID) }, wantApproved: true},
+		{name: "deny", resolve: func(b *InMemoryApprovalBroker, runID string) error { return b.Deny(runID) }, wantApproved: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := NewInMemoryApprovalBroker()
+			waiter, err := broker.Register(context.Background(), ApprovalRequest{
+				RunID:   "run-pre-wait-" + tc.name,
+				CallID:  "call-pre-wait-" + tc.name,
+				Tool:    "bash",
+				Timeout: 20 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			if err := tc.resolve(broker, "run-pre-wait-"+tc.name); err != nil {
+				t.Fatalf("%s before Wait: %v", tc.name, err)
+			}
+			time.Sleep(40 * time.Millisecond)
+			approved, _, err := waiter.Wait(context.Background())
+			if err != nil || approved != tc.wantApproved {
+				t.Fatalf("Wait after pre-deadline %s = (%v, %v), want (%v, nil)", tc.name, approved, err, tc.wantApproved)
+			}
+		})
+	}
+}
+
+func TestApprovalBrokerExpiryWinnerRejectsLateResolution(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		resolve func(*InMemoryApprovalBroker, string) error
+	}{
+		{name: "approve", resolve: func(b *InMemoryApprovalBroker, runID string) error { return b.Approve(runID) }},
+		{name: "deny", resolve: func(b *InMemoryApprovalBroker, runID string) error { return b.Deny(runID) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := NewInMemoryApprovalBroker()
+			runID := "run-expiry-wins-" + tc.name
+			waiter, err := broker.Register(context.Background(), ApprovalRequest{
+				RunID: runID, CallID: "call-expiry", Tool: "bash", Timeout: 20 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			time.Sleep(40 * time.Millisecond)
+			if _, _, err := waiter.Wait(context.Background()); !IsApprovalTimeout(err) {
+				t.Fatalf("Wait = %v, want ApprovalTimeoutError", err)
+			}
+			if err := tc.resolve(broker, runID); !errors.Is(err, ErrNoPendingApproval) {
+				t.Fatalf("late %s = %v, want ErrNoPendingApproval", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestApprovalBrokerResolutionExpiryRaceIsConsistent(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		resolve      func(*InMemoryApprovalBroker, string) error
+		wantApproved bool
+	}{
+		{name: "approve", resolve: func(b *InMemoryApprovalBroker, runID string) error { return b.Approve(runID) }, wantApproved: true},
+		{name: "deny", resolve: func(b *InMemoryApprovalBroker, runID string) error { return b.Deny(runID) }, wantApproved: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := NewInMemoryApprovalBroker()
+			runID := "run-expiry-race-" + tc.name
+			waiter, err := broker.Register(context.Background(), ApprovalRequest{
+				RunID: runID, CallID: "call-expiry-race", Tool: "bash", Timeout: 5 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			time.Sleep(10 * time.Millisecond)
+			start := make(chan struct{})
+			waited := make(chan approvalBrokerResult, 1)
+			resolved := make(chan error, 1)
+			go func() {
+				<-start
+				approved, _, err := waiter.Wait(context.Background())
+				waited <- approvalBrokerResult{approved: approved, err: err}
+			}()
+			go func() {
+				<-start
+				resolved <- tc.resolve(broker, runID)
+			}()
+			close(start)
+			resolveErr := <-resolved
+			waitResult := <-waited
+			switch {
+			case resolveErr == nil:
+				if waitResult.err != nil || waitResult.approved != tc.wantApproved {
+					t.Fatalf("successful %s discarded: Wait=(%v, %v)", tc.name, waitResult.approved, waitResult.err)
+				}
+			case errors.Is(resolveErr, ErrNoPendingApproval):
+				if !IsApprovalTimeout(waitResult.err) {
+					t.Fatalf("expiry won but Wait=%v, want ApprovalTimeoutError", waitResult.err)
+				}
+			default:
+				t.Fatalf("%s returned unexpected error: %v", tc.name, resolveErr)
+			}
+		})
+	}
+}
+
 // TestApprovalBrokerDenyLifecycle verifies that Deny() causes Ask() to return
 // (false, nil) — the tool call is not executed but the run continues.
 func TestApprovalBrokerDenyLifecycle(t *testing.T) {

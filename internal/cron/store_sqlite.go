@@ -3,9 +3,11 @@ package cron
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -17,7 +19,7 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
 	tenant_id TEXT NOT NULL DEFAULT '',
 	conversation_id TEXT NOT NULL DEFAULT '',
 	agent_id TEXT NOT NULL DEFAULT '',
-	name TEXT NOT NULL UNIQUE,
+	name TEXT NOT NULL,
 	schedule TEXT NOT NULL,
 	execution_type TEXT NOT NULL,
 	execution_config TEXT NOT NULL DEFAULT '{}',
@@ -92,7 +94,117 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 	if err := s.ensureCronJobsScopeColumns(ctx); err != nil {
 		return err
 	}
+	if err := s.migrateScopedNameUniqueness(ctx); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_cron_jobs_active_scope_name ON cron_jobs(tenant_id, conversation_id, agent_id, name) WHERE status != 'deleted'`); err != nil {
+		return fmt.Errorf("index scoped cron names: %w", err)
+	}
 	return nil
+}
+
+// migrateScopedNameUniqueness replaces the legacy global UNIQUE(name)
+// constraint without dropping jobs or their execution history. SQLite cannot
+// drop an inline uniqueness constraint, so rebuild both related tables in one
+// transaction. The schema check makes repeat startups a no-op.
+func (s *SQLiteStore) migrateScopedNameUniqueness(ctx context.Context) error {
+	legacyGlobalNameUnique, err := s.hasLegacyGlobalNameUnique(ctx)
+	if err != nil {
+		return err
+	}
+	if !legacyGlobalNameUnique {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin scoped-name migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmts := []string{
+		`ALTER TABLE cron_executions RENAME TO cron_executions_legacy`,
+		`ALTER TABLE cron_jobs RENAME TO cron_jobs_legacy`,
+		`CREATE TABLE cron_jobs (job_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', conversation_id TEXT NOT NULL DEFAULT '', agent_id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, schedule TEXT NOT NULL, execution_type TEXT NOT NULL, execution_config TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'active', timeout_seconds INTEGER NOT NULL DEFAULT 30, tags TEXT NOT NULL DEFAULT '', next_run_at TIMESTAMP NOT NULL, last_run_at TIMESTAMP, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL)`,
+		`INSERT INTO cron_jobs SELECT job_id, tenant_id, conversation_id, agent_id, name, schedule, execution_type, execution_config, status, timeout_seconds, tags, next_run_at, last_run_at, created_at, updated_at FROM cron_jobs_legacy`,
+		`CREATE TABLE cron_executions (execution_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, started_at TIMESTAMP NOT NULL, finished_at TIMESTAMP, status TEXT NOT NULL, run_id TEXT NOT NULL DEFAULT '', output_summary TEXT NOT NULL DEFAULT '', error_text TEXT NOT NULL DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (job_id) REFERENCES cron_jobs(job_id))`,
+		`INSERT INTO cron_executions SELECT execution_id, job_id, started_at, finished_at, status, run_id, output_summary, error_text, duration_ms FROM cron_executions_legacy`,
+		`DROP TABLE cron_executions_legacy`, `DROP TABLE cron_jobs_legacy`,
+		`CREATE INDEX idx_cron_executions_job_id ON cron_executions(job_id)`, `CREATE INDEX idx_cron_executions_started_at ON cron_executions(started_at)`,
+		`CREATE INDEX idx_cron_jobs_tenant_id ON cron_jobs(tenant_id)`,
+		`CREATE UNIQUE INDEX idx_cron_jobs_active_scope_name ON cron_jobs(tenant_id, conversation_id, agent_id, name) WHERE status != 'deleted'`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("scoped-name migration: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit scoped-name migration: %w", err)
+	}
+	return nil
+}
+
+// hasLegacyGlobalNameUnique asks SQLite which indexes enforce cron_jobs
+// uniqueness instead of parsing CREATE TABLE text. Inline, named, quoted, and
+// collated UNIQUE(name) constraints all surface as a non-partial unique index
+// with exactly one key column named "name". Composite scoped constraints and
+// partial active-name indexes must not trigger a table rebuild.
+func (s *SQLiteStore) hasLegacyGlobalNameUnique(ctx context.Context) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name, "unique", origin, partial FROM pragma_index_list('cron_jobs')`)
+	if err != nil {
+		return false, fmt.Errorf("inspect cron_jobs indexes: %w", err)
+	}
+	type indexMetadata struct {
+		name    string
+		unique  bool
+		origin  string
+		partial bool
+	}
+	var indexes []indexMetadata
+	for rows.Next() {
+		var index indexMetadata
+		if err := rows.Scan(&index.name, &index.unique, &index.origin, &index.partial); err != nil {
+			_ = rows.Close()
+			return false, fmt.Errorf("scan cron_jobs index: %w", err)
+		}
+		indexes = append(indexes, index)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return false, fmt.Errorf("inspect cron_jobs index rows: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return false, fmt.Errorf("close cron_jobs index rows: %w", err)
+	}
+
+	for _, index := range indexes {
+		if !index.unique || index.partial || index.origin == "pk" {
+			continue
+		}
+		columns, err := s.db.QueryContext(ctx, `SELECT name FROM pragma_index_xinfo(?) WHERE key = 1 ORDER BY seqno`, index.name)
+		if err != nil {
+			return false, fmt.Errorf("inspect cron_jobs index %q: %w", index.name, err)
+		}
+		var keyColumns []sql.NullString
+		for columns.Next() {
+			var name sql.NullString
+			if err := columns.Scan(&name); err != nil {
+				_ = columns.Close()
+				return false, fmt.Errorf("scan cron_jobs index %q: %w", index.name, err)
+			}
+			keyColumns = append(keyColumns, name)
+		}
+		if err := columns.Err(); err != nil {
+			_ = columns.Close()
+			return false, fmt.Errorf("inspect cron_jobs index %q rows: %w", index.name, err)
+		}
+		if err := columns.Close(); err != nil {
+			return false, fmt.Errorf("close cron_jobs index %q rows: %w", index.name, err)
+		}
+		if len(keyColumns) == 1 && keyColumns[0].Valid && strings.EqualFold(keyColumns[0].String, "name") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *SQLiteStore) ensureCronJobsScopeColumns(ctx context.Context) error {
@@ -179,14 +291,39 @@ WHERE job_id = ? AND status != ?
 
 // GetJobByName retrieves a job by name.
 func (s *SQLiteStore) GetJobByName(ctx context.Context, name string) (Job, error) {
-	return s.scanJob(s.db.QueryRowContext(ctx, `
+	rows, err := s.db.QueryContext(ctx, `
 SELECT job_id, tenant_id, name, schedule, execution_type, execution_config,
 	conversation_id, agent_id,
 	status, timeout_seconds, tags, next_run_at, last_run_at,
 	created_at, updated_at
 FROM cron_jobs
 WHERE name = ? AND status != ?
-`, name, StatusDeleted))
+ORDER BY created_at, job_id
+LIMIT 2
+`, name, StatusDeleted)
+	if err != nil {
+		return Job{}, fmt.Errorf("get job by name: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return Job{}, sql.ErrNoRows
+	}
+	job, err := s.scanJobRow(rows)
+	if err != nil {
+		return Job{}, err
+	}
+	if rows.Next() {
+		return Job{}, ErrJobAmbiguous
+	}
+	return job, rows.Err()
+}
+
+func (s *SQLiteStore) GetJobInScope(ctx context.Context, id string, scope Scope) (Job, error) {
+	return s.scanJob(s.db.QueryRowContext(ctx, `SELECT job_id, tenant_id, name, schedule, execution_type, execution_config, conversation_id, agent_id, status, timeout_seconds, tags, next_run_at, last_run_at, created_at, updated_at FROM cron_jobs WHERE job_id = ? AND tenant_id = ? AND conversation_id = ? AND agent_id = ? AND status != ?`, id, scope.TenantID, scope.ConversationID, scope.AgentID, StatusDeleted))
+}
+
+func (s *SQLiteStore) GetJobByNameInScope(ctx context.Context, name string, scope Scope) (Job, error) {
+	return s.scanJob(s.db.QueryRowContext(ctx, `SELECT job_id, tenant_id, name, schedule, execution_type, execution_config, conversation_id, agent_id, status, timeout_seconds, tags, next_run_at, last_run_at, created_at, updated_at FROM cron_jobs WHERE name = ? AND tenant_id = ? AND conversation_id = ? AND agent_id = ? AND status != ?`, name, scope.TenantID, scope.ConversationID, scope.AgentID, StatusDeleted))
 }
 
 // ListJobs returns all non-deleted jobs.
@@ -205,6 +342,23 @@ ORDER BY created_at DESC
 	}
 	defer rows.Close()
 
+	var jobs []Job
+	for rows.Next() {
+		job, err := s.scanJobRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
+func (s *SQLiteStore) ListJobsInScope(ctx context.Context, scope Scope) ([]Job, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT job_id, tenant_id, name, schedule, execution_type, execution_config, conversation_id, agent_id, status, timeout_seconds, tags, next_run_at, last_run_at, created_at, updated_at FROM cron_jobs WHERE tenant_id = ? AND conversation_id = ? AND agent_id = ? AND status != ? ORDER BY created_at DESC`, scope.TenantID, scope.ConversationID, scope.AgentID, StatusDeleted)
+	if err != nil {
+		return nil, fmt.Errorf("list scoped jobs: %w", err)
+	}
+	defer rows.Close()
 	var jobs []Job
 	for rows.Next() {
 		job, err := s.scanJobRow(rows)
@@ -247,6 +401,82 @@ WHERE job_id = ?
 	return nil
 }
 
+// UpdateJobCAS updates a job only when its persisted version still matches
+// expectedUpdatedAt. The database row count is the authority for conflict
+// detection; callers never perform a read/check/write sequence in memory.
+func (s *SQLiteStore) UpdateJobCAS(ctx context.Context, job Job, expectedUpdatedAt time.Time) error {
+	res, err := s.db.ExecContext(ctx, `
+UPDATE cron_jobs
+SET tenant_id = ?, name = ?, schedule = ?, execution_type = ?, execution_config = ?,
+	conversation_id = ?, agent_id = ?,
+	status = ?, timeout_seconds = ?, tags = ?, next_run_at = ?,
+	last_run_at = ?, updated_at = ?
+WHERE job_id = ? AND status != ? AND updated_at = ?
+`,
+		job.TenantID,
+		job.Name,
+		job.Schedule,
+		job.ExecType,
+		job.ExecConfig,
+		job.ConversationID,
+		job.AgentID,
+		job.Status,
+		job.TimeoutSec,
+		job.Tags,
+		nowString(job.NextRunAt),
+		nullableTimeString(job.LastRunAt),
+		nowString(job.UpdatedAt),
+		job.ID,
+		StatusDeleted,
+		nowString(expectedUpdatedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("compare-and-swap job: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("compare-and-swap job rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrJobConflict
+	}
+	return nil
+}
+
+// ClaimJobTenant atomically assigns a tenantless legacy shell row. UPDATE
+// ... RETURNING is the linearization point across cronsd processes sharing the
+// database; a losing tenant observes the persisted winner and cannot expose
+// the row.
+func (s *SQLiteStore) ClaimJobTenant(ctx context.Context, jobID, tenantID string) (Job, bool, error) {
+	if jobID == "" || tenantID == "" {
+		return Job{}, false, fmt.Errorf("claim job tenant requires job and tenant IDs")
+	}
+	now := time.Now().UTC()
+	job, err := s.scanJob(s.db.QueryRowContext(ctx, `
+UPDATE cron_jobs
+SET tenant_id = ?, updated_at = ?
+WHERE job_id = ? AND tenant_id = '' AND execution_type = ? AND status != ?
+RETURNING job_id, tenant_id, name, schedule, execution_type, execution_config,
+	conversation_id, agent_id,
+	status, timeout_seconds, tags, next_run_at, last_run_at,
+	created_at, updated_at
+`, tenantID, nowString(now), jobID, ExecTypeShell, StatusDeleted))
+	if err == nil {
+		return job, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Job{}, false, fmt.Errorf("claim job tenant: %w", err)
+	}
+	job, err = s.GetJob(ctx, jobID)
+	if err != nil {
+		if IsJobNotFound(err) {
+			return Job{}, false, nil
+		}
+		return Job{}, false, fmt.Errorf("read claimed job tenant: %w", err)
+	}
+	return job, job.TenantID == tenantID, nil
+}
+
 // TouchJobRun updates only the run-tracking columns for a job
 // (last_run_at, next_run_at, updated_at), leaving schedule, execution
 // config, status, timeout, and tags untouched. This is used by the
@@ -254,12 +484,27 @@ WHERE job_id = ?
 // never silently reverted by a full-row overwrite.
 func (s *SQLiteStore) TouchJobRun(ctx context.Context, jobID string, lastRun, nextRun, updatedAt time.Time) error {
 	res, err := s.db.ExecContext(ctx, `
-UPDATE cron_jobs SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE job_id = ?
+UPDATE cron_jobs
+SET last_run_at = ?, next_run_at = ?, updated_at = ?
+WHERE job_id = ?
+  AND (
+       last_run_at IS NULL
+       OR last_run_at < ?
+       OR (
+           last_run_at = ?
+           AND updated_at <= ?
+           AND next_run_at <= ?
+       )
+  )
 `,
 		nullableTimeString(lastRun),
 		nowString(nextRun),
 		nowString(updatedAt),
 		jobID,
+		nullableTimeString(lastRun),
+		nullableTimeString(lastRun),
+		nowString(updatedAt),
+		nowString(nextRun),
 	)
 	if err != nil {
 		return fmt.Errorf("touch job run: %w", err)
@@ -269,20 +514,86 @@ UPDATE cron_jobs SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE job_
 		return fmt.Errorf("touch job run rows affected: %w", err)
 	}
 	if rows == 0 {
-		return ErrJobNotFound
+		// A late completion is an expected stale write, not a not-found error.
+		// Check existence so callers still receive the accurate error for a
+		// deleted/nonexistent job without permitting any timestamp regression.
+		if _, err := s.GetJob(ctx, jobID); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
+// AdmitExecution provides the cross-process counterpart to Scheduler's local
+// activeScopes map. BEGIN IMMEDIATE reserves SQLite's writer before reading
+// the active scope, so two daemons cannot both observe an empty scope and
+// launch duplicate harness work.
+func (s *SQLiteStore) AdmitExecution(ctx context.Context, job Job, exec Execution) (Execution, bool, error) {
+	scope := Scope{TenantID: job.TenantID, ConversationID: job.ConversationID, AgentID: job.AgentID}
+	if !scope.Complete() {
+		created, err := s.CreateExecution(ctx, exec)
+		return created, err == nil, err
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return Execution{}, false, fmt.Errorf("acquire scoped admission connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return Execution{}, false, fmt.Errorf("begin scoped admission: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	var active bool
+	err = conn.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1
+  FROM cron_executions execution
+  JOIN cron_jobs scoped_job ON scoped_job.job_id = execution.job_id
+  WHERE scoped_job.tenant_id = ?
+    AND scoped_job.conversation_id = ?
+    AND scoped_job.agent_id = ?
+    AND execution.status IN (?, ?, ?, ?)
+)
+`, scope.TenantID, scope.ConversationID, scope.AgentID,
+		ExecStatusQueued, "pending", ExecStatusStarting, ExecStatusRunning).Scan(&active)
+	if err != nil {
+		return Execution{}, false, fmt.Errorf("check scoped execution admission: %w", err)
+	}
+	admitted := !active
+	if !admitted {
+		exec.Status = ExecStatusSkipped
+		exec.FinishedAt = exec.StartedAt
+		exec.Error = ErrExecutionSkippedOverlap.Error()
+	}
+	if _, err := conn.ExecContext(ctx, `
+INSERT INTO cron_executions (
+	execution_id, job_id, started_at, finished_at, status,
+	run_id, output_summary, error_text, duration_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, exec.ID, exec.JobID, nowString(exec.StartedAt), nullableTimeString(exec.FinishedAt), exec.Status,
+		exec.RunID, exec.OutputSummary, exec.Error, exec.DurationMs); err != nil {
+		return Execution{}, false, fmt.Errorf("insert scoped execution: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return Execution{}, false, fmt.Errorf("commit scoped execution admission: %w", err)
+	}
+	committed = true
+	return exec, admitted, nil
+}
+
 // DeleteJob performs a soft delete by setting status to deleted.
-// It also renames the job to free the unique name constraint,
-// allowing a new job with the same name to be created later.
+// Scoped active-name uniqueness releases the name on delete without mutating
+// the historical row's display name.
 func (s *SQLiteStore) DeleteJob(ctx context.Context, id string) error {
 	now := time.Now().UTC()
-	suffix := fmt.Sprintf("_deleted_%d", now.UnixNano())
 	res, err := s.db.ExecContext(ctx, `
-UPDATE cron_jobs SET status = ?, name = name || ?, updated_at = ? WHERE job_id = ?
-`, StatusDeleted, suffix, nowString(now), id)
+UPDATE cron_jobs SET status = ?, updated_at = ? WHERE job_id = ?
+`, StatusDeleted, nowString(now), id)
 	if err != nil {
 		return fmt.Errorf("delete job: %w", err)
 	}
@@ -292,6 +603,29 @@ UPDATE cron_jobs SET status = ?, name = name || ?, updated_at = ? WHERE job_id =
 	}
 	if rows == 0 {
 		return ErrJobNotFound
+	}
+	return nil
+}
+
+// DeleteJobCAS soft-deletes only the version the caller most recently read.
+func (s *SQLiteStore) DeleteJobCAS(ctx context.Context, id string, expectedUpdatedAt time.Time) error {
+	now := time.Now().UTC()
+	if !now.After(expectedUpdatedAt) {
+		now = expectedUpdatedAt.Add(time.Nanosecond)
+	}
+	res, err := s.db.ExecContext(ctx, `
+UPDATE cron_jobs SET status = ?, updated_at = ?
+WHERE job_id = ? AND status != ? AND updated_at = ?
+`, StatusDeleted, nowString(now), id, StatusDeleted, nowString(expectedUpdatedAt))
+	if err != nil {
+		return fmt.Errorf("compare-and-swap delete job: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("compare-and-swap delete job rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrJobConflict
 	}
 	return nil
 }
@@ -381,8 +715,55 @@ LIMIT ? OFFSET ?
 	return execs, rows.Err()
 }
 
+// ListActiveExecutions returns the nonterminal execution rows that need
+// restart reconciliation before Scheduler can safely admit another scoped
+// conversation run.
+func (s *SQLiteStore) ListActiveExecutions(ctx context.Context) ([]Execution, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT execution_id, job_id, started_at, finished_at, status,
+	run_id, output_summary, error_text, duration_ms
+FROM cron_executions
+WHERE status IN (?, ?, ?, ?)
+ORDER BY started_at ASC, execution_id ASC
+`, ExecStatusQueued, "pending", ExecStatusStarting, ExecStatusRunning)
+	if err != nil {
+		return nil, fmt.Errorf("list active executions: %w", err)
+	}
+	defer rows.Close()
+	var execs []Execution
+	for rows.Next() {
+		e, err := scanExecution(rows)
+		if err != nil {
+			return nil, err
+		}
+		execs = append(execs, e)
+	}
+	return execs, rows.Err()
+}
+
+func scanExecution(rows *sql.Rows) (Execution, error) {
+	var e Execution
+	var startedText string
+	var finishedText sql.NullString
+	if err := rows.Scan(
+		&e.ID, &e.JobID, &startedText, &finishedText,
+		&e.Status, &e.RunID, &e.OutputSummary, &e.Error, &e.DurationMs,
+	); err != nil {
+		return Execution{}, fmt.Errorf("scan execution: %w", err)
+	}
+	e.StartedAt, _ = time.Parse(time.RFC3339Nano, startedText)
+	if finishedText.Valid {
+		e.FinishedAt, _ = time.Parse(time.RFC3339Nano, finishedText.String)
+	}
+	return e, nil
+}
+
 // scanJob scans a single job row from QueryRow.
-func (s *SQLiteStore) scanJob(row *sql.Row) (Job, error) {
+type jobScanner interface {
+	Scan(dest ...any) error
+}
+
+func (s *SQLiteStore) scanJob(row jobScanner) (Job, error) {
 	var job Job
 	var nextRunText, createdText, updatedText string
 	var lastRunText sql.NullString

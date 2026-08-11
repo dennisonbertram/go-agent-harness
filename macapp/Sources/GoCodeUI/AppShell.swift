@@ -156,7 +156,7 @@ private struct ProjectView: View {
                     ChatView(project: project, run: run)
                 }
             case .activity:
-                ActivityView(project: project)
+                ActivityView(project: project, section: $section)
             case .sessions:
                 SessionsView(project: project, section: $section)
             case .checkpoints:

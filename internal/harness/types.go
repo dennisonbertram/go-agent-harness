@@ -548,6 +548,18 @@ type RunRequest struct {
 	// Profile files are read from the runner's ProfilesDir (default: ~/.harness/profiles/).
 	// An empty string means no profile is applied.
 	ProfileName string `json:"profile,omitempty"`
+	// profileDeniedActions is admission-owned selected-profile capability policy.
+	// It is deliberately not part of the HTTP wire contract: callers cannot
+	// widen a named profile by supplying or clearing it.
+	profileDeniedActions map[htools.Action]struct{}
+	// profileAllowedTools is the selected profile's non-empty tool upper bound.
+	// It is admission-owned and therefore cannot be widened through the wire
+	// request or a later continuation override.
+	profileAllowedTools []string
+	// profileToolsRestricted distinguishes a selected profile's empty
+	// intersection (deny ordinary tools) from the legacy empty allowlist (all).
+	profileToolsRestricted bool
+	profileToolsDenyAll    bool
 	// ParentContextHandoff carries a bounded parent-to-child context summary.
 	ParentContextHandoff *htools.ParentContextHandoff `json:"parent_context_handoff,omitempty"`
 	// Permissions configures the two-axis permission model for this run.
@@ -568,6 +580,9 @@ type RunRequest struct {
 	// Used to gate task_complete visibility and enforce DefaultMaxForkDepth.
 	// Populated automatically by RunForkedSkill; callers should not set this.
 	ForkDepth int `json:"fork_depth,omitempty"`
+	// mandatoryChildTaskComplete is runner-internal fork infrastructure. It is
+	// intentionally not part of the wire contract.
+	mandatoryChildTaskComplete bool
 	// Rules applies fine-grained allow, ask, or deny effects to tool calls.
 	// Rules in Permissions and this field are evaluated together; the
 	// RunRequest rules are appended after PermissionConfig.Rules.
@@ -607,6 +622,10 @@ type RunnerConfig struct {
 	// DefaultProviderName is applied when a run does not explicitly select a
 	// provider, allowing startup configuration to disambiguate mirrored models.
 	DefaultProviderName string
+	// ForcedDefaultProviderName, when set, selects the runner's direct default
+	// provider before any requested-provider or model-catalog resolution. It is
+	// intended for assembly-owned deterministic execution modes such as fake.
+	ForcedDefaultProviderName string
 	// RoleModels optionally overrides the model used for specific roles within
 	// a run. Empty fields fall back to the run's Model (or DefaultModel).
 	RoleModels          RoleModels
@@ -623,7 +642,9 @@ type RunnerConfig struct {
 	// immediately (the legacy unbounded behaviour).
 	WorkerPoolSize int
 	// MaxCompletedRetention caps completed/failed/cancelled run states retained
-	// in memory after terminal events are persisted and subscribers drain.
+	// in memory after terminal event and status durability are resolved and
+	// subscribers drain. When unresolved store-backed terminal durability reaches
+	// this cap, new run admissions fail closed until status persistence recovers.
 	// 0 uses the default retention window.
 	MaxCompletedRetention int
 	// MaxConversationRetention caps the in-memory conversation transcript mirror.
@@ -753,6 +774,9 @@ type RunnerConfig struct {
 	// Tier 1 context dependencies and Tier 2 data-flow heuristics) and emits
 	// a causal.graph.snapshot event at run end.
 	CausalGraphEnabled bool
+	// ProfilesProject is the project-local profile directory that takes
+	// precedence over ProfilesDir for named-profile reads.
+	ProfilesProject string
 	// ProfilesDir is the directory containing named profile TOML files.
 	// Defaults to ~/.harness/profiles/ if empty.
 	// Used to load mcp_servers from a named profile when RunRequest.ProfileName is set.

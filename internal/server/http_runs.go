@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +14,85 @@ import (
 	"go-agent-harness/internal/harness"
 	"go-agent-harness/internal/store"
 )
+
+type cronRunRequest struct {
+	Prompt            string   `json:"prompt"`
+	Model             string   `json:"model,omitempty"`
+	ProviderName      string   `json:"provider_name,omitempty"`
+	AllowFallback     bool     `json:"allow_fallback,omitempty"`
+	FallbackProviders []string `json:"fallback_providers,omitempty"`
+	TenantID          string   `json:"tenant_id,omitempty"`
+	AgentID           string   `json:"agent_id,omitempty"`
+	ConversationID    string   `json:"conversation_id,omitempty"`
+	JobID             string   `json:"job_id"`
+	ExecutionID       string   `json:"execution_id"`
+	CorrelationKey    string   `json:"correlation_key"`
+}
+
+// handleCronRun is the dedicated authenticated boundary for standalone
+// cronsd. Job/execution correlation is accepted and logged safely here while
+// scope is passed to the existing runner ownership checks.
+func (s *Server) handleCronRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	if !hasScope(r.Context(), store.ScopeRunsWrite) {
+		writeScopeError(w, store.ScopeRunsWrite)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, defaultMaxRequestBodyBytes)
+	var req cronRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONDecodeError(w, err)
+		return
+	}
+	if strings.TrimSpace(req.Prompt) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "prompt is required")
+		return
+	}
+	if strings.TrimSpace(req.JobID) == "" || strings.TrimSpace(req.ExecutionID) == "" || strings.TrimSpace(req.CorrelationKey) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "job_id, execution_id, and correlation_key are required")
+		return
+	}
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey == "" || idempotencyKey != strings.TrimSpace(req.CorrelationKey) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Idempotency-Key must match correlation_key")
+		return
+	}
+	effectiveTenant, err := s.effectiveTenantID(r, req.TenantID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	req.TenantID = effectiveTenant
+	log.Printf("cron: authenticated remote start job_id=%q execution_id=%q correlation_key=%q", req.JobID, req.ExecutionID, req.CorrelationKey)
+	run, err := s.getOrStartCronRun(r.Context(), req, idempotencyKey, harness.RunRequest{
+		Prompt:                req.Prompt,
+		Model:                 req.Model,
+		ProviderName:          req.ProviderName,
+		AllowFallback:         req.AllowFallback,
+		FallbackProviders:     append([]string(nil), req.FallbackProviders...),
+		TenantID:              req.TenantID,
+		ConversationID:        req.ConversationID,
+		AgentID:               req.AgentID,
+		InitiatorAPIKeyPrefix: APIKeyPrefixFromContext(r.Context()),
+	})
+	if errors.Is(err, errCronRunIdempotencyConflict) {
+		writeError(w, http.StatusConflict, "idempotency_conflict", err.Error())
+		return
+	}
+	if errors.Is(err, errCronRunIdempotencyUnavailable) {
+		writeError(w, http.StatusServiceUnavailable, "idempotency_unavailable", "durable cron run idempotency is unavailable")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"run_id": run.ID, "status": run.Status})
+}
 
 func (s *Server) registerRunRoutes(mux *http.ServeMux, auth func(http.Handler) http.Handler) {
 	mux.Handle("/v1/runs", auth(http.HandlerFunc(s.handleRuns)))
@@ -64,6 +145,11 @@ func (s *Server) handlePostRun(w http.ResponseWriter, r *http.Request) {
 
 	run, err := s.runner.StartRun(req)
 	if err != nil {
+		var durabilityErr *harness.TerminalDurabilityBackpressureError
+		if errors.As(err, &durabilityErr) {
+			writeError(w, http.StatusServiceUnavailable, "terminal_durability_unavailable", err.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -221,6 +307,21 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleRunReplay(w, r)
+		return
+	}
+
+	// POST /v1/runs/{id}/replay re-executes a completed durable run in its
+	// original conversation. This is deliberately separate from the rollout-file
+	// simulator above: a bare durable run ID is not a filesystem specifier.
+	if len(parts) == 2 && parts[1] == "replay" {
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
+		if s.blockCrossTenant(w, r, runID) {
+			return
+		}
+		s.handleDurableRunReplay(w, r, runID)
 		return
 	}
 
@@ -703,6 +804,11 @@ func (s *Server) handleRunContinue(w http.ResponseWriter, r *http.Request, runID
 		Permissions:  req.Permissions,
 	})
 	if err != nil {
+		var durabilityErr *harness.TerminalDurabilityBackpressureError
+		if errors.As(err, &durabilityErr) {
+			writeError(w, http.StatusServiceUnavailable, "terminal_durability_unavailable", err.Error())
+			return
+		}
 		if errors.Is(err, harness.ErrRunNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
 			return
@@ -716,8 +822,9 @@ func (s *Server) handleRunContinue(w http.ResponseWriter, r *http.Request, runID
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"run_id": newRun.ID,
-		"status": newRun.Status,
+		"run_id":          newRun.ID,
+		"status":          newRun.Status,
+		"conversation_id": newRun.ConversationID,
 	})
 }
 
@@ -883,6 +990,9 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 	w.Header().Set("Connection", "keep-alive")
 
 	for _, event := range history {
+		if !s.waitForTerminalSSESettlement(r.Context(), runID, event.Type) {
+			return
+		}
 		if err := writeSSE(w, event); err != nil {
 			return
 		}
@@ -903,6 +1013,9 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 			if !ok {
 				return
 			}
+			if !s.waitForTerminalSSESettlement(r.Context(), runID, event.Type) {
+				return
+			}
 			if err := writeSSE(w, event); err != nil {
 				if errors.Is(err, http.ErrHandlerTimeout) {
 					return
@@ -920,6 +1033,25 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 			flusher.Flush()
 		}
 	}
+}
+
+// waitForTerminalSSESettlement keeps terminal SSE frames behind the same
+// public read-model transition exposed by GET /v1/runs/{id}. The Runner may
+// journal a terminal event before its durable UpdateRun and in-memory status
+// commit complete; replay must not expose that intermediate state.
+func (s *Server) waitForTerminalSSESettlement(ctx context.Context, runID string, eventType harness.EventType) bool {
+	var want harness.RunStatus
+	switch eventType {
+	case harness.EventRunCompleted:
+		want = harness.RunStatusCompleted
+	case harness.EventRunFailed:
+		want = harness.RunStatusFailed
+	case harness.EventRunCancelled:
+		want = harness.RunStatusCancelled
+	default:
+		return true
+	}
+	return s.runner.WaitForRunStatus(ctx, runID, want)
 }
 
 // harnessRunToStore converts a harness.Run to a store.Run for initial persistence.

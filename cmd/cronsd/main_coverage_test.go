@@ -12,9 +12,11 @@ func TestRunWithSignalsCustomMaxConcurrent(t *testing.T) {
 	dbPath := filepath.Join(dir, "test-cronsd.db")
 
 	env := map[string]string{
-		"CRONSD_ADDR":           "127.0.0.1:0",
-		"CRONSD_DB_PATH":        dbPath,
-		"CRONSD_MAX_CONCURRENT": "10",
+		"CRONSD_ADDR":              "127.0.0.1:0",
+		"CRONSD_DB_PATH":           dbPath,
+		"CRONSD_MAX_CONCURRENT":    "10",
+		"CRONSD_INGRESS_API_KEY":   "test-ingress-secret",
+		"CRONSD_INGRESS_TENANT_ID": "tenant-test",
 	}
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
@@ -43,9 +45,11 @@ func TestRunWithSignalsInvalidMaxConcurrent(t *testing.T) {
 
 	// "not-a-number" should fall back to default (5).
 	env := map[string]string{
-		"CRONSD_ADDR":           "127.0.0.1:0",
-		"CRONSD_DB_PATH":        dbPath,
-		"CRONSD_MAX_CONCURRENT": "not-a-number",
+		"CRONSD_ADDR":              "127.0.0.1:0",
+		"CRONSD_DB_PATH":           dbPath,
+		"CRONSD_MAX_CONCURRENT":    "not-a-number",
+		"CRONSD_INGRESS_API_KEY":   "test-ingress-secret",
+		"CRONSD_INGRESS_TENANT_ID": "tenant-test",
 	}
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
@@ -76,6 +80,8 @@ func TestRunWithSignalsNilGetenv(t *testing.T) {
 
 	t.Setenv("CRONSD_ADDR", "127.0.0.1:0")
 	t.Setenv("CRONSD_DB_PATH", dbPath)
+	t.Setenv("CRONSD_INGRESS_API_KEY", "test-ingress-secret")
+	t.Setenv("CRONSD_INGRESS_TENANT_ID", "tenant-test")
 
 	sig := make(chan os.Signal, 1)
 

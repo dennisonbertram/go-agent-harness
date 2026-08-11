@@ -9,7 +9,10 @@ package harness
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
+
+	"go-agent-harness/internal/store"
 )
 
 // TestStartRunRejectsCrossTenantsConversationInMemory verifies that StartRun
@@ -99,6 +102,104 @@ func TestStartRunRejectsCrossAgentConversationInMemory(t *testing.T) {
 	if !errors.Is(err, ErrConversationAccessDenied) {
 		t.Fatalf("expected ErrConversationAccessDenied, got: %v", err)
 	}
+}
+
+// TestStartRunRejectsCrossAgentConversationAfterRunnerRestart verifies that
+// agent ownership remains enforced when the in-memory conversation-owner cache
+// is gone. Remote cronsd execution persists a run before dispatch, so the
+// durable run record is the authoritative agent ownership source after a
+// harnessd restart.
+func TestStartRunRejectsCrossAgentConversationAfterRunnerRestart(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dir := t.TempDir()
+	conversationPath := filepath.Join(dir, "conversations.db")
+	runsPath := filepath.Join(dir, "runs.db")
+	conversationStore, err := NewSQLiteConversationStore(conversationPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteConversationStore: %v", err)
+	}
+	if err := conversationStore.Migrate(ctx); err != nil {
+		t.Fatalf("conversation store Migrate: %v", err)
+	}
+	runStore, err := store.NewSQLiteStore(runsPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	if err := runStore.Migrate(ctx); err != nil {
+		t.Fatalf("run store Migrate: %v", err)
+	}
+	owner := NewRunner(&continuationProvider{turns: []CompletionResult{{Content: "owner response"}}}, NewRegistry(), RunnerConfig{
+		DefaultModel:      "test-model",
+		MaxSteps:          2,
+		ConversationStore: conversationStore,
+		Store:             runStore,
+	})
+	ownerRun, err := owner.StartRun(RunRequest{
+		Prompt:         "owner prompt",
+		TenantID:       "tenant-shared",
+		AgentID:        "agent-a",
+		ConversationID: "conv-persisted-agent-owner",
+	})
+	if err != nil {
+		t.Fatalf("StartRun (owner): %v", err)
+	}
+	waitForStatusCont(t, owner, ownerRun.ID, RunStatusCompleted, RunStatusFailed)
+	if err := owner.Shutdown(ctx); err != nil {
+		t.Fatalf("owner Shutdown: %v", err)
+	}
+	if err := conversationStore.Close(); err != nil {
+		t.Fatalf("conversation store Close: %v", err)
+	}
+	if err := runStore.Close(); err != nil {
+		t.Fatalf("run store Close: %v", err)
+	}
+
+	conversationStore, err = NewSQLiteConversationStore(conversationPath)
+	if err != nil {
+		t.Fatalf("reopen conversation store: %v", err)
+	}
+	t.Cleanup(func() { _ = conversationStore.Close() })
+	runStore, err = store.NewSQLiteStore(runsPath)
+	if err != nil {
+		t.Fatalf("reopen run store: %v", err)
+	}
+	t.Cleanup(func() { _ = runStore.Close() })
+
+	// A fresh runner has neither the previous run state nor its in-memory
+	// ownership cache. It must still reject a second agent in the same tenant.
+	restarted := NewRunner(&continuationProvider{turns: []CompletionResult{{Content: "hijacked response"}}}, NewRegistry(), RunnerConfig{
+		DefaultModel:      "test-model",
+		MaxSteps:          2,
+		ConversationStore: conversationStore,
+		Store:             runStore,
+	})
+	t.Cleanup(func() { _ = restarted.Shutdown(context.Background()) })
+	_, err = restarted.StartRun(RunRequest{
+		Prompt:         "hijack prompt",
+		TenantID:       "tenant-shared",
+		AgentID:        "agent-b",
+		ConversationID: "conv-persisted-agent-owner",
+	})
+	if err == nil {
+		t.Fatal("expected persisted cross-agent conversation to be rejected, got nil")
+	}
+	if !errors.Is(err, ErrConversationAccessDenied) {
+		t.Fatalf("expected ErrConversationAccessDenied, got: %v", err)
+	}
+
+	// The same durable owner can still resume the conversation after restart.
+	resumed, err := restarted.StartRun(RunRequest{
+		Prompt:         "owner continuation",
+		TenantID:       "tenant-shared",
+		AgentID:        "agent-a",
+		ConversationID: "conv-persisted-agent-owner",
+	})
+	if err != nil {
+		t.Fatalf("StartRun (same-agent restart resume): %v", err)
+	}
+	waitForStatusCont(t, restarted, resumed.ID, RunStatusCompleted, RunStatusFailed)
 }
 
 // TestStartRunAllowsSameTenantSameAgentConversation verifies that a valid

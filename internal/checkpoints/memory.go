@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"time"
 )
 
 type MemoryStore struct {
@@ -27,6 +28,31 @@ func (m *MemoryStore) Update(_ context.Context, record *Record) error {
 	defer m.mu.Unlock()
 	m.records[record.ID] = cloneRecord(record)
 	return nil
+}
+
+func (m *MemoryStore) ResolvePending(
+	ctx context.Context,
+	id string,
+	status Status,
+	resumePayload string,
+	updatedAt time.Time,
+) (*Record, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.records[id]
+	if !ok {
+		return nil, false, &NotFoundError{ID: id}
+	}
+	if record.Status != StatusPending {
+		return cloneRecord(record), false, nil
+	}
+	record.Status = status
+	record.ResumePayload = resumePayload
+	record.UpdatedAt = updatedAt
+	return cloneRecord(record), true, nil
 }
 
 func (m *MemoryStore) Get(_ context.Context, id string) (*Record, error) {

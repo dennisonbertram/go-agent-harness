@@ -17,6 +17,7 @@ import (
 	"go-agent-harness/internal/forensics/replay"
 	"go-agent-harness/internal/forensics/rollout"
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/store"
 )
 
 // replayRequest is the JSON body for POST /v1/runs/replay.
@@ -128,6 +129,47 @@ func isBareRunIDSpecifier(spec string) bool {
 		return false
 	}
 	return strings.HasPrefix(spec, "run_")
+}
+
+// handleDurableRunReplay starts a new run from a terminal source run while
+// retaining its conversation, tenant, agent, model, and resolved provider.
+func (s *Server) handleDurableRunReplay(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var source harness.Run
+	if run, ok := s.runner.GetRun(runID); ok {
+		source = run
+	} else if s.runStore != nil {
+		persisted, err := s.runStore.GetRun(r.Context(), runID)
+		if err != nil {
+			if store.IsNotFound(err) {
+				writeError(w, http.StatusNotFound, "run_not_found", "run not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		source = harness.Run{ID: persisted.ID, Prompt: persisted.Prompt, ConversationID: persisted.ConversationID, TenantID: persisted.TenantID, AgentID: persisted.AgentID, Model: persisted.Model, ProviderName: persisted.ProviderName, Status: harness.RunStatus(persisted.Status)}
+	} else {
+		writeError(w, http.StatusNotFound, "run_not_found", "run not found")
+		return
+	}
+	if source.Status != harness.RunStatusCompleted && source.Status != harness.RunStatusFailed && source.Status != harness.RunStatusCancelled {
+		writeError(w, http.StatusConflict, "run_not_terminal", "run must be terminal before replay")
+		return
+	}
+	if s.authDisabled == false && normalizeTenant(source.TenantID) != normalizeTenant(TenantIDFromContext(r.Context())) {
+		writeError(w, http.StatusNotFound, "run_not_found", "run not found")
+		return
+	}
+	run, err := s.runner.StartRun(harness.RunRequest{Prompt: source.Prompt, ConversationID: source.ConversationID, TenantID: source.TenantID, AgentID: source.AgentID, Model: source.Model, ProviderName: source.ProviderName, InitiatorAPIKeyPrefix: APIKeyPrefixFromContext(r.Context())})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "replay_error", fmt.Sprintf("failed to start replay: %s", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"run_id": run.ID, "status": run.Status, "replayed_from": source.ID, "conversation_id": run.ConversationID})
 }
 
 // replayTenantGateActive reports whether the per-tenant replay gate is active:
