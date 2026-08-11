@@ -20,6 +20,7 @@ import (
 
 	harnessconfig "go-agent-harness/cmd/harnesscli/config"
 	"go-agent-harness/cmd/harnesscli/tui"
+	"go-agent-harness/cmd/harnesscli/tui/components/messagebubble"
 	"go-agent-harness/internal/harness"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -563,6 +564,10 @@ func runTUI(baseURL, workspace, resumeConversationID string) error {
 	// Resolve and apply the color profile to the renderer before building the
 	// model, and store the effective profile back for accurate display.
 	tuiCfg.ColorProfile = tui.ApplyColorProfile(tuiCfg.ColorProfile)
+	// Probe the terminal background here, while the terminal is still ours. Once
+	// the Program runs it holds stdin in raw mode, and any later probe's replies
+	// are read as keystrokes and drawn into the input line (issue #1296).
+	messagebubble.ResolveStyle()
 	p := tea.NewProgram(
 		tui.New(tuiCfg),
 		tea.WithAltScreen(),

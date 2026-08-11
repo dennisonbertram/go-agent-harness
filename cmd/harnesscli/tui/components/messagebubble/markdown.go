@@ -1,10 +1,14 @@
 package messagebubble
 
 import (
+	"os"
 	"strings"
 	"sync"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/styles"
+	"github.com/muesli/termenv"
+	"golang.org/x/term"
 )
 
 // MarkdownEnabled controls whether RenderMarkdown performs glamour rendering.
@@ -16,6 +20,58 @@ var MarkdownEnabled = true
 // MarkdownRenderer instances are safe for concurrent calls to Render because
 // glamour.TermRenderer.Render creates a fresh bytes.Buffer on each call.
 var renderMu sync.Mutex
+
+// stdoutIsTerminal and backgroundIsDark are the two probes behind style
+// resolution. They are variables so tests can drive both branches without a
+// real terminal.
+var (
+	stdoutIsTerminal = func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
+	backgroundIsDark = termenv.HasDarkBackground
+)
+
+var (
+	styleOnce     sync.Once
+	resolvedStyle string
+)
+
+// resolveGlamourStyle picks the glamour stylesheet for this terminal, probing
+// the terminal at most once per process.
+//
+// It reproduces what glamour.WithAutoStyle would do internally (see
+// glamour.getDefaultStyle), because the auto style re-runs the background probe
+// on every render and each probe writes an OSC 11 and a cursor-position query to
+// the TTY. termenv only caches that probe when its Output was built with a color
+// cache, and the package-level default is not (termenv Output.BackgroundColor).
+// Bubble Tea holds stdin in raw mode while a Program runs, so it reads those
+// replies before termenv can and draws them as literal text in the input line.
+//
+// Call ResolveStyle before starting the Program so even the first probe happens
+// while the terminal is still ours.
+func resolveGlamourStyle() string {
+	styleOnce.Do(func() {
+		switch {
+		case !stdoutIsTerminal():
+			resolvedStyle = styles.NoTTYStyle
+		case backgroundIsDark():
+			resolvedStyle = styles.DarkStyle
+		default:
+			resolvedStyle = styles.LightStyle
+		}
+	})
+	return resolvedStyle
+}
+
+// ResolveStyle probes the terminal background once and caches the result. Call
+// it before Bubble Tea acquires the terminal; every later render reuses the
+// cached answer instead of re-querying.
+func ResolveStyle() string { return resolveGlamourStyle() }
+
+// resetGlamourStyleForTest clears the cached resolution so tests can drive both
+// terminal branches. Test-only.
+func resetGlamourStyleForTest() {
+	styleOnce = sync.Once{}
+	resolvedStyle = ""
+}
 
 // RenderMarkdown renders markdown text using glamour for terminal display.
 // Falls back to raw text if glamour returns an error or MarkdownEnabled is false.
@@ -61,7 +117,7 @@ func (r *MarkdownRenderer) Render(text string) string {
 	}
 
 	tr, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStandardStyle(resolveGlamourStyle()),
 		glamour.WithWordWrap(wrapWidth),
 	)
 	if err != nil {
