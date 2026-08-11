@@ -229,7 +229,7 @@ func toolDefs() []Tool {
 				Type: "object",
 				Properties: map[string]Property{
 					"run_id":  {Type: "string", Description: "Run ID"},
-					"answers": {Type: "object", Description: "Map of question id to answer"},
+					"answers": {Type: "object", Description: "One entry per question: key is the question text exactly as returned by get_run_input, value is one of that question's option labels"},
 				},
 				Required: []string{"run_id", "answers"},
 			},
