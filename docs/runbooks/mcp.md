@@ -144,9 +144,21 @@ never a tool argument, so a model cannot set or read it.
 }
 ```
 
-The stdio binary exposes 11 tools: `start_run`, `get_run_status`, `wait_for_run`,
+The stdio binary exposes 18 tools: `start_run`, `get_run_status`, `wait_for_run`,
 `continue_run`, `list_runs`, `cancel_run`, `approve_run`, `deny_run`, `steer_run`,
-`list_models`, and `list_providers`.
+`list_models`, `list_providers`, `tail_run_events`, `get_run_input`,
+`submit_user_input`, `get_run_todos`, `get_run_summary`, `get_run_context`, and
+`compact_run`.
+
+**Watching a run.** An MCP tool call is request/response, so a tool cannot stream
+into an in-flight call. Poll `tail_run_events` instead: it returns the events since
+your cursor plus a `last_event_id` to pass back as `after_event_id` next time, and
+returns promptly when the run is quiet. `get_run_todos` shows what the run has done
+and plans to do next.
+
+**Answering a run.** When `get_run_status` reports `waiting_for_user`, the run has
+asked a question. Read it with `get_run_input` and answer with `submit_user_input`
+so the run resumes — cancelling it throws the work away.
 
 `start_run` forwards the full run surface — `model`, `workspace_type`,
 `extra_dirs`, `allowed_tools`, `denied_tools`, `profile`, `system_prompt`,

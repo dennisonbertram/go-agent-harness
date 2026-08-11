@@ -26,6 +26,14 @@ func NewDispatcher(client *HarnessClient, clock Clock) *Dispatcher {
 			"steer_run":      newSteerRunHandler(client),
 			"list_models":    newListModelsHandler(client),
 			"list_providers": newListProvidersHandler(client),
+			// Observability: progress and the ask/answer loop (issue #1323).
+			"tail_run_events":   newTailRunEventsHandler(client),
+			"get_run_input":     newGetRunInputHandler(client),
+			"submit_user_input": newSubmitUserInputHandler(client),
+			"get_run_todos":     newGetRunTodosHandler(client),
+			"get_run_summary":   newGetRunSummaryHandler(client),
+			"get_run_context":   newGetRunContextHandler(client),
+			"compact_run":       newCompactRunHandler(client),
 		},
 	}
 	return d

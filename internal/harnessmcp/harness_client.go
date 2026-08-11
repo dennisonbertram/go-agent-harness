@@ -34,8 +34,11 @@ const defaultRequestTimeout = 60 * time.Second
 
 // RunEvent is the typed payload delivered by harnessd's existing SSE endpoint.
 type RunEvent struct {
-	Type string
-	Data map[string]any
+	// ID is the SSE event id. It doubles as the poll cursor: passing the last
+	// seen ID back as Last-Event-ID resumes after it instead of replaying.
+	ID   string         `json:"id,omitempty"`
+	Type string         `json:"type"`
+	Data map[string]any `json:"data,omitempty"`
 }
 
 func (c *HarnessClient) ContinueRun(ctx context.Context, runID, prompt string) (StartRunResponse, error) {
@@ -451,4 +454,163 @@ func (c *HarnessClient) getJSON(ctx context.Context, path string, out any) error
 		return fmt.Errorf("harness_client: decode %s response: %w", path, err)
 	}
 	return nil
+}
+
+// TailRunEvents collects run events after the given cursor and returns them with
+// a new cursor.
+//
+// An MCP tool call is request/response, so a tool cannot stream partial results
+// into an in-flight call. Polling with a cursor is the shape that fits, and
+// harnessd's SSE endpoint already honours Last-Event-ID, so resuming after the
+// last seen event needs no server change (issue #1323).
+//
+// The call is bounded twice over — by maxEvents and by window — so a busy run
+// cannot return unbounded output and a silent one cannot hold the call open. The
+// stream is always closed before returning; leaking one per poll would accumulate
+// quickly.
+func (c *HarnessClient) TailRunEvents(ctx context.Context, runID, afterID string, maxEvents int, window time.Duration) ([]RunEvent, string, error) {
+	if maxEvents <= 0 {
+		maxEvents = 100
+	}
+	if window <= 0 {
+		window = 2 * time.Second
+	}
+
+	// Cancelling this context closes the response body, which unblocks the
+	// scanner's read — the only portable way to stop reading a live stream.
+	streamCtx, cancel := context.WithTimeout(ctx, window)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet,
+		c.baseURL+"/v1/runs/"+url.PathEscape(runID)+"/events", nil)
+	if err != nil {
+		return nil, afterID, err
+	}
+	c.authorize(req)
+	if afterID != "" {
+		req.Header.Set("Last-Event-ID", afterID)
+	}
+
+	streamClient := &http.Client{Transport: c.httpClient.Transport}
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		// A window expiry is the normal quiet-poll outcome, not a failure.
+		if streamCtx.Err() != nil && ctx.Err() == nil {
+			return nil, afterID, nil
+		}
+		return nil, afterID, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, afterID, errorFromResponse("get run events", resp)
+	}
+
+	events := make([]RunEvent, 0, maxEvents)
+	cursor := afterID
+
+	type parsed struct {
+		ev  RunEvent
+		err error
+	}
+	ch := make(chan parsed)
+	go func() {
+		defer close(ch)
+		sc := bufio.NewScanner(resp.Body)
+		sc.Buffer(make([]byte, 1<<20), 1<<20)
+		var id, typ string
+		var data []byte
+		for sc.Scan() {
+			line := sc.Text()
+			if line == "" {
+				if typ != "" {
+					var payload map[string]any
+					_ = json.Unmarshal(data, &payload)
+					select {
+					case ch <- parsed{ev: RunEvent{ID: id, Type: typ, Data: payload}}:
+					case <-streamCtx.Done():
+						return
+					}
+					id, typ, data = "", "", nil
+				}
+				continue
+			}
+			switch {
+			case strings.HasPrefix(line, "id: "):
+				id = strings.TrimPrefix(line, "id: ")
+			case strings.HasPrefix(line, "event: "):
+				typ = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				data = append(data, strings.TrimPrefix(line, "data: ")...)
+			}
+		}
+	}()
+
+	for len(events) < maxEvents {
+		select {
+		case p, ok := <-ch:
+			if !ok {
+				// Stream ended (run finished, or the server closed it).
+				return events, cursor, nil
+			}
+			if p.err != nil {
+				return events, cursor, p.err
+			}
+			events = append(events, p.ev)
+			if p.ev.ID != "" {
+				cursor = p.ev.ID
+			}
+		case <-streamCtx.Done():
+			// Window elapsed or caller cancelled: return what we have. An empty
+			// result from a quiet run is a normal poll, not an error.
+			if ctx.Err() != nil {
+				return events, cursor, ctx.Err()
+			}
+			return events, cursor, nil
+		}
+	}
+	return events, cursor, nil
+}
+
+// PendingInput fetches the question a run is waiting on.
+func (c *HarnessClient) PendingInput(ctx context.Context, runID string) (map[string]any, error) {
+	var out map[string]any
+	if err := c.getJSON(ctx, "/v1/runs/"+url.PathEscape(runID)+"/input", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SubmitInput answers a run's pending question.
+func (c *HarnessClient) SubmitInput(ctx context.Context, runID string, answers map[string]string) error {
+	_, err := c.postRun(ctx, "/v1/runs/"+url.PathEscape(runID)+"/input",
+		map[string]any{"answers": answers})
+	return err
+}
+
+// RunTodos, RunSummary, and RunContext are the run's progress signals.
+func (c *HarnessClient) RunTodos(ctx context.Context, runID string) (any, error) {
+	return c.getRunSubresource(ctx, runID, "todos")
+}
+
+func (c *HarnessClient) RunSummary(ctx context.Context, runID string) (any, error) {
+	return c.getRunSubresource(ctx, runID, "summary")
+}
+
+func (c *HarnessClient) RunContext(ctx context.Context, runID string) (any, error) {
+	return c.getRunSubresource(ctx, runID, "context")
+}
+
+// CompactRun triggers context compaction for a run.
+func (c *HarnessClient) CompactRun(ctx context.Context, runID string) error {
+	_, err := c.postRun(ctx, "/v1/runs/"+url.PathEscape(runID)+"/compact", nil)
+	return err
+}
+
+// getRunSubresource fetches a JSON subresource of a run.
+func (c *HarnessClient) getRunSubresource(ctx context.Context, runID, name string) (any, error) {
+	var out any
+	if err := c.getJSON(ctx, "/v1/runs/"+url.PathEscape(runID)+"/"+name, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
