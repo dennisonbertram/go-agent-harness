@@ -208,3 +208,27 @@ func TestRunProgressToolsHitTheirEndpoints(t *testing.T) {
 		})
 	}
 }
+
+// TestSubmitUserInputSchemaDescribesRealKeying pins the schema against how the
+// server actually validates answers. NormalizeAskUserAnswers keys the map on the
+// question *text* and requires the value to be one of that question's option
+// *labels* — the schema previously said "question id", which is not a field that
+// exists and would send a caller down the wrong path.
+func TestSubmitUserInputSchemaDescribesRealKeying(t *testing.T) {
+	var tool Tool
+	for _, candidate := range toolDefs() {
+		if candidate.Name == "submit_user_input" {
+			tool = candidate
+		}
+	}
+	desc := strings.ToLower(tool.InputSchema.Properties["answers"].Description)
+
+	if strings.Contains(desc, "question id") {
+		t.Errorf("schema still says \"question id\"; answers are keyed on question text: %q", desc)
+	}
+	for _, want := range []string{"question text", "label"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("answers description must mention %q, got: %q", want, desc)
+		}
+	}
+}
