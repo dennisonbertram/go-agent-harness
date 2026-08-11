@@ -110,6 +110,12 @@ type ServerOptions struct {
 	// When provided, GET /v1/runs supports filtering and completed runs are
 	// retrievable after the runner forgets them.
 	Store store.Store
+	// MCPHandler, when non-nil, is mounted at /mcp *inside* the authenticated
+	// mux. It was previously mounted alongside this handler by the caller, which
+	// left it outside every middleware and therefore unauthenticated while /v1
+	// was protected (issue #1328).
+	MCPHandler http.Handler
+
 	// AuthDisabled skips Bearer token authentication for all requests (issue #9).
 	// Set to true in tests that do not provision API keys.
 	AuthDisabled bool
@@ -213,6 +219,7 @@ type ServerOptions struct {
 // NewWithOptions creates an HTTP handler with the full set of optional dependencies.
 func NewWithOptions(opts ServerOptions) http.Handler {
 	s := &Server{
+		mcpHandler:        opts.MCPHandler,
 		runner:            opts.Runner,
 		catalog:           opts.Catalog,
 		providerRegistry:  opts.ProviderRegistry,
@@ -290,6 +297,13 @@ func (s *Server) buildMux() http.Handler {
 
 	// auth wraps a handler with Bearer token authentication.
 	auth := s.authMiddleware
+
+	// The MCP endpoint drives runs, steering, and conversation reads, so it goes
+	// behind the same authentication as /v1. Mounting it outside this mux left
+	// it completely unauthenticated (issue #1328).
+	if s.mcpHandler != nil {
+		mux.Handle("/mcp", auth(s.mcpHandler))
+	}
 
 	// read wraps a handler requiring runs:read scope (after auth).
 	// Combine as: auth(read(handler)) — auth runs first, then scope check.
@@ -423,6 +437,8 @@ func (s *Server) buildMux() http.Handler {
 }
 
 type Server struct {
+	// mcpHandler is mounted at /mcp behind the same middleware as /v1.
+	mcpHandler        http.Handler
 	runner            *harness.Runner
 	catalog           *catalog.Catalog
 	providerRegistry  *catalog.ProviderRegistry

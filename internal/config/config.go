@@ -247,7 +247,11 @@ func Defaults() Config {
 	return Config{
 		Model:    "gpt-4.1-mini",
 		MaxSteps: 0,
-		Addr:     ":8080",
+		// Loopback by default. A wildcard bind combined with auth being
+		// implicitly off when no key store is configured made a default daemon
+		// an open agent-execution service on the local network (issue #1328).
+		// Set HARNESS_ADDR or config `addr` to listen more widely.
+		Addr: "127.0.0.1:8080",
 		Cost: CostConfig{
 			MaxPerRunUSD: 0.0,
 		},
