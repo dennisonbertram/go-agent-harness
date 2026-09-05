@@ -788,7 +788,22 @@ func (s *SQLiteConversationStore) RestoreRewindPoint(ctx context.Context, convID
 	}
 	n, _ := res.RowsAffected()
 	result.MessagesTruncated = int(n)
-	if _, err := tx.ExecContext(ctx, `DELETE FROM rewind_points WHERE conversation_id=? AND (step>? OR (step=? AND id<>?))`, convID, point.Step, point.Step, point.ID); err != nil {
+	// point.Step is run-local and restarts every run, so it collides across
+	// runs (run 2's first mutating call and run 1's first mutating call are
+	// both step 0/1 within their own run but capture entirely unrelated
+	// points): pruning by it deleted an older, still-valid point from an
+	// earlier run whenever a later run's point happened to share a step
+	// number. Prune by MessageBoundary instead when it is recorded: a point
+	// is superseded only if it comes after the target in conversation order
+	// (a strictly greater boundary), or shares the same boundary (parallel
+	// tool calls in one assistant turn) but was captured later. The target
+	// itself is always excluded. Fall back to the legacy step predicate only
+	// when the target has no recorded boundary.
+	if point.MessageBoundary > 0 {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM rewind_points WHERE conversation_id=? AND id<>? AND (message_boundary>? OR (message_boundary=? AND created_at>?))`, convID, point.ID, point.MessageBoundary, point.MessageBoundary, point.CreatedAt.Format(time.RFC3339Nano)); err != nil {
+			return result, fmt.Errorf("rewind delete future points: %w", err)
+		}
+	} else if _, err := tx.ExecContext(ctx, `DELETE FROM rewind_points WHERE conversation_id=? AND (step>? OR (step=? AND id<>?))`, convID, point.Step, point.Step, point.ID); err != nil {
 		return result, fmt.Errorf("rewind delete future points: %w", err)
 	}
 	// The files just restored now hold this content on disk, so every
