@@ -1,9 +1,12 @@
 package harness
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -381,6 +384,114 @@ func TestConversationSnapshotCapSkipsAdditionalContent(t *testing.T) {
 	}
 	if !points[0].Files[0].Skipped {
 		t.Fatalf("expected cap skip: %#v", points[0])
+	}
+}
+
+// TestRestoreRewindPoint_MultiRunTruncatesOnlyAfterPoint reproduces issue
+// #1370: rewinding to a point captured during a conversation's second run
+// must keep every message from the first run plus the second run's user
+// prompt and tool-call message, deleting only what came after the tool call
+// this point precedes. The point's Step field is a run-local tool-call
+// counter (run2's first mutating call is step 0 within run2), which is not
+// comparable to conversation_messages.step (a conversation-wide index) --
+// comparing them directly deletes run 1's messages too.
+func TestRestoreRewindPoint_MultiRunTruncatesOnlyAfterPoint(t *testing.T) {
+	ctx := context.Background()
+	store := newTestConversationStore(t)
+	convID := "multi-run-conv"
+
+	// Final persisted state after both runs completed: run 1 (4 messages)
+	// followed by run 2 (4 messages). Steps are the conversation-wide index
+	// 0..7, matching what SaveConversationWithCost writes at each run's
+	// completion.
+	all := []Message{
+		{Role: "user", Content: "run1: write a.txt"},
+		{Role: "assistant", Content: "", ToolCalls: []ToolCall{{ID: "c1", Name: "write"}}},
+		{Role: "tool", Name: "write", ToolCallID: "c1", Content: "written"},
+		{Role: "assistant", Content: "run1 done"},
+		{Role: "user", Content: "run2: edit a.txt"},
+		{Role: "assistant", Content: "", ToolCalls: []ToolCall{{ID: "c2", Name: "edit"}}},
+		{Role: "tool", Name: "edit", ToolCallID: "c2", Content: "edited"},
+		{Role: "assistant", Content: "run2 done"},
+	}
+
+	// The rewind point is captured mid-run-2, immediately before the "edit"
+	// tool executes, when run2's step-loop counter reads 0 (its first tool
+	// call) but the conversation already holds 4 run-1 messages plus run2's
+	// user prompt and tool-call message: a message boundary of 6.
+	point := RewindPoint{ID: "run2-edit", ConversationID: convID, Step: 0, Tool: "edit", MessageBoundary: 6}
+	if err := store.SaveRewindPoint(ctx, point); err != nil {
+		t.Fatalf("SaveRewindPoint: %v", err)
+	}
+
+	// Run 2 completes and overwrites the full conversation-wide history, as
+	// Runner.completeRun does via SaveConversationWithCost.
+	if err := store.SaveConversation(ctx, convID, all); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	result, err := store.RestoreRewindPoint(ctx, convID, "run2-edit", t.TempDir(), true)
+	if err != nil {
+		t.Fatalf("RestoreRewindPoint: %v", err)
+	}
+	if result.MessagesTruncated != 2 {
+		t.Errorf("MessagesTruncated = %d, want 2 (run2's tool result and final answer)", result.MessagesTruncated)
+	}
+	got, err := store.LoadMessages(ctx, convID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(got) != 6 {
+		t.Fatalf("LoadMessages returned %d messages, want 6 (run1's 4 plus run2's user prompt and tool-call message): %#v", len(got), got)
+	}
+	for i, want := range all[:6] {
+		if got[i].Content != want.Content || got[i].Role != want.Role {
+			t.Errorf("message[%d] = %+v, want %+v", i, got[i], want)
+		}
+	}
+	if got[3].Content != "run1 done" {
+		t.Fatalf("run 1's final answer was truncated; got[3]=%+v", got[3])
+	}
+}
+
+// TestRestoreRewindPoint_FallsBackWhenBoundaryUnset proves that points saved
+// before MessageBoundary existed (or by any caller that never sets it) do not
+// silently over-delete: restore falls back to the legacy step comparison
+// (documented, if imperfect) and logs a warning rather than deleting
+// everything at step>=0.
+func TestRestoreRewindPoint_FallsBackWhenBoundaryUnset(t *testing.T) {
+	ctx := context.Background()
+	store := newTestConversationStore(t)
+	convID := "legacy-point-conv"
+	if err := store.SaveConversation(ctx, convID, []Message{
+		{Role: "user", Content: "keep"},
+		{Role: "assistant", Content: "drop"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// No MessageBoundary set: zero value, matching every rewind point
+	// captured before this field existed.
+	if err := store.SaveRewindPoint(ctx, RewindPoint{ID: "legacy", ConversationID: convID, Step: 0, Tool: "write"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	result, err := store.RestoreRewindPoint(ctx, convID, "legacy", t.TempDir(), true)
+	if err != nil {
+		t.Fatalf("RestoreRewindPoint: %v", err)
+	}
+	if result.MessagesTruncated != 1 {
+		t.Fatalf("MessagesTruncated = %d, want 1 (legacy step-based fallback keeps step<=0)", result.MessagesTruncated)
+	}
+	got, err := store.LoadMessages(ctx, convID)
+	if err != nil || len(got) != 1 || got[0].Content != "keep" {
+		t.Fatalf("LoadMessages = %#v, err=%v, want [keep]", got, err)
+	}
+	if !strings.Contains(buf.String(), "legacy") {
+		t.Fatalf("expected a logged warning naming the point falling back to step-based truncation, got: %q", buf.String())
 	}
 }
 
