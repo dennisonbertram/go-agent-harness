@@ -410,6 +410,106 @@ func TestRewindThenNextRunDoesNotResurrectTruncatedMessages(t *testing.T) {
 	}
 }
 
+// TestRestoreRewindPoint_NeverLeavesDanglingToolCall is a follow-up
+// regression on PR #1389: the original boundary kept the assistant message
+// that carries the rewound tool call, so a restore could leave persisted
+// history ending in an assistant message whose tool_calls have no
+// corresponding tool-result messages. Real providers reject that shape
+// (OpenAI: "An assistant message with 'tool_calls' must be followed by tool
+// messages responding to each tool_call_id"); the fake/stub providers used
+// elsewhere in this suite do not enforce it, which is why that bug shipped
+// with green tests. MessageBoundary must be the index of the assistant
+// message carrying the rewound tool call itself, so restoring deletes that
+// message and everything after it. For two tool calls issued in one
+// assistant turn (parallel, non-parallel-safe mutating tools execute
+// sequentially but originate from one assistant message), both calls' points
+// must share that same boundary.
+func TestRestoreRewindPoint_NeverLeavesDanglingToolCall(t *testing.T) {
+	workspace := t.TempDir()
+	registry := NewRegistry()
+	writeFile := func(_ context.Context, raw json.RawMessage) (string, error) {
+		var args struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return "", err
+		}
+		return "ok", os.WriteFile(filepath.Join(workspace, args.Path), []byte(args.Content), 0o600)
+	}
+	for _, name := range []string{"write", "edit"} {
+		if err := registry.Register(ToolDefinition{Name: name, Mutating: true, Parameters: map[string]any{"type": "object"}}, writeFile); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+
+	store := newTestConversationStore(t)
+	// One assistant turn issues two tool calls (neither tool is registered
+	// parallel-safe, so the step engine executes them sequentially but they
+	// still originate from a single assistant message).
+	provider := &stubProvider{turns: []CompletionResult{
+		{ToolCalls: []ToolCall{
+			{ID: "pa1", Name: "write", Arguments: `{"path":"a.txt","content":"v1"}`},
+			{ID: "pa2", Name: "edit", Arguments: `{"path":"b.txt","content":"v2"}`},
+		}},
+		{Content: "done"},
+	}}
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel:         "test",
+		MaxSteps:             20,
+		ConversationStore:    store,
+		WorkspaceBaseOptions: WorkspaceProvisionOptions{RepoPath: workspace},
+	})
+	convID := "parallel-rewind-conv"
+	run, err := runner.StartRun(RunRequest{Prompt: "write and edit", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForRunCompletion(t, runner, run.ID)
+
+	points, err := store.ListRewindPoints(context.Background(), convID)
+	if err != nil {
+		t.Fatalf("ListRewindPoints: %v", err)
+	}
+	if len(points) != 2 {
+		t.Fatalf("points = %#v, want 2 (one per parallel tool call)", points)
+	}
+	if points[0].MessageBoundary != points[1].MessageBoundary {
+		t.Fatalf("parallel tool calls in one assistant turn have different boundaries: %+v vs %+v", points[0], points[1])
+	}
+
+	// Restore using either point should truncate at the assistant message
+	// itself, not just the tool call that point happens to name.
+	if _, err := store.RestoreRewindPoint(context.Background(), convID, points[0].ID, workspace, true); err != nil {
+		t.Fatalf("RestoreRewindPoint: %v", err)
+	}
+
+	got, err := store.LoadMessages(context.Background(), convID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatalf("LoadMessages returned no messages; want at least the user prompt")
+	}
+	last := got[len(got)-1]
+	if last.Role == "assistant" && len(last.ToolCalls) > 0 {
+		t.Fatalf("restore left a dangling assistant message with tool_calls as the last persisted message: %+v", last)
+	}
+	assistantCallIDs := map[string]bool{}
+	for _, m := range got {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				assistantCallIDs[tc.ID] = true
+			}
+		}
+	}
+	for _, m := range got {
+		if m.Role == "tool" && !assistantCallIDs[m.ToolCallID] {
+			t.Fatalf("tool message %+v has no preceding assistant tool_calls entry for its ID; a real provider would reject this history", m)
+		}
+	}
+}
+
 func TestRunnerInjectsMemorySnippetAndEmitsMemoryEvents(t *testing.T) {
 	t.Parallel()
 

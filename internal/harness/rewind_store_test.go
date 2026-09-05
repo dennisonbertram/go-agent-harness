@@ -390,11 +390,18 @@ func TestConversationSnapshotCapSkipsAdditionalContent(t *testing.T) {
 // TestRestoreRewindPoint_MultiRunTruncatesOnlyAfterPoint reproduces issue
 // #1370: rewinding to a point captured during a conversation's second run
 // must keep every message from the first run plus the second run's user
-// prompt and tool-call message, deleting only what came after the tool call
-// this point precedes. The point's Step field is a run-local tool-call
-// counter (run2's first mutating call is step 0 within run2), which is not
-// comparable to conversation_messages.step (a conversation-wide index) --
-// comparing them directly deletes run 1's messages too.
+// prompt, deleting the tool-call message this point precedes and everything
+// after it. The point's Step field is a run-local tool-call counter (run2's
+// first mutating call is step 0 within run2), which is not comparable to
+// conversation_messages.step (a conversation-wide index) -- comparing them
+// directly deletes run 1's messages too.
+//
+// MessageBoundary is the index of the assistant message carrying the
+// rewound tool call, not the index just after it: restoring must delete
+// that assistant message too, not just its tool result, otherwise the
+// persisted history ends with an assistant message whose tool_calls have no
+// tool-result messages, which real providers (e.g. OpenAI) reject on the
+// next turn even though the fake/stub providers used in tests do not.
 func TestRestoreRewindPoint_MultiRunTruncatesOnlyAfterPoint(t *testing.T) {
 	ctx := context.Background()
 	store := newTestConversationStore(t)
@@ -416,10 +423,10 @@ func TestRestoreRewindPoint_MultiRunTruncatesOnlyAfterPoint(t *testing.T) {
 	}
 
 	// The rewind point is captured mid-run-2, immediately before the "edit"
-	// tool executes, when run2's step-loop counter reads 0 (its first tool
-	// call) but the conversation already holds 4 run-1 messages plus run2's
-	// user prompt and tool-call message: a message boundary of 6.
-	point := RewindPoint{ID: "run2-edit", ConversationID: convID, Step: 0, Tool: "edit", MessageBoundary: 6}
+	// tool executes. The conversation holds 4 run-1 messages, run2's user
+	// prompt at index 4, and run2's assistant tool-call message at index 5:
+	// a message boundary of 5 (the tool-call message's own index).
+	point := RewindPoint{ID: "run2-edit", ConversationID: convID, Step: 0, Tool: "edit", MessageBoundary: 5}
 	if err := store.SaveRewindPoint(ctx, point); err != nil {
 		t.Fatalf("SaveRewindPoint: %v", err)
 	}
@@ -434,23 +441,27 @@ func TestRestoreRewindPoint_MultiRunTruncatesOnlyAfterPoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RestoreRewindPoint: %v", err)
 	}
-	if result.MessagesTruncated != 2 {
-		t.Errorf("MessagesTruncated = %d, want 2 (run2's tool result and final answer)", result.MessagesTruncated)
+	if result.MessagesTruncated != 3 {
+		t.Errorf("MessagesTruncated = %d, want 3 (run2's tool-call message, tool result, and final answer)", result.MessagesTruncated)
 	}
 	got, err := store.LoadMessages(ctx, convID)
 	if err != nil {
 		t.Fatalf("LoadMessages: %v", err)
 	}
-	if len(got) != 6 {
-		t.Fatalf("LoadMessages returned %d messages, want 6 (run1's 4 plus run2's user prompt and tool-call message): %#v", len(got), got)
+	if len(got) != 5 {
+		t.Fatalf("LoadMessages returned %d messages, want 5 (run1's 4 plus run2's user prompt): %#v", len(got), got)
 	}
-	for i, want := range all[:6] {
+	for i, want := range all[:5] {
 		if got[i].Content != want.Content || got[i].Role != want.Role {
 			t.Errorf("message[%d] = %+v, want %+v", i, got[i], want)
 		}
 	}
 	if got[3].Content != "run1 done" {
 		t.Fatalf("run 1's final answer was truncated; got[3]=%+v", got[3])
+	}
+	last := got[len(got)-1]
+	if last.Role == "assistant" && len(last.ToolCalls) > 0 {
+		t.Fatalf("restore left a dangling assistant message with tool_calls as the last persisted message: %+v", last)
 	}
 }
 

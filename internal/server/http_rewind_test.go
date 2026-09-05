@@ -232,11 +232,12 @@ func TestRestoreRewindEndpointRefusesExternalModificationWithoutForce(t *testing
 // conversation (run 1 writes a.txt, run 2 edits it), then a rewind to run
 // 2's first tool call. It proves both halves of the fix through the real
 // HTTP handler: (1) the DB truncation keeps run 1's messages plus run 2's
-// user prompt and tool-call message, deleting only run 2's tool result and
-// final answer, and (2) GET /messages reflects that truncation immediately
-// afterward instead of continuing to serve the runner's stale in-memory
-// mirror (which, before the fix, resurrects the deleted messages until a
-// daemon restart).
+// user prompt, deleting run 2's tool-call message and everything after it
+// (not just its tool result -- leaving the tool-call message dangling with
+// no tool-result response is a shape real providers reject), and (2) GET
+// /messages reflects that truncation immediately afterward instead of
+// continuing to serve the runner's stale in-memory mirror (which, before
+// the fix, resurrects the deleted messages until a daemon restart).
 func TestRestoreRewindEndpoint_MultiRunKeepsPriorMessagesAndInvalidatesLiveMirror(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	workspace := t.TempDir()
@@ -348,13 +349,13 @@ func TestRestoreRewindEndpoint_MultiRunKeepsPriorMessagesAndInvalidatesLiveMirro
 	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
 		t.Fatalf("decode rewind result: %v", err)
 	}
-	if result.MessagesTruncated != 2 {
-		t.Errorf("MessagesTruncated = %d, want 2 (run2's tool result and final answer)", result.MessagesTruncated)
+	if result.MessagesTruncated != 3 {
+		t.Errorf("MessagesTruncated = %d, want 3 (run2's tool-call message, tool result, and final answer)", result.MessagesTruncated)
 	}
 
 	after := getMessages()
-	if len(after) != 6 {
-		t.Fatalf("after rewind: got %d messages, want 6 (run1's 4 plus run2's user prompt and tool-call message): %#v", len(after), after)
+	if len(after) != 5 {
+		t.Fatalf("after rewind: got %d messages, want 5 (run1's 4 plus run2's user prompt): %#v", len(after), after)
 	}
 	for _, m := range after {
 		if strings.Contains(m.Content, "run2 done") {
@@ -363,5 +364,9 @@ func TestRestoreRewindEndpoint_MultiRunKeepsPriorMessagesAndInvalidatesLiveMirro
 	}
 	if after[3].Content != "run1 done" {
 		t.Fatalf("run1's final answer was truncated; after[3]=%+v", after[3])
+	}
+	last := after[len(after)-1]
+	if last.Role == "assistant" && len(last.ToolCalls) > 0 {
+		t.Fatalf("restore left a dangling assistant message with tool_calls as the last persisted message: %+v", last)
 	}
 }
