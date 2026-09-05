@@ -5906,3 +5906,35 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   the touched `INDEX.md` files, the three corrected investigation files, and
   this log against `test -e` (758 links, 0 dead). This is documentation only:
   no runtime, API, or test behavior changed.
+
+# 2026-09-05 (Issue #1370 rewind message truncation and live mirror repair)
+
+- Cause: `RestoreRewindPoint` truncated `conversation_messages` by comparing
+  the rewind point's run-local tool-call step (`RewindPoint.Step`, set in
+  `runner_step_engine.go`) against `conversation_messages.step`, a
+  conversation-wide message index shared across every run on that
+  conversation. Rewinding to a point in a conversation's second (or later)
+  run deleted the first run's later messages too. Separately, the runner's
+  in-memory conversation mirror (populated at each run's completion and
+  served by `ConversationMessagesSnapshot`/`GET /messages`) was never
+  invalidated by rewind, so the live daemon kept serving pre-rewind history
+  and the next run re-persisted it over the truncated DB.
+- Fix: `RewindPoint` gained `MessageBoundary`, the conversation-wide message
+  count recorded at capture time (`len(messages)` in the step engine, which
+  already holds every prior run's persisted history plus this run's user
+  prompt and the assistant tool-call message about to execute).
+  `RestoreRewindPoint` truncates by `step >= MessageBoundary` when it is
+  recorded; points captured before this field existed (`MessageBoundary ==
+  0`) fall back to the legacy step comparison with a logged warning instead
+  of silently over-deleting. `Runner.InvalidateConversationHistory` drops the
+  in-memory mirror entry for a conversation; the rewind HTTP handler calls it
+  immediately after a successful restore.
+- Regression: a store-level test proves a two-run conversation's rewind keeps
+  run 1's messages plus run 2's user prompt and tool-call message,
+  truncating only what follows; an HTTP-level test drives two real runs
+  through the handler and proves `GET /messages` reflects the truncation
+  immediately; a third test drives a real three-run `Runner` flow and proves
+  the run following a rewind does not resurrect the truncated tool result or
+  final answer in its LLM request. Related: #1303 describes the same
+  resurrection symptom from a different angle (workspace population, TUI
+  JSON tags) and remains open.
