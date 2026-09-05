@@ -12,9 +12,8 @@
 - `native-gui-acceptance.md`: Issues #1205/#1208/#1220 owner-created native
   lifecycle, deterministic fixtures, non-prompting TCC admission, and one
   correlated rendered core scenario foundation; not the full #1089 matrix.
-- `symphony.md`: How to run OpenAI Symphony for this repository with the wrapper script.
-- `symphony-issue-authoring.md`: How to write GitHub issues that Symphony can execute autonomously with strict TDD, behavior tests, regression gates, and merge rules.
 - `deployment.md`: MVP deployment runbook with security and verification checks.
+- `golden-path-deployment.md`: Canonical `full`-profile deployment baseline — bind default, profile/config directories, and step-cap guidance.
 - `distribution.md`: Installer, OS service install (`harnesscli service` launchd/systemd user units), GitHub Pages, release archive, Homebrew, and release checklist guidance for distributing go-code.
 - `worktree-flow.md`: Required worktree-first development and merge workflow.
 - `remote-cronsd.md`: Authenticated, fresh-store-ready, durable-replay-safe remote cronsd-to-harnessd dispatch configuration, readiness, canary, and rollback.
@@ -24,7 +23,7 @@
 - `ownership-copy-semantics.md`: Checklist for reviewing slices, maps, pointers, and nil semantics at storage/export boundaries.
 - `provider-model-impact-mapping.md`: When provider/model feature work must ship with a cross-surface impact map and how to write it.
 - `harnesscli-live-testing.md`: End-to-end tmux runbook for `harnessd` + `harnesscli`, including variables, commands, and known issues.
-- `tui-visual-testing.md`: Automated frame-audit framework and manual walk guidance for TUI visual quality and work-readiness.
+- `tool-usability-testing.md`: Systematic method for testing whether LLM agents use harness tools correctly and iterating on tool descriptions.
 - `observational-memory.md`: Configuration, operation, events, and recovery guidance for observational memory.
 - `terminal-bench-periodic-suite.md`: How to run and interpret the private Terminal Bench smoke suite for the harness.
 - `mcp.md`: How to add MCP servers to the harness (client), and how to expose the harness as an MCP server.

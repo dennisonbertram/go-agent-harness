@@ -34,7 +34,7 @@ Defaults:
   - Model-backed memory reflection.
 - `internal/observationalmemory/openai_model.go`
   - Dedicated OpenAI-compatible chat-completions model client for memory observer/reflector workloads.
-- `internal/harness/tools/observational_memory.go`
+- `internal/harness/tools/core/observational_memory.go`
   - Tool control plane (`enable|disable|status|export|review|reflect_now`).
 
 ## Runner Integration

@@ -35,6 +35,6 @@ Status legend: `planned` | `in_progress` | `implemented` | `deferred`
 ## Notes
 
 - The tool registry is built by `NewDefaultRegistryWithOptions` in `internal/harness/tools_default.go`. This is the only catalog: the legacy `BuildCatalog` in `internal/harness/tools/catalog.go`, which assembled a second, separately-maintained copy of the same tools, has been removed. Consumers that need a flat `[]tools.Tool` rather than the registry API (the stdio MCP server) get it from `Registry.CatalogTools()`.
-- New tools should be added as a new file (or directory for larger tools) in `internal/harness/tools/` (core) or `internal/harness/tools/deferred/` (deferred), then wired into `tools_default.go`.
+- New tools should be added as a new file (or directory for larger tools) in `internal/harness/tools/core/` (core) or `internal/harness/tools/deferred/` (deferred), then wired into `tools_default.go`. `internal/harness/tools/` itself holds only shared infrastructure (types, policy, sandbox, path confinement, SSRF guard, job manager) plus `find_tool` and `reset_context`.
 - Not-yet-wired external dependencies (MCP, agent runner, web fetcher, sourcegraph endpoint) are not placeholders; they are fully implemented tool contracts gated by real dependency presence.
 - LSP tools have `deferred` status: code exists but is intentionally not wired into the default registry. The agent can use `bash` with `gopls` directly when needed.

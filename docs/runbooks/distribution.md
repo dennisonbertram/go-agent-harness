@@ -72,7 +72,7 @@ What gets written:
 `install` flags:
 
 - `--binary PATH`: the `harnessd` executable to run. Default: `harnessd` looked up on `PATH` (the Homebrew- or installer-provided binary). The unit embeds the absolute path.
-- `--addr ADDR`: listen address exported to the daemon as `HARNESS_ADDR`. Default: the same resolution the daemon applies to itself — `HARNESS_ADDR` env or `~/.harness/config.toml`, falling back to `:8080`.
+- `--addr ADDR`: listen address exported to the daemon as `HARNESS_ADDR`. Default: the same resolution the daemon applies to itself — `HARNESS_ADDR` env or `~/.harness/config.toml`, falling back to `127.0.0.1:8080`.
 - `--log-dir DIR`: log directory (default `~/.harness/logs`).
 - `--dry-run`: print the rendered unit and its target path without writing anything.
 
@@ -239,4 +239,4 @@ Before publishing a release:
    go-code --help
    ```
 
-5. Confirm `go-code` can launch a run from another project and the server receives that project as `workspace_path`.
+5. Confirm `go-code` can launch a run from another project and its tools are rooted there. `harnesscli --workspace <dir>` (and the TUI) send `workspace_path` on `POST /v1/runs`; the server honors it as the run's tool root, validating it is absolute and already exists (issue #1372).

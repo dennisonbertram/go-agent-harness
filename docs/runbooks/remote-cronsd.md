@@ -133,11 +133,11 @@ classified the same as a transport failure before headers.
    `GET /v1/jobs/<id>/history`. A successful history row proves that cronsd
    received an accepted remote-start response; it does **not** prove that the
    harness run later completed successfully.
-6. In this transitional #1003 canary, extract the accepted run ID only from
-   the execution `output_summary` (`started run <run_id>`) and use it only for
-   authenticated `GET /v1/runs/<run_id>` scope inspection. Do not parse prose
-   into `Execution.RunID`: that structured durable linkage remains #1004 and
-   is intentionally empty here.
+6. `Execution.RunID` (`internal/cron/types.go:124`) is populated by
+   `persistRunLink` as soon as the harness admits the run
+   (`internal/cron/scheduler.go:741`) — read it directly with
+   `GET /v1/jobs/{id}/history` rather than parsing the `output_summary` prose.
+   Use the run ID for authenticated `GET /v1/runs/<run_id>` scope inspection.
 7. Verify the execution is not shell and the accepted run's tenant, agent,
    and conversation match the job. A terminal run outcome requires separate
    run/event evidence. Capture sanitized daemon logs and the exact commands in

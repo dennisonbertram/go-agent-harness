@@ -40,11 +40,12 @@ rm -f .harness/cron.db
 ### Starting/checking the server
 
 ```bash
-# Build and start (default port 8080)
+# Build and start (default 127.0.0.1:8080)
 go build -o harnessd ./cmd/harnessd && ./harnessd &
 
-# Or with custom port
-HARNESS_ADDR=:9090 ./harnessd &
+# Or with a custom port, bound to loopback (a wildcard bind like ":9090" is
+# refused without an API-key store or HARNESS_AUTH_DISABLED=true; bind_guard.go)
+HARNESS_ADDR=127.0.0.1:9090 ./harnessd &
 
 # Verify it's up
 curl -s http://localhost:8080/healthz
@@ -198,7 +199,7 @@ Guidance for creating test suites for any tool:
 ## 2.1 — Tool Under Test
 
 - **Tool name**: `cron_create`
-- **Source**: `internal/harness/tools/cron.go`
+- **Source**: `internal/harness/tools/deferred/cron.go`
 - **Current description** (as of initial testing):
 
 ```
@@ -241,7 +242,7 @@ Write a script using write/bash tools first, then schedule it with cron.
 | C6 | P | 2 | cron_create schedule=`0 0 1 * *` | — | — |
 | C7 | P | 2 | set_delayed_callback delay=2m | — | — |
 
-**Source file**: `internal/harness/tools/cron.go`
+**Source file**: `internal/harness/tools/deferred/cron.go`
 **Changes made**: Added explicit "do NOT use cron_create if the user wants to run something once, after a delay, or at a single future time. For one-shot delayed execution, use bash (e.g. 'sleep 120 && command') instead." to cron_create description.
 **Regressions**: N/A
 
@@ -266,7 +267,7 @@ Write a script using write/bash tools first, then schedule it with cron.
 | C6 | P | 2 | cron_create schedule=`0 0 1 * *` | Job created successfully | — |
 | C7 | P | 2 | set_delayed_callback delay=2m | Correctly avoided cron | — |
 
-**Source file**: `internal/harness/tools/cron.go` + `internal/harness/tools/descriptions/cron_create.md`
+**Source file**: `internal/harness/tools/deferred/cron.go` + `internal/harness/tools/descriptions/cron_create.md`
 **Changes made**: None this round (validating embed migration + clean DB)
 **Regressions**: None — 7/7 P on clean database
 
@@ -314,5 +315,5 @@ Copy this template to add a test suite for any tool.
 | High | `write` | File creation has many edge cases (paths, overwrite behavior) |
 | Medium | `read` | Agents sometimes read wrong files or too much |
 | Medium | `grep` | Regex patterns and scope are common failure points |
-| Medium | `git_commit` | Agents often stage wrong files or write bad messages |
+| Medium | `bash` (git commit workflows) | There is no dedicated `git_commit` tool — agents commit via `bash`, and often stage wrong files or write bad messages |
 | Low | `lsp_*` | Complex tools but used less frequently |

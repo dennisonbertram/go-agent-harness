@@ -163,7 +163,9 @@ GET  /v1/subagents
 POST /v1/subagents
 ```
 
-Run requests support prompt, model, provider, workspace, sandbox, approval, tool, profile, reasoning, and budget fields. Canonical event names live in `internal/harness/events.go`.
+Run requests (`harness.RunRequest`, `internal/harness/types.go`) support `prompt`, `model`, `provider_name`, `workspace_type`, `extra_dirs`, `workspace_path`, `permissions`, `allowed_tools`/`denied_tools`, `profile`, `reasoning_effort`, `max_steps`/`max_turns`/`max_cost_usd`, and more. Canonical event names live in `internal/harness/events.go`.
+
+`workspace_path` pins the run's tools to an existing directory (must be absolute and already exist) instead of provisioning a new one; `harnesscli --workspace <dir>` and the TUI send it on every run. There is no default step cap — `max_steps` is 0 (unlimited) unless explicitly set by request, profile, or `HARNESS_MAX_STEPS`. When a run blocks on `run.waiting_for_user`, answer it with `harnesscli input <run-id> "<question>=<answer>"` (`POST /v1/runs/{id}/input`) or approve/deny a pending tool call; `continue` only works once the run has reached `completed`.
 
 `GET /v1/runs/{id}`, `GET /v1/runs/{id}/events`, and `GET /v1/runs/{id}/summary` all fall back to the persistent run store when the in-memory runner has no live state for a run — for example, a historical run served after a daemon restart with the same `HARNESS_RUN_DB`/`HARNESS_CONVERSATION_DB`. The store-backed `/events` replays the run's durable event history and closes the stream (the run is necessarily terminal); `/summary` is computed from that same durable event log. Event IDs and wire shapes are unchanged either way.
 
@@ -188,8 +190,8 @@ Follow `docs/runbooks/testing.md` for strict TDD expectations, behavior tests, r
 
 - Public page source: `docs/site/`
 - Distribution runbook: `docs/runbooks/distribution.md`
-- TUI visual testing: `docs/runbooks/tui-visual-testing.md`
-- Symphony issue authoring: `docs/runbooks/symphony-issue-authoring.md`
+- Golden-path deployment: `docs/runbooks/golden-path-deployment.md`
+- Tool usability testing: `docs/runbooks/tool-usability-testing.md`
 - Worktree workflow: `docs/runbooks/worktree-flow.md`
 - Full docs index: `docs/INDEX.md`
 

@@ -31,8 +31,12 @@ Response:
       "cleanup_policy": "preserve",
       "workspace_path": "",
       "workspace_cleaned": false,
+      "branch_name": "",
+      "base_ref": "",
       "output": "...",
       "error": "",
+      "total_tokens": 0,
+      "cost_usd": 0.0,
       "created_at": "2026-03-20T14:01:00Z",
       "updated_at": "2026-03-20T14:01:45Z"
     }
@@ -86,7 +90,7 @@ Example response:
 |--------|---------|
 | `queued` | Accepted but not yet started (pool at capacity) |
 | `running` | Agent is actively executing steps |
-| `waiting_for_user` | Agent called `ask_user_question` and is blocked |
+| `waiting_for_user` | Agent called `AskUserQuestion` and is blocked |
 | `waiting_for_approval` | Agent is awaiting tool approval |
 | `completed` | Run finished normally (or hit cost limit) |
 | `failed` | Run terminated due to an error |
@@ -233,16 +237,22 @@ curl -s http://localhost:8080/v1/profiles/researcher \
 ### max_steps exceeded
 
 **Symptom**: The event stream includes a `run.step.completed` event near the
-configured step limit, followed by `run.completed`. The `ChildResult.status` is
+configured step limit, followed by **`run.failed`** (not `run.completed`;
+`internal/harness/runner.go:4650-4674`). The `ChildResult.status` is
 `"partial"` rather than `"completed"`.
 
 **Cause**: The agent consumed all allowed steps without calling `task_complete`.
+There is no implicit step cap — `max_steps` is 0 (unlimited) unless the
+profile, run request, or `HARNESS_MAX_STEPS` sets one explicitly; this only
+happens when a cap was actually configured.
 
-**How to identify**: Look for a `run.completed` event whose payload includes
-`"reason": "max_steps_reached"` and a `"max_steps"` field.
+**How to identify**: Look for a `run.failed` event whose payload includes
+`"reason": "max_steps_reached"` and a `"max_steps"` field. Grepping for
+`run.completed` finds nothing here — that event name is not used for this
+case.
 
-**Fix**: Either increase `max_steps` in the profile, or provide a more focused
-task description so the agent completes sooner.
+**Fix**: Either raise or remove the configured `max_steps` for the profile, or
+provide a more focused task description so the agent completes sooner.
 
 ### Cost limit reached
 

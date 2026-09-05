@@ -5702,6 +5702,37 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   proves parent resource values cannot leak; distinct executable artifacts have
   distinct provenance identities. Product behavior remains unchanged.
 
+# 2026-09-05 (Issue #1379 documentation staleness repair)
+
+- Cause: a read-only audit of README, CLAUDE.md, `docs/runbooks/`, and
+  `docs/design/` (attached to epic #1369) found operator-facing docs that send
+  an operator to a failing command or describe behavior that never existed:
+  `docs/runbooks/mcp.md` described an unmounted `internal/mcpserver` HTTP/SSE
+  server instead of the actual `internal/harnessmcp` POST-only `/mcp` (25
+  tools); `docs/design/event-catalog.md` documented 23 of 79 events and said
+  only two events were terminal (`run.cancelled` is also terminal); several
+  runbooks kept the pre-#1328 `:8080` bind default, a reversed config-layering
+  order, a nonexistent `profiles_dir`/`tools.allow` config key, and stale
+  source paths (`tools/cron.go` vs `tools/deferred/cron.go`, `runner.go:2099`
+  vs `:3152`); README/INDEX files linked three nonexistent runbooks and
+  omitted two real ones plus four doc folders.
+- Fix: corrected every doc:line claim against current code (verified with
+  `rg`, not trusted from the audit alone), regenerated
+  `docs/design/event-catalog.md` from `AllEventTypes()`/`IsTerminalEvent`,
+  rewrote the MCP runbook to describe `/mcp` (`internal/harnessmcp`), the
+  separate `harnessd --mcp` stdio tool-catalog server, and the client-role
+  `/v1/mcp/servers` endpoints as three distinct surfaces. Documented, as
+  current behavior ahead of merge, the three sibling-PR fixes this issue
+  depends on: `workspace_path` honored on `POST /v1/runs` (#1372),
+  `harnesscli input <run-id> "<question>=<answer>"` to answer a blocked run
+  (#1374), and no default step cap (#1376).
+- Regression: none required — this is a documentation-only change. Manual
+  verification: `git diff --stat` shows only `*.md` files; every corrected
+  route/flag/env var/tool/event/path was re-checked with `rg` against the
+  code cited next to it; no automated doc link checker is defined in
+  `docs/runbooks/documentation-maintenance.md`, so a manual link sweep over
+  every touched file's relative doc references found none unresolved.
+
 # 2026-08-08 (Issue #1280 P1 close/reap repair)
 
 - Cause: Close sent SIGTERM before observing the broadcast completion state,

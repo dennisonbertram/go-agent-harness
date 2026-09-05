@@ -71,7 +71,9 @@ Runtime context is ephemeral and is not persisted into run transcript history.
 - `prompt_profile`
 - `prompt_extensions.behaviors[]`
 - `prompt_extensions.talents[]`
-- `prompt_extensions.skills[]` (reserved, ignored)
+- `prompt_extensions.skills[]` — resolved and injected into the composed system
+  prompt (`internal/systemprompt/engine.go:46-60`); `prompt.resolved` emits the
+  applied names as `applied_skills` (`internal/harness/runner.go:1917`)
 - `prompt_extensions.custom`
 
 Compatibility rule: if `system_prompt` is provided, prompt engine composition is bypassed.
