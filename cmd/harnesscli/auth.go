@@ -219,6 +219,12 @@ func dispatch(args []string) int {
 		return runViz(args[1:])
 	case "continue":
 		return runContinue(args[1:])
+	case "input":
+		return runInput(args[1:])
+	case "approve":
+		return runApprove(args[1:])
+	case "deny":
+		return runDeny(args[1:])
 	case "replay":
 		return runReplay(args[1:])
 	case "search":

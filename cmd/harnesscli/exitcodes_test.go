@@ -141,14 +141,19 @@ func stubStdinTerminal(t *testing.T, isTerminal bool) {
 
 // blockedSignals are the three events the contract treats as "the run cannot
 // proceed without input a headless caller will never provide".
+// wantHint is the resume-command fragment blockedResumeHint must print for
+// that event type (issue #1374): "harnesscli continue" only works once a run
+// is already completed, so a question-blocked run must be told to use
+// "input" and an approval-blocked run must be told to use "approve"/"deny".
 var blockedSignals = []struct {
 	name       string
 	event      string
 	wantReason string
+	wantHint   string
 }{
-	{"question-blocked", "run.waiting_for_user", "waiting for user input"},
-	{"tool-approval-blocked", "tool.approval_required", "waiting for approval"},
-	{"plan-approval-blocked", "plan.approval_required", "waiting for approval"},
+	{"question-blocked", "run.waiting_for_user", "waiting for user input", "harnesscli input"},
+	{"tool-approval-blocked", "tool.approval_required", "waiting for approval", "harnesscli approve"},
+	{"plan-approval-blocked", "plan.approval_required", "waiting for approval", "harnesscli approve"},
 }
 
 // TestRunBlockedSignalExits3WhenStdinNonInteractive drives run() against a
@@ -208,10 +213,13 @@ func TestRunBlockedSignalExits3WhenStdinNonInteractive(t *testing.T) {
 			}
 
 			errOutput := errBuf.String()
-			for _, want := range []string{"run_abc", tc.event, tc.wantReason, "harnesscli continue run_abc"} {
+			for _, want := range []string{"run_abc", tc.event, tc.wantReason, tc.wantHint + " run_abc"} {
 				if !strings.Contains(errOutput, want) {
 					t.Errorf("stderr missing %q:\n%s", want, errOutput)
 				}
+			}
+			if strings.Contains(errOutput, "harnesscli continue run_abc") {
+				t.Errorf("stderr must not suggest 'continue', which returns 409 for a run still %s:\n%s", tc.wantReason, errOutput)
 			}
 
 			output := outBuf.String()
@@ -332,7 +340,7 @@ func TestRunContinueBlockedSignalExits3WhenStdinNonInteractive(t *testing.T) {
 		t.Fatalf("runContinue() exit code = %d, want 3 (stderr=%s)", code, errBuf.String())
 	}
 	errOutput := errBuf.String()
-	for _, want := range []string{"run_next", "run.waiting_for_user", "harnesscli continue run_next"} {
+	for _, want := range []string{"run_next", "run.waiting_for_user", "harnesscli input run_next"} {
 		if !strings.Contains(errOutput, want) {
 			t.Errorf("stderr missing %q:\n%s", want, errOutput)
 		}
