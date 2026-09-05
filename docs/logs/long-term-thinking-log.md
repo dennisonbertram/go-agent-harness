@@ -1,5 +1,26 @@
 # Long-Term Thinking Log
 
+## 2026-09-05 (Issue #1376 — no default run-length cap)
+
+- Durable intent: this is a general-purpose coding harness that must be able
+  to work for any length of time. `max_steps`/`max_turns` must apply only
+  when an operator explicitly sets them (config, env, profile, or a per-run
+  request field) — the daemon and TUI must never substitute an implicit cap
+  when the resolved value is `0`.
+- What was wrong: `cmd/harnessd/config_reload.go`'s `loadHarnessConfig` reset
+  `MaxSteps` to `8` whenever it resolved to `0` and `HARNESS_MAX_STEPS` was
+  unset, and `cmd/harnesscli/tui/config.go`'s `DefaultTUIConfig` defaulted to
+  `8` as well — both silently contradicting `internal/config.Defaults()`,
+  which already documented `0` as unlimited, and the runner's
+  `effectiveMaxSteps`, which already treated `0` as unlimited.
+- Fix: removed both implicit-8 defaults; explicit caps set via config, env,
+  profile, or request are unchanged. Regression coverage: a fake-provider run
+  scripted with 8 tool-call turns plus a final answer (the exact issue repro)
+  now completes instead of failing with "max steps (8) reached".
+- Guardrail for future work: do not reintroduce an implicit step/turn/cost
+  cap anywhere in the daemon, TUI, or subagent tools without an explicit
+  product decision — this contradicts "work for any length of time."
+
 ## 2026-08-08 (Issue #1285 — attached lifecycle PTY)
 
 - Command intent: establish the attachment seam necessary for truthful

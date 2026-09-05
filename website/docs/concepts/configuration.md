@@ -40,7 +40,7 @@ Both config files use **TOML**. The full schema is divided into a top-level core
 ```toml
 # ── Core ──────────────────────────────────────────────────
 model = "gpt-4.1-mini"   # LLM model identifier
-max_steps = 0            # 0 = unlimited; harnessd runtime default is 8
+max_steps = 0            # 0 = unlimited (the harnessd runtime default, no implicit cap)
 addr = ":8080"           # HTTP listen address (socket form, not a URL)
 
 # ── Per-run cost ceiling ──────────────────────────────────
@@ -163,7 +163,7 @@ Invalid `HARNESS_*` values fail silently. Always verify your environment after a
 |----------|----------|---------|-------------|
 | `HARNESS_MODEL` | `model` | `gpt-4.1-mini` | LLM model identifier |
 | `HARNESS_ADDR` | `addr` | `:8080` | HTTP listen address (socket form) |
-| `HARNESS_MAX_STEPS` | `max_steps` | `0` in config; `8` at runtime | Max tool-call steps per run |
+| `HARNESS_MAX_STEPS` | `max_steps` | `0` (unlimited) | Max tool-call steps per run |
 | `HARNESS_MAX_COST_PER_RUN_USD` | `cost.max_per_run_usd` | `0.0` (unlimited) | Per-run cost ceiling in USD |
 | `HARNESS_WORKSPACE` | — | `.` | Workspace root; controls project config and DB paths |
 | `HARNESS_SYSTEM_PROMPT` | — | built-in coding prompt | System prompt text for all runs |
@@ -303,12 +303,6 @@ allow_net_access = false
 A profile may also declare `extends = "<base-profile-name>"` to inherit fields from another profile. Zero-value child fields fall back to the base; non-zero child fields override it. Profile name validation rejects names containing `/`, `\`, `..`, or absolute paths.
 
 ## Gotchas
-
-<Callout variant="warning">
-**`max_steps = 0` does not mean unlimited at the process level.**
-
-`0` means "unlimited" in the config schema. But if no `HARNESS_MAX_STEPS` env var is present *and* the resolved config value is `0`, `harnessd` resets it to `8` as a backward-compatible runtime default. To truly unlock step limits, set `HARNESS_MAX_STEPS=0` explicitly in the environment.
-</Callout>
 
 <Callout variant="warning">
 **`--profile` and `config.Load` layer 4 are separate code paths.**

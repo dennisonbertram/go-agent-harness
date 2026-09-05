@@ -26,7 +26,7 @@ These variables cover the fundamental harness runtime: address, model, cost limi
 |---|---|---|---|
 | `HARNESS_MODEL` | `model` | `"gpt-4.1-mini"` | Default LLM model identifier for every run. Any model ID or alias from the catalog is valid. |
 | `HARNESS_ADDR` | `addr` | `":8080"` | TCP listen address for the HTTP server (socket form, e.g. `":9090"`, not a URL). |
-| `HARNESS_MAX_STEPS` | `max_steps` | `8` (runtime); `0` in raw config = unlimited | Max tool-calling steps per run. Set to `0` explicitly to remove the limit. |
+| `HARNESS_MAX_STEPS` | `max_steps` | `0` (unlimited) | Max tool-calling steps per run. `0` means no limit; set an explicit positive value to cap it. |
 | `HARNESS_MAX_COST_PER_RUN_USD` | `cost.max_per_run_usd` | `0.0` (unlimited) | Per-run cost ceiling in USD. `0` means no limit. |
 | `HARNESS_WORKSPACE` | — | `"."` | Workspace root directory. Determines where project TOML config and database files are found. |
 | `HARNESS_SYSTEM_PROMPT` | — | Built-in coding assistant prompt | Override the default system prompt text for all runs. |
