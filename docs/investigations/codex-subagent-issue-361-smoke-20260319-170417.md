@@ -3,21 +3,21 @@
 - Focused on what already exists to support a low-friction live harness smoke path without introducing long-running infra.
 
 2. **Files inspected**
-- [docs/investigations/issue-361-grooming.md](/Users/dennisonbertram/Develop/go-agent-harness/docs/investigations/issue-361-grooming.md)
-- [docs/investigations/issue-362-grooming.md](/Users/dennisonbertram/Develop/go-agent-harness/docs/investigations/issue-362-grooming.md)
-- [scripts/smoke-test.sh](/Users/dennisonbertram/Develop/go-agent-harness/scripts/smoke-test.sh)
-- [docs/runbooks/golden-path-deployment.md](/Users/dennisonbertram/Develop/go-agent-harness/docs/runbooks/golden-path-deployment.md)
-- [docs/runbooks/terminal-bench-periodic-suite.md](/Users/dennisonbertram/Develop/go-agent-harness/docs/runbooks/terminal-bench-periodic-suite.md)
-- [scripts/run-terminal-bench.sh](/Users/dennisonbertram/Develop/go-agent-harness/scripts/run-terminal-bench.sh)
-- [docs/testing/harness-smoke-test-2026-03-18.md](/Users/dennisonbertram/Develop/go-agent-harness/docs/testing/harness-smoke-test-2026-03-18.md)
-- [docs/testing/harness-smoke-test-post-rename-2026-03-18.md](/Users/dennisonbertram/Develop/go-agent-harness/docs/testing/harness-smoke-test-post-rename-2026-03-18.md)
-- [docs/testing/manual-curl-smoke-test-v2.md](/Users/dennisonbertram/Develop/go-agent-harness/docs/testing/manual-curl-smoke-test-v2.md)
-- [cmd/harnessd/main.go](/Users/dennisonbertram/Develop/go-agent-harness/cmd/harnessd/main.go)
-- [internal/profiles/loader.go](/Users/dennisonbertram/Develop/go-agent-harness/internal/profiles/loader.go)
-- [internal/profiles/profile.go](/Users/dennisonbertram/Develop/go-agent-harness/internal/profiles/profile.go)
-- [internal/profiles/builtins/full.toml](/Users/dennisonbertram/Develop/go-agent-harness/internal/profiles/builtins/full.toml)
-- [scripts/test-multiturn.sh](/Users/dennisonbertram/Develop/go-agent-harness/scripts/test-multiturn.sh)
-- [scripts/curl-run.sh](/Users/dennisonbertram/Develop/go-agent-harness/scripts/curl-run.sh)
+- [docs/investigations/issue-361-grooming.md](../../docs/investigations/issue-361-grooming.md)
+- [docs/investigations/issue-362-grooming.md](../../docs/investigations/issue-362-grooming.md)
+- [scripts/smoke-test.sh](../../scripts/smoke-test.sh)
+- [docs/runbooks/golden-path-deployment.md](../../docs/runbooks/golden-path-deployment.md)
+- [docs/runbooks/terminal-bench-periodic-suite.md](../../docs/runbooks/terminal-bench-periodic-suite.md)
+- [scripts/run-terminal-bench.sh](../../scripts/run-terminal-bench.sh)
+- [docs/testing/harness-smoke-test-2026-03-18.md](../../docs/testing/harness-smoke-test-2026-03-18.md)
+- [docs/testing/harness-smoke-test-post-rename-2026-03-18.md](../../docs/testing/harness-smoke-test-post-rename-2026-03-18.md)
+- [docs/testing/manual-curl-smoke-test-v2.md](../../docs/testing/manual-curl-smoke-test-v2.md)
+- [cmd/harnessd/main.go](../../cmd/harnessd/main.go)
+- [internal/profiles/loader.go](../../internal/profiles/loader.go)
+- [internal/profiles/profile.go](../../internal/profiles/profile.go)
+- [internal/profiles/builtins/full.toml](../../internal/profiles/builtins/full.toml)
+- [scripts/test-multiturn.sh](../../scripts/test-multiturn.sh)
+- [scripts/curl-run.sh](../../scripts/curl-run.sh)
 
 3. **Concrete findings**
 - Existing closest-to-suite asset is `[scripts/smoke-test.sh]`; it already:

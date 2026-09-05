@@ -17,6 +17,22 @@ Documentation status must stay aligned with implementation status:
 - When file meaning changes materially.
 - When files are moved or removed.
 
+## Regenerating a folder index
+
+For folders with many dated/historical files (`investigations/`, `implementation/`,
+`testing/`, `research/`, `plans/`), hand-maintaining `INDEX.md` drifts. Regenerate it
+mechanically instead:
+
+```
+scripts/generate-doc-index.sh docs/<folder> "<Title>"
+```
+
+This lists every file in the folder (excluding `INDEX.md` itself) with its first
+Markdown heading (or first non-blank line, if none) as the title. It does not
+recurse into subdirectories and does not write descriptions beyond the heading;
+folders that need curated per-file descriptions instead of a mechanical title
+(e.g. `runbooks/`) should keep hand-written entries.
+
 ## Update Process
 
 1. Update local folder `INDEX.md`.

@@ -3533,11 +3533,11 @@
 
 ## 2026-03-25 (Issue #427 HTTP Feature Decomposition)
 
-- Extracted the run transport slice from [`internal/server/http.go`](/Users/dennisonbertram/.codex/worktrees/ade2/go-agent-harness/.codex-worktrees/issue-427-http-feature-decomposition/go-agent-harness/internal/server/http.go) into [`internal/server/http_runs.go`](/Users/dennisonbertram/.codex/worktrees/ade2/go-agent-harness/.codex-worktrees/issue-427-http-feature-decomposition/go-agent-harness/internal/server/http_runs.go):
+- Extracted the run transport slice from [`internal/server/http.go`](../../internal/server/http.go) into [`internal/server/http_runs.go`](../../internal/server/http_runs.go):
   - route registration helper for `/v1/runs`
   - run collection dispatch and run-by-id dispatch
   - run creation/listing, run SSE/events, approval, input, continuation, context, compaction, and cancellation transport handlers
-- Extracted the conversation transport slice from [`internal/server/http.go`](/Users/dennisonbertram/.codex/worktrees/ade2/go-agent-harness/.codex-worktrees/issue-427-http-feature-decomposition/go-agent-harness/internal/server/http.go) into [`internal/server/http_conversations.go`](/Users/dennisonbertram/.codex/worktrees/ade2/go-agent-harness/.codex-worktrees/issue-427-http-feature-decomposition/go-agent-harness/internal/server/http_conversations.go):
+- Extracted the conversation transport slice from [`internal/server/http.go`](../../internal/server/http.go) into [`internal/server/http_conversations.go`](../../internal/server/http_conversations.go):
   - route registration helper for `/v1/conversations/`
   - conversation dispatch, search/export/compact/cleanup handlers
   - list/delete conversation handlers
@@ -3642,22 +3642,22 @@
   - package verification: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness ./internal/server`
 ## 2026-03-25 (Issue #423 Runner Preflight Extraction)
 
-- Extracted the `Runner.execute()` setup path into a focused `runPreflight(...)` helper in [`internal/harness/runner.go`](/Users/dennisonbertram/.codex/worktrees/a321/go-agent-harness/internal/harness/runner.go):
+- Extracted the `Runner.execute()` setup path into a focused `runPreflight(...)` helper in [`internal/harness/runner.go`](../../internal/harness/runner.go):
   - profile-driven workspace isolation fallback
   - workspace provisioning and cleanup registration
   - workspace-path system-prompt re-resolution
   - provider/model setup and prompt events
   - conversation preloading and per-run MCP registry setup
-- Added direct seam-level regression coverage in [`internal/harness/runner_preflight_test.go`](/Users/dennisonbertram/.codex/worktrees/a321/go-agent-harness/internal/harness/runner_preflight_test.go) for:
+- Added direct seam-level regression coverage in [`internal/harness/runner_preflight_test.go`](../../internal/harness/runner_preflight_test.go) for:
   - profile isolation fallback when `workspace_type` is unset
   - `workspace.provision_failed` emission on provisioning errors
   - prompt re-resolution against the provisioned workspace path
   - per-run scoped MCP registry creation
 - Updated the plan/intent trail for the issue:
-  - [`docs/plans/2026-03-25-issue-423-runner-preflight-plan.md`](/Users/dennisonbertram/.codex/worktrees/a321/go-agent-harness/docs/plans/2026-03-25-issue-423-runner-preflight-plan.md)
-  - [`docs/plans/active-plan.md`](/Users/dennisonbertram/.codex/worktrees/a321/go-agent-harness/docs/plans/active-plan.md)
-  - [`docs/plans/INDEX.md`](/Users/dennisonbertram/.codex/worktrees/a321/go-agent-harness/docs/plans/INDEX.md)
-  - [`docs/logs/long-term-thinking-log.md`](/Users/dennisonbertram/.codex/worktrees/a321/go-agent-harness/docs/logs/long-term-thinking-log.md)
+  - [`docs/plans/2026-03-25-issue-423-runner-preflight-plan.md`](../../docs/plans/2026-03-25-issue-423-runner-preflight-plan.md)
+  - [`docs/plans/active-plan.md`](../../docs/plans/active-plan.md)
+  - [`docs/plans/INDEX.md`](../../docs/plans/INDEX.md)
+  - [`docs/logs/long-term-thinking-log.md`](../../docs/logs/long-term-thinking-log.md)
 - Verification:
   - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -run 'TestRunPreflight_' -count=1`
   - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -count=1`
@@ -5851,3 +5851,27 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   this (darwin) dev machine.
 - Regression: all seven functions now report 100.0% in
   `go tool cover -func`; no gate threshold or exclusion changed.
+# 2026-09-05 (Issue #1381 docs index and dead-link repair)
+
+- Cause: `docs/investigations/` (193 files) and `docs/implementation/` (40
+  files) had no `INDEX.md` despite AGENTS.md:56 requiring one; `docs/testing/`,
+  `docs/research/`, and `docs/plans/` indexes listed a small fraction of their
+  folders' files; `docs/plans/INDEX.md` linked a nonexistent
+  `.context/harness-reliability/tracker.md`; `docs/INDEX.md` omitted
+  `implementation/`, `investigations/`, `process/`, `ux-paths/`; three
+  investigation files and eight links in `docs/logs/engineering-log.md`
+  pointed at machine-specific `/Users/dennisonbertram/...` absolute paths.
+- Fix: added `scripts/generate-doc-index.sh` (25 lines) to mechanically list a
+  folder's files with each file's first Markdown heading as the title;
+  regenerated `docs/testing/INDEX.md`, `docs/research/INDEX.md`,
+  `docs/plans/INDEX.md`, and created `docs/investigations/INDEX.md` and
+  `docs/implementation/INDEX.md` with it; added the four missing folders to
+  `docs/INDEX.md`; rewrote the absolute-path links in the three investigation
+  files and this log's own entries to repo-relative links (all targets exist).
+  No historical prose content was rewritten and no files were archived or
+  deleted — archive candidates from the parent audit (#1369) are listed in the
+  PR body for the owner to accept or reject.
+- Regression: a `for`-loop link check resolves every `[text](path)` link in
+  the touched `INDEX.md` files, the three corrected investigation files, and
+  this log against `test -e` (758 links, 0 dead). This is documentation only:
+  no runtime, API, or test behavior changed.

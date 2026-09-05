@@ -11,3 +11,7 @@
 - `operations/INDEX.md`: Index for recurring operations and nightly agent execution docs.
 - `assets/INDEX.md`: Index for README, site, and documentation media assets.
 - `site/INDEX.md`: GitHub Pages landing page source for go-code.
+- `investigations/INDEX.md`: Index for dated investigation and debugging write-ups; historical record, not current operator guidance.
+- `implementation/INDEX.md`: Index for per-issue implementation notes recorded after code landed.
+- `process/`: Multi-agent swarm run logs under `process/swarms/`; historical, no index.
+- `ux-paths/`: UX path catalog and per-topic path-robustness write-ups (`ux-paths/catalog.md`, `ux-paths/discovery.md`, `ux-paths/topics/`); no index.
