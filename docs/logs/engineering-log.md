@@ -1,5 +1,32 @@
 # Engineering Log
 
+## 2026-09-05 — Issue #1372 workspace_path silently ignored
+
+- Cause: harnesscli (`resolveWorkspacePath`, defaulting to the CLI's cwd) and
+  the TUI both sent `workspace_path` on `POST /v1/runs`, but
+  `harness.RunRequest` had no such field and `handlePostRun` decoded without
+  `DisallowUnknownFields`, so the field was silently dropped. Every run's
+  file/shell tools operated under the daemon's own `HARNESS_WORKSPACE`
+  regardless of the caller's actual working directory, with no error surfaced.
+- Fix: added `RunRequest.WorkspacePath` (`workspace_path`), validated at
+  `StartRun` the same way `ExtraDirs` is (absolute path, must exist, must be a
+  directory — otherwise a synchronous 400). When set and no `WorkspaceType`
+  provisioning is requested, `runPreflight` routes the run through the same
+  per-run tool registry seam already used for provisioned workspaces
+  (`NewDefaultRegistryWithOptions(wsPath, rc.BaseRegistryOptions)`), and emits
+  `workspace.provisioned` with the explicit path. `completeRun` now records
+  the run's effective workspace root (`permissionWorkspaceRoot`) on the
+  conversation instead of unconditionally `WorkspaceBaseOptions.RepoPath`, so
+  `/conversations` and rewind reflect where the run actually operated.
+- Regression: `TestStartRun_WorkspacePathRootsToolsAndSandboxConfinement`
+  proves a write lands under the requested root and a write to an absolute
+  path outside it is refused by the sandbox; `TestPostRunWorkspacePathNonexistentReturns400`/
+  `TestPostRunWorkspacePathRelativeReturns400` prove the 400; and
+  `TestStartRun_WorkspaceTypeProvisioningTakesPrecedenceOverWorkspacePath`
+  proves explicit `WorkspaceType` provisioning still wins when both fields are
+  set. ACP and MCP `start_run` paths were checked and neither sends a
+  workspace field today; both still compile unchanged.
+
 ## 2026-08-08 — Issue #1285 attached lifecycle PTY (in implementation)
 
 - Planned boundary: ptyrunner will accept only the typed identity returned by
