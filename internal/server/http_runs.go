@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -926,12 +927,27 @@ func (s *Server) handleRunSummary(w http.ResponseWriter, r *http.Request, runID 
 		return
 	}
 	summary, err := s.runner.GetRunSummary(runID)
+	if err == nil {
+		writeJSON(w, http.StatusOK, summary)
+		return
+	}
+	if !errors.Is(err, harness.ErrRunNotFound) {
+		writeError(w, http.StatusConflict, "run_not_finished", err.Error())
+		return
+	}
+	// The runner has no live state for this run; fall back to the persistent
+	// store, mirroring handleGetRun.
+	summary, err = s.durableRunSummary(r.Context(), runID)
 	if err != nil {
-		if errors.Is(err, harness.ErrRunNotFound) {
+		if store.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
 			return
 		}
-		writeError(w, http.StatusConflict, "run_not_finished", err.Error())
+		if errors.Is(err, errDurableRunNotFinished) {
+			writeError(w, http.StatusConflict, "run_not_finished", err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
@@ -945,7 +961,10 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 
 	history, stream, cancel, err := s.runner.Subscribe(runID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
+		// The runner has no live state for this run (e.g. a daemon restart
+		// dropped it from memory, or it finished before this process started).
+		// Fall back to the persistent store, mirroring handleGetRun.
+		s.handleDurableRunEvents(w, r, runID)
 		return
 	}
 	defer cancel()
@@ -1032,6 +1051,188 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 			}
 			flusher.Flush()
 		}
+	}
+}
+
+// errDurableRunNotFinished mirrors harness.Runner.GetRunSummary's "run is
+// still running" error for the store-fallback path (issue #1375).
+var errDurableRunNotFinished = errors.New("run is still running")
+
+// handleDurableRunEvents serves GET /v1/runs/{id}/events for a run the
+// runner no longer holds in memory (e.g. after a daemon restart), replaying
+// its durable event history straight from the run store's per-run event log
+// (store.Store.GetEvents). Unlike the live path, the run is necessarily
+// terminal, so the stream always ends after replay -- there is no live tail
+// to wait for.
+func (s *Server) handleDurableRunEvents(w http.ResponseWriter, r *http.Request, runID string) {
+	if s.runStore == nil {
+		writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
+		return
+	}
+	if _, err := s.runStore.GetRun(r.Context(), runID); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
+		return
+	}
+
+	// Support Last-Event-ID reconnection the same way the live path does:
+	// resolve the opaque "<runID>:<seq>" cursor to its numeric sequence and
+	// only replay events after it. An unparseable or unrecognized cursor
+	// falls back to a full replay rather than guessing or dropping events.
+	afterSeq := -1
+	if lastID := r.Header.Get("Last-Event-ID"); lastID != "" {
+		if _, seq, err := harness.ParseEventID(lastID); err == nil && seq <= math.MaxInt64 {
+			afterSeq = int(seq)
+		}
+	}
+
+	storedEvents, err := s.runStore.GetEvents(r.Context(), runID, afterSeq)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "stream_unsupported", "response writer does not support streaming")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	for _, se := range storedEvents {
+		if err := writeSSE(w, storeEventToHarness(se)); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
+}
+
+// storeEventToHarness converts a persisted store.Event back into a
+// harness.Event for SSE replay, the same conversion Runner.conversationReplay
+// performs for durable conversation replay.
+func storeEventToHarness(se *store.Event) harness.Event {
+	payload := make(map[string]any)
+	if err := json.Unmarshal([]byte(se.Payload), &payload); err != nil {
+		payload = map[string]any{}
+	}
+	return harness.Event{
+		ID:        se.EventID,
+		RunID:     se.RunID,
+		Type:      harness.EventType(se.EventType),
+		Timestamp: se.Timestamp,
+		Payload:   payload,
+	}
+}
+
+// durableRunSummary computes a harness.RunSummary for a run the runner no
+// longer holds in memory, from the persisted run row and its durable event
+// log. It mirrors Runner.GetRunSummary's semantics (same status gate, same
+// step/tool-call scan) but reads usage and cost totals from the run's last
+// usage.delta event payload instead of an in-memory accumulator, since those
+// are the same cumulative totals the live accumulator would report.
+//
+// Returns a *store.NotFoundError (checked via store.IsNotFound) if the run
+// does not exist, or errDurableRunNotFinished if the stored run is not yet
+// completed or failed.
+func (s *Server) durableRunSummary(ctx context.Context, runID string) (harness.RunSummary, error) {
+	if s.runStore == nil {
+		return harness.RunSummary{}, &store.NotFoundError{ID: runID}
+	}
+	storeRun, err := s.runStore.GetRun(ctx, runID)
+	if err != nil {
+		return harness.RunSummary{}, err
+	}
+	status := harness.RunStatus(storeRun.Status)
+	if status != harness.RunStatusCompleted && status != harness.RunStatusFailed {
+		return harness.RunSummary{}, fmt.Errorf("%w: run %q is still %s", errDurableRunNotFinished, runID, status)
+	}
+	storedEvents, err := s.runStore.GetEvents(ctx, runID, -1)
+	if err != nil {
+		return harness.RunSummary{}, err
+	}
+	return durableRunSummaryFromEvents(runID, status, storeRun.Error, storedEvents), nil
+}
+
+// durableRunSummaryFromEvents scans a run's full durable event history to
+// build the same RunSummary shape Runner.GetRunSummary computes from its
+// in-memory event slice. Steps and tool calls come from replaying
+// llm.turn.requested/tool.call.started events; usage and cost totals come
+// from the *last* usage.delta event, whose payload already carries the
+// cumulative totals recordAccounting accumulated turn over turn.
+func durableRunSummaryFromEvents(runID string, status harness.RunStatus, runErr string, events []*store.Event) harness.RunSummary {
+	stepsTaken := 0
+	currentStep := 0
+	var toolCalls []harness.ToolCallSummary
+	var promptTokens, completionTokens int
+	var cachedPromptTokens int
+	var hasCachedPromptTokens bool
+	var totalCostUSD float64
+	var costStatus harness.CostStatus
+
+	for _, se := range events {
+		event := storeEventToHarness(se)
+		switch event.Type {
+		case harness.EventLLMTurnRequested:
+			if stepVal, ok := event.Payload["step"]; ok {
+				currentStep = intFromEventPayload(stepVal)
+			}
+			stepsTaken++
+		case harness.EventToolCallStarted:
+			name, _ := event.Payload["tool"].(string)
+			toolCalls = append(toolCalls, harness.ToolCallSummary{ToolName: name, Step: currentStep})
+		case harness.EventUsageDelta:
+			if usage, ok := event.Payload["cumulative_usage"].(map[string]any); ok {
+				promptTokens = intFromEventPayload(usage["prompt_tokens"])
+				completionTokens = intFromEventPayload(usage["completion_tokens"])
+				if cached, ok := usage["cached_prompt_tokens"]; ok {
+					cachedPromptTokens = intFromEventPayload(cached)
+					hasCachedPromptTokens = true
+				}
+			}
+			if cost, ok := event.Payload["cumulative_cost_usd"].(float64); ok {
+				totalCostUSD = cost
+			}
+			if cs, ok := event.Payload["cost_status"].(string); ok {
+				costStatus = harness.CostStatus(cs)
+			}
+		}
+	}
+
+	var cacheHitRate float64
+	if hasCachedPromptTokens && promptTokens > 0 {
+		cacheHitRate = float64(cachedPromptTokens) / float64(promptTokens)
+	}
+
+	summary := harness.RunSummary{
+		RunID:                 runID,
+		Status:                status,
+		StepsTaken:            stepsTaken,
+		TotalPromptTokens:     promptTokens,
+		TotalCompletionTokens: completionTokens,
+		TotalCostUSD:          totalCostUSD,
+		CostStatus:            costStatus,
+		ToolCalls:             toolCalls,
+		CacheHitRate:          cacheHitRate,
+		Error:                 runErr,
+	}
+	if summary.ToolCalls == nil {
+		summary.ToolCalls = []harness.ToolCallSummary{}
+	}
+	return summary
+}
+
+// intFromEventPayload reads an int out of a JSON-decoded event payload value,
+// which json.Unmarshal always produces as float64 for numbers.
+func intFromEventPayload(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	default:
+		return 0
 	}
 }
 
