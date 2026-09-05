@@ -383,8 +383,8 @@ func TestRewindThenNextRunDoesNotResurrectTruncatedMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RestoreRewindPoint: %v", err)
 	}
-	if restoreResult.MessagesTruncated != 2 {
-		t.Fatalf("MessagesTruncated = %d, want 2", restoreResult.MessagesTruncated)
+	if restoreResult.MessagesTruncated != 3 {
+		t.Fatalf("MessagesTruncated = %d, want 3 (run2's tool-call message, tool result, and final answer)", restoreResult.MessagesTruncated)
 	}
 	// This is the seam the HTTP handler calls after a successful restore.
 	// Omitting it reproduces the resurrection bug even though the store is

@@ -733,6 +733,14 @@ func (se *stepEngine) run() {
 			ToolCalls: append([]ToolCall(nil), result.ToolCalls...),
 			Reasoning: capturedReasoning,
 		})
+		// The conversation-wide index of the assistant message just appended.
+		// A rewind restore must delete this message and everything after it,
+		// not just its tool result: leaving it as the last persisted message
+		// dangles tool_calls with no tool-result response, which real
+		// providers reject on the next turn (issue #1370 follow-up). Every
+		// tool call in this turn -- including parallel calls sharing one
+		// assistant message -- captures the same index below.
+		assistantToolCallIndex := len(messages) - 1
 		r.stepSetMessages(runID, messages)
 		r.snapshotRecordMessage(runID, "assistant", result.Content)
 
@@ -1349,15 +1357,16 @@ func (se *stepEngine) run() {
 						if err := metaStore.EnsureConversationMeta(pe.toolCtx, meta.ConversationID, workspace, tenantID); err != nil {
 							r.emit(runID, EventToolCallCompleted, map[string]any{"call_id": pe.call.ID, "tool": pe.call.Name, "rewind_warning": err.Error()})
 						} else {
-							// MessageBoundary is the conversation-wide message count at
-							// this exact point: messages already holds every prior run's
-							// persisted history plus this run's user prompt and the
-							// assistant tool-call message that is about to execute, in
-							// the same order Runner.completeRun will persist them. That
-							// makes it the correct truncation boundary for a restore
-							// (issue #1370) -- unlike Step, which only counts tool calls
-							// within this run and is meaningless across runs.
-							point := RewindPoint{ID: fmt.Sprintf("%s-%d-%s", runID, step, pe.call.ID), ConversationID: meta.ConversationID, Step: step, Tool: pe.call.Name, MessageBoundary: len(messages)}
+							// MessageBoundary is the conversation-wide index of the
+							// assistant message carrying this tool call (assistantToolCallIndex,
+							// captured just above). A restore must delete that message
+							// and everything after it -- unlike Step, which only counts
+							// tool calls within this run and is meaningless across runs
+							// (issue #1370), and unlike len(messages), which would keep
+							// the assistant message dangling with no tool-result response
+							// (issue #1370 follow-up). Parallel tool calls issued in this
+							// same assistant turn all capture this same index.
+							point := RewindPoint{ID: fmt.Sprintf("%s-%d-%s", runID, step, pe.call.ID), ConversationID: meta.ConversationID, Step: step, Tool: pe.call.Name, MessageBoundary: assistantToolCallIndex}
 							if err := CaptureRewindPreImage(pe.toolCtx, rewind, point, workspace, pe.callArgs); err != nil {
 								r.emit(runID, EventToolCallCompleted, map[string]any{"call_id": pe.call.ID, "tool": pe.call.Name, "rewind_warning": err.Error()})
 							}
