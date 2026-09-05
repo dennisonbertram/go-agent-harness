@@ -275,3 +275,71 @@ func TestListRunsDecodesServerRunShape(t *testing.T) {
 		t.Errorf("run[1] = %+v, want RunID run_b and CostUSD 0", got[1])
 	}
 }
+
+func TestHarnessClient_SteerRun(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]string{"run_id": "run-42"})
+	}))
+	defer srv.Close()
+
+	if err := NewHarnessClient(srv.URL).SteerRun(context.Background(), "run-42", "please slow down"); err != nil {
+		t.Fatalf("SteerRun: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/v1/runs/run-42/steer" {
+		t.Errorf("request = %s %s, want POST /v1/runs/run-42/steer", gotMethod, gotPath)
+	}
+	if gotBody["prompt"] != "please slow down" {
+		t.Errorf("request body prompt = %q, want %q", gotBody["prompt"], "please slow down")
+	}
+}
+
+func TestHarnessClient_SteerRun_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "run not found"})
+	}))
+	defer srv.Close()
+
+	if err := NewHarnessClient(srv.URL).SteerRun(context.Background(), "missing-run", "hello"); err == nil {
+		t.Fatal("expected error for 404, got nil")
+	}
+}
+
+func TestHarnessClient_ListProviders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/providers" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"providers":[{"name":"openai","configured":true,"health":"ok","model_count":12}]}`))
+	}))
+	defer srv.Close()
+
+	got, err := NewHarnessClient(srv.URL).ListProviders(context.Background())
+	if err != nil {
+		t.Fatalf("ListProviders: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d providers, want 1", len(got))
+	}
+	if got[0].Name != "openai" || !got[0].Configured || got[0].Health != "ok" || got[0].ModelCount != 12 {
+		t.Errorf("provider = %+v, want name openai, configured true, health ok, model_count 12", got[0])
+	}
+}
+
+func TestHarnessClient_ListProviders_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "boom"})
+	}))
+	defer srv.Close()
+
+	if _, err := NewHarnessClient(srv.URL).ListProviders(context.Background()); err == nil {
+		t.Fatal("expected error for 500, got nil")
+	}
+}

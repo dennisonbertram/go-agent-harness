@@ -68,7 +68,10 @@ func TestRunReportsLiveInventoryGapFromManifest(t *testing.T) {
 		_, _ = w.Write([]byte(`{"tools":[{"name":"fixture","description":"fixture","tier":"core","owner":"test","condition":"fixture"}],"configured_unavailable_toolsets":[],"unavailable":[]}`))
 	}))
 	defer server.Close()
-	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "manifest.json")
 	provenancePath := filepath.Join(dir, "provenance.json")
 	commandPath := filepath.Join(dir, "harnessd")

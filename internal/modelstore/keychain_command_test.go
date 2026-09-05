@@ -174,3 +174,32 @@ func TestExecSecurityCommandWiresStreamsWithoutRunningSecurity(t *testing.T) {
 	command.SetStdout(&bytes.Buffer{})
 	command.SetStderr(&bytes.Buffer{})
 }
+
+// TestExecSecurityCommandRunExecutesTheUnderlyingProcess covers
+// execSecurityCommand.Run itself. On this dev machine (darwin) that method
+// happens to get exercised incidentally by a real, un-faked
+// ResolveCredential(keychain:...) call elsewhere in this package, because
+// KeychainAvailable() is true here — but on the Linux CI runner
+// KeychainAvailable() is false (runtime.GOOS != "darwin"), so every keychain
+// path short-circuits before newSecurityCommand ever runs a real process, and
+// Run itself never executes. That is why the nightly coverage gate reported
+// it as zero-coverage. This test builds an execSecurityCommand directly with
+// a harmless, portable binary instead of "security", bypassing the
+// KeychainAvailable gate so the adapter's Run method is exercised on every
+// platform the gate runs on.
+func TestExecSecurityCommandRunExecutesTheUnderlyingProcess(t *testing.T) {
+	var out bytes.Buffer
+	command := &execSecurityCommand{cmd: exec.Command("echo", "-n", "adapter-ran")}
+	command.SetStdout(&out)
+	if err := command.Run(); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if out.String() != "adapter-ran" {
+		t.Fatalf("Run() stdout = %q, want %q", out.String(), "adapter-ran")
+	}
+
+	failing := &execSecurityCommand{cmd: exec.Command("false")}
+	if err := failing.Run(); err == nil {
+		t.Fatal("Run() error = nil for a command that exits non-zero, want an error")
+	}
+}

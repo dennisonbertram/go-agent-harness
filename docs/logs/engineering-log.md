@@ -5817,3 +5817,37 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   Further regressions cover `Last-Event-ID` resumption against the durable
   replay (no repeated events) and the still-running status gate returning 409
   instead of a misleading 200 for a store-only run that has not finished.
+# 2026-09-05 (Issue #1377 macOS temp-dir canonicalization + nightly coverage-gate green)
+
+- Cause 1: `TestRunReportsLiveInventoryGapFromManifest` (cmd/acceptance-api-sse)
+  built its fixture `commandPath` from `t.TempDir()` without resolving
+  symlinks. On macOS `/tmp` is a symlink to `/private/tmp`, so
+  `validateProvenanceExecutable` (internal/acceptance/apisserunner/manifest.go)
+  rejected the path as non-canonical. Checked sibling tests in
+  `cmd/acceptance-*` and `internal/acceptance` for the same shape:
+  `apisserunner/runner_test.go` already resolves symlinks on its command path,
+  and `scheduledlifecycle` canonicalizes via `executableIdentity`, so only the
+  one test needed the fix.
+- Fix 1: canonicalize the temp dir with `filepath.EvalSymlinks` before joining
+  the fixture command path.
+- Cause 2: the nightly `test-regression` coverage gate
+  (`go run ./cmd/coveragegate -min-total=80.0`) was red on seven zero-coverage
+  functions, all real code with no test caller: `messagebubble/markdown.go:67
+  ResolveStyle` (only the unexported `resolveGlamourStyle` had a caller);
+  `nativegui/platform_other.go:12/15/18` (the `!darwin || !cgo` stub, which is
+  the compiled implementation on the Linux CI runner, had no test under its own
+  build tag); `harness_client.go:399/435 SteerRun`/`ListProviders` (simply
+  untested, unlike every sibling `HarnessClient` method); and
+  `credref.go:44 execSecurityCommand.Run` (only exercised incidentally on
+  darwin by a real, un-faked `ResolveCredential(keychain:...)` call, because
+  `KeychainAvailable()` is true there — on Linux CI it is false, so the real
+  adapter's `Run` never executes).
+- Fix 2: added one meaningful test per function rather than lowering the gate
+  or adding an exclusion. The `credref.go` fix constructs `execSecurityCommand`
+  directly with a portable binary (`echo`/`false`) instead of `"security"`, so
+  it is exercised independent of `KeychainAvailable()`/platform. The
+  `platform_other.go` fix mirrors the existing `platform_darwin_test.go`
+  pattern under the sibling build tag and was verified with `CGO_ENABLED=0` on
+  this (darwin) dev machine.
+- Regression: all seven functions now report 100.0% in
+  `go tool cover -func`; no gate threshold or exclusion changed.
