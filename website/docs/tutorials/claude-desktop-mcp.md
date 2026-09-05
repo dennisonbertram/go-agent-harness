@@ -8,10 +8,10 @@ import { Callout, Steps, Step, Tabs, TabsList, TabsTrigger, TabsContent, Card, C
 
 The `harness-mcp` proxy is a small binary that lets Claude Desktop talk to a running `harnessd` instance. Once registered, Claude Desktop can start agent runs, check their status, wait for completion, continue conversations, and list recent runs — all without leaving the chat interface.
 
-This tutorial walks you through the full setup: start `harnessd`, build the proxy, register it with Claude Desktop, and exercise all five tools.
+This tutorial walks you through the full setup: start `harnessd`, build the proxy, register it with Claude Desktop, and exercise a few of the proxy's 25 tools.
 
 <Callout variant="warning">
-Three separate MCP surfaces exist: the HTTP endpoint at `/mcp` (always available when harnessd runs in HTTP mode), the stdio server launched with `harnessd --mcp` (exposes the full harness tool catalog), and the `harness-mcp` proxy (five curated run-management tools over stdio). This tutorial uses the proxy path. See [Exposing harnessd as an MCP Server](/docs/server/expose-as-mcp-server) for a comparison of all three.
+Three separate MCP surfaces exist: the HTTP endpoint at `/mcp` (always available when harnessd runs in HTTP mode) and the `harness-mcp` proxy (this tutorial) share the same 25 run-management tools; the stdio server launched with `harnessd --mcp` is the one surface with a different tool set — it exposes the full in-process harness tool catalog instead. This tutorial uses the proxy path. See [Exposing harnessd as an MCP Server](/docs/server/expose-as-mcp-server) for a comparison of all three.
 </Callout>
 
 ---
@@ -25,7 +25,7 @@ Claude Desktop
 harness-mcp  ←─ bin you build in this tutorial
     │  (HTTP REST)
     ▼
-harnessd     ←─ daemon already listening on :8080
+harnessd     ←─ daemon already listening on 127.0.0.1:8080
 ```
 
 `harness-mcp` reads JSON-RPC 2.0 from stdin, translates each tool call into a REST request against `harnessd`, and writes the JSON-RPC response back to stdout. Claude Desktop launches the proxy as a subprocess; the proxy connects to `harnessd` at the URL given by the `HARNESS_ADDR` environment variable.
@@ -58,7 +58,7 @@ go build -o bin/harnessd ./cmd/harnessd
 OPENAI_API_KEY=sk-...  ./bin/harnessd
 ```
 
-`harnessd` logs `harness server listening on :8080` when it is ready.
+`harnessd` logs `harness server listening on 127.0.0.1:8080` when it is ready.
 
 </TabsContent>
 <TabsContent value="fake">
@@ -166,20 +166,20 @@ If it does not appear, check Claude Desktop's MCP log (usually accessible from t
 
 ## Step 3 — Use it
 
-With `harnessd` running and the proxy registered, Claude Desktop has access to five tools.
+With `harnessd` running and the proxy registered, Claude Desktop has access to all 25 `harness-mcp` tools (see [Exposing harnessd as an MCP Server](/docs/server/expose-as-mcp-server#the-25-tools) for the full list). The five most relevant to this tutorial:
 
 <Card>
 <CardHeader>
-<CardTitle>The 5 harness-mcp tools</CardTitle>
+<CardTitle>Core run-management tools</CardTitle>
 </CardHeader>
 <CardContent>
 
 | Tool | Required args | Optional args | What it does |
 |------|--------------|---------------|--------------|
 | `start_run` | `prompt` | `model`, `conversation_id`, `max_steps`, `max_cost_usd` | Submits a new agent run; returns `run_id` immediately |
-| `get_run_status` | `run_id` | — | Returns current status and any error; `messages` and `cost_usd` are always empty in this version — use `wait_for_run` or the REST API to get output |
-| `wait_for_run` | `run_id` | `timeout_seconds` (default 300) | Polls every 2 seconds until the run reaches a terminal state; returns status and any error; `messages` and `cost_usd` in the result are always empty in this version |
-| `continue_run` | `run_id`, `prompt` | — | Looks up the previous run's `conversation_id` and starts a new run in that conversation |
+| `get_run_status` | `run_id` | — | Returns current status, `output`, `cost_usd`, and any error. `messages` is always empty — `GET /v1/runs/{id}` does not return a message list; use `tail_run_events` or the conversation-export REST route for full transcripts. |
+| `wait_for_run` | `run_id` | `timeout_seconds` (default 300) | Polls every 2 seconds until the run reaches a terminal state; same fields as `get_run_status` |
+| `continue_run` | `run_id`, `prompt` | — | Looks up the previous run's `conversation_id` and starts a new run in that conversation. **Requires the referenced run's status to be `completed`** — returns an error otherwise. |
 | `list_runs` | — | `conversation_id`, `limit` (default 20) | Lists recent runs, optionally filtered by conversation. **Requires `HARNESS_RUN_DB` to be set** — returns an error if run persistence is not configured. |
 
 </CardContent>

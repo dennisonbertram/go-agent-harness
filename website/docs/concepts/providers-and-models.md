@@ -63,7 +63,7 @@ The `api` field controls which HTTP endpoint is used: `"responses"` routes the c
 
 ## Supported providers
 
-go-code ships with ten providers pre-wired in the catalog. The table shows the provider key you use in API calls, the required API key environment variable, and the wire protocol.
+go-code ships with 15 providers pre-wired in the catalog. The table shows the provider key you use in API calls, the required API key environment variable, and the wire protocol.
 
 <Callout variant="info">
 The `anthropic` provider uses a native Anthropic client (`internal/provider/anthropic`). All other providers use an OpenAI-compatible client (`internal/provider/openai`), even when the underlying API is not from OpenAI.
@@ -75,12 +75,17 @@ The `anthropic` provider uses a native Anthropic client (`internal/provider/anth
 | `anthropic` | Anthropic | `ANTHROPIC_API_KEY` | `anthropic` |
 | `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` | `openai_compat` |
 | `groq` | Groq | `GROQ_API_KEY` | `openai_compat` |
+| `cerebras` | Cerebras | `CEREBRAS_API_KEY` | `openai_compat` |
 | `xai` | xAI (Grok) | `XAI_API_KEY` | `openai_compat` |
 | `kimi` | Kimi (Moonshot) | `MOONSHOT_API_KEY` | `openai_compat` |
+| `kimi-subscription` | Kimi Code Subscription | (vendor-CLI session import) | `openai_compat` |
 | `qwen` | Qwen (DashScope) | `DASHSCOPE_API_KEY` | `openai_compat` |
 | `together` | Together AI | `TOGETHER_API_KEY` | `openai_compat` |
+| `codex-subscription` | Codex (ChatGPT subscription) | (vendor-CLI session import) | `openai_compat` |
 | `openrouter` | OpenRouter | `OPENROUTER_API_KEY` | `openai_compat` |
 | `gemini` | Google Gemini | `GOOGLE_API_KEY` | `openai` |
+| `ollama` | Ollama | (none — local server) | `openai_compat` |
+| `lmstudio` | LM Studio | (none — local server) | `openai_compat` |
 
 A provider is considered "configured" when its API key environment variable is set. You can check which providers are configured at runtime:
 
@@ -267,9 +272,9 @@ Each `POST /v1/runs` call resolves a provider independently, letting different r
 
 Aliases let you use short names like `"codex"` instead of `"gpt-5.1-codex-mini"`. Each provider in the catalog can define an `aliases` map. The resolver follows chains up to 8 hops to prevent cycles.
 
-### OpenRouter dynamic discovery
+### Live model discovery
 
-OpenRouter can serve thousands of models not listed in the static catalog. When `OPENROUTER_API_KEY` is set, the harness fetches `https://openrouter.ai/api/v1/models` with a 5-minute TTL cache. Live results are merged additively with the static catalog — static metadata wins on conflicts.
+Live discovery is provider-agnostic, not OpenRouter-only: OpenRouter, OpenAI, Anthropic, and DeepSeek entries all refresh from the provider's own models endpoint on a 5-minute TTL (`internal/provider/openai/discovery.go:24`, `internal/provider/anthropic/discovery.go:24`). When the matching API key is set, the harness fetches the live list (for OpenRouter: `https://openrouter.ai/api/v1/models`) and merges it additively with the static catalog — static metadata wins on ID conflicts. A failed refresh never removes static models; the last successful result is served stale.
 
 As a convenience, any model ID containing `/` is automatically routed to the `openrouter` provider if the key is configured. This means you can pass `"openai/gpt-4.1"` directly in `model` without setting `provider_name`, and go-code will route it to OpenRouter.
 

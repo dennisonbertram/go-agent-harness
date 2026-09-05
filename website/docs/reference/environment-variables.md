@@ -25,8 +25,8 @@ These variables cover the fundamental harness runtime: address, model, cost limi
 | Variable | TOML equivalent | Default | Description |
 |---|---|---|---|
 | `HARNESS_MODEL` | `model` | `"gpt-4.1-mini"` | Default LLM model identifier for every run. Any model ID or alias from the catalog is valid. |
-| `HARNESS_ADDR` | `addr` | `":8080"` | TCP listen address for the HTTP server (socket form, e.g. `":9090"`, not a URL). |
-| `HARNESS_MAX_STEPS` | `max_steps` | `0` (unlimited) | Max tool-calling steps per run. `0` means no limit; set an explicit positive value to cap it. |
+| `HARNESS_ADDR` | `addr` | `"127.0.0.1:8080"` | TCP listen address for the HTTP server (socket form, e.g. `":9090"`, not a URL). A non-loopback bind is refused at startup unless authentication is configured or `HARNESS_AUTH_DISABLED=true` is set deliberately. |
+| `HARNESS_MAX_STEPS` | `max_steps` | `0` (unlimited) | Max tool-calling steps per run. `0` means unlimited — there is no default step cap. |
 | `HARNESS_MAX_COST_PER_RUN_USD` | `cost.max_per_run_usd` | `0.0` (unlimited) | Per-run cost ceiling in USD. `0` means no limit. |
 | `HARNESS_WORKSPACE` | — | `"."` | Workspace root directory. Determines where project TOML config and database files are found. |
 | `HARNESS_SYSTEM_PROMPT` | — | Built-in coding assistant prompt | Override the default system prompt text for all runs. |
@@ -37,8 +37,8 @@ These variables cover the fundamental harness runtime: address, model, cost limi
 | `HARNESS_SSE_KEEPALIVE_SECONDS` | — | `15` | Interval between SSE keepalive pings on event streams. |
 | `HARNESS_AUTH_DISABLED` | — | — | Set to `"true"` to disable Bearer token authentication entirely. Implied when `HARNESS_RUN_DB` is not set (no key store exists). |
 
-<Callout type="warning">
-`HARNESS_MAX_STEPS=0` in a TOML file means "unlimited." However, if the env var is absent and the resolved config value is 0, `harnessd` resets it to 8 as a backward-compatible default. To truly remove the step limit at runtime, set `HARNESS_MAX_STEPS=0` explicitly in the environment.
+<Callout type="info">
+`HARNESS_MAX_STEPS=0` (the default) means "unlimited" — there is no daemon-level fallback that raises it to a non-zero cap. Set an explicit positive value to cap tool-calling steps per run.
 </Callout>
 
 ### Fake provider (key-free testing)
@@ -60,14 +60,19 @@ Each provider in the model catalog declares an `api_key_env` field. The table be
 | `anthropic` | `ANTHROPIC_API_KEY` | `https://api.anthropic.com/v1` |
 | `deepseek` | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` |
 | `groq` | `GROQ_API_KEY` | `https://api.groq.com/openai/v1` |
+| `cerebras` | `CEREBRAS_API_KEY` | `https://api.cerebras.ai/v1` |
 | `xai` | `XAI_API_KEY` | `https://api.x.ai/v1` |
 | `kimi` | `MOONSHOT_API_KEY` | `https://api.moonshot.ai/v1` |
+| `kimi-subscription` | (none — vendor-CLI session import) | `https://api.kimi.com/coding/v1` |
 | `qwen` | `DASHSCOPE_API_KEY` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
 | `together` | `TOGETHER_API_KEY` | `https://api.together.xyz/v1` |
+| `codex-subscription` | (none — vendor-CLI session import) | `https://chatgpt.com/backend-api/codex` |
 | `openrouter` | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` |
 | `gemini` | `GOOGLE_API_KEY` | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| `ollama` | (none — local server) | `http://localhost:11434/v1` |
+| `lmstudio` | (none — local server) | `http://localhost:1234/v1` |
 
-Only one key is required at startup: whichever matches the default model. Additional keys are loaded on demand when a run requests a different provider.
+That is 15 providers total (`catalog/models.json`). Only one key is required at startup: whichever matches the default model. Additional keys are loaded on demand when a run requests a different provider. `kimi-subscription` and `codex-subscription` authenticate via `harnesscli auth kimi login` / `auth codex login` (imported vendor-CLI credentials) instead of an API key env var — see [harnesscli Reference](/docs/cli/harnesscli#auth-kimi).
 
 `OPENAI_API_KEY` also serves as the legacy bootstrap path: if no catalog-matched provider is configured, `harnessd` falls back to a bare OpenAI client if this variable is set.
 
@@ -83,6 +88,21 @@ Only one key is required at startup: whichever matches the default model. Additi
 |---|---|---|
 | `HARNESS_OPENROUTER_REFERER` | `"https://github.com/dennisonbertram/go-agent-harness"` | Value sent as the HTTP `Referer` header on OpenRouter requests. |
 | `HARNESS_OPENROUTER_TITLE` | `"go-agent-harness"` | Value sent as the `X-Title` header on OpenRouter requests. |
+
+### Retry, process lifecycle, and misc
+
+| Variable | Default | Description |
+|---|---|---|
+| `HARNESS_RETRY_MAX_ATTEMPTS` | `3` | Maximum provider-call retry attempts (`internal/provider/retry.go:41-44`). Useful against providers with aggressive rate limiting, e.g. free tiers. |
+| `HARNESS_RETRY_MAX_TOTAL_SEC` | `60` | Maximum total time (seconds) spent retrying a single provider call (`internal/provider/retry.go:46-49`). |
+| `HARNESS_LISTEN_FD` | — | File descriptor number to adopt as the HTTP listener instead of binding a new socket. Used for zero-downtime restart handoff (`cmd/harnessd/main.go:1116`). |
+| `HARNESS_EXIT_WITH_PARENT` | `false` | When `true`, `harnessd` watches its parent process and exits when the parent exits (`cmd/harnessd/parent_watchdog.go:76-85`). |
+| `HARNESS_MODEL_STORE_PATH` | `modelstore.DefaultPath()` | Override the file path for the model-settings store (`cmd/harnessd/model_settings.go:104-107`). |
+| `HARNESS_PROVIDER_CATALOG_DIR` | Auto-detected | Override the directory containing per-provider catalog JSON files (`cmd/harnessd/bootstrap_helpers.go:733`). |
+| `HARNESS_COLOR_PROFILE` | `"auto"` | TUI color profile override: `truecolor`, `256`, `ansi`, or `none` (`cmd/harnesscli/main.go:526-528`). |
+| `HARNESS_CRON_API_KEY` | — | API key `harnessd`'s embedded cron dispatch uses when calling back into itself (`cmd/harnessd/main.go:550`). |
+| `HARNESS_SOURCE_ROOT` | Auto-detected | Override the repository root the Go workflow engine resolves source files against (`internal/workflow/source.go:862`). |
+| `HARNESS_BENCHMARK_CMD` | `./scripts/test-regression.sh` | Override the regression command run by the training/scoring loop (`internal/training/regression.go:145`). |
 
 ---
 
@@ -272,6 +292,12 @@ The conclusion watcher detects when the agent jumps to a conclusion prematurely.
 | `CRONSD_ADDR` | `":9090"` | TCP listen address for `cronsd`. |
 | `CRONSD_DB_PATH` | `~/.go-harness/cronsd.db` | SQLite database file path. |
 | `CRONSD_MAX_CONCURRENT` | `5` | Maximum number of job executions that may run simultaneously. |
+| `CRONSD_INGRESS_API_KEY` | — | API key required on inbound requests to `cronsd` itself. |
+| `CRONSD_INGRESS_TENANT_ID` | — | Tenant ID associated with `CRONSD_INGRESS_API_KEY`. |
+| `CRONSD_HARNESS_URL` | — | Base URL of the `harnessd` instance `cronsd` dispatches jobs to. |
+| `CRONSD_HARNESS_API_KEY` | — | API key `cronsd` uses when calling `harnessd`. Must differ from `CRONSD_INGRESS_API_KEY`. |
+| `CRONSD_HARNESS_CONNECT_TIMEOUT` | `5s` | Connect timeout for `cronsd` → `harnessd` requests. |
+| `CRONSD_HARNESS_REQUEST_TIMEOUT` | `15s` | Overall request timeout for `cronsd` → `harnessd` requests. |
 
 `cronctl` (the CLI client for `cronsd`) reads one variable:
 

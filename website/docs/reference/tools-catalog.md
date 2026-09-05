@@ -166,6 +166,8 @@ Registered when `EnableCron && CronClient != nil`.
 | `cron_create` | Create a recurring job. Required: `name`, `schedule` (5-field UTC cron), and explicit `execution_type` (`shell` or `harness`). `shell` requires a non-empty `command` for headless execution and records command output in history; `harness` requires a non-empty `prompt`, rejects `command`, and starts an assistant continuation in the creating conversation. `timeout_seconds` defaults to 30. |
 | `cron_list` | List all cron jobs. |
 | `cron_get` | Get a job and its 5 most recent executions by ID. |
+| `cron_update` | Update an existing job's schedule, command, prompt, execution config, timeout, or tags. Requires at least one field to change; use `cron_pause`/`cron_resume` to change status instead. |
+| `cron_history` | List a job's execution history by job ID (names are not accepted). Params: `id` (required), `limit`, `offset`. |
 | `cron_delete` | Delete a cron job (soft-delete). |
 | `cron_pause` | Pause a job (sets `status=paused`). |
 | `cron_resume` | Resume a paused job (sets `status=active`). |
@@ -187,6 +189,7 @@ Registered when `EnableAgent && AgentRunner != nil`.
 | `agent` | Inline sub-agent call via `AgentRunner.RunPrompt`. |
 | `spawn_agent` | Spawn a recursive child agent. Max fork depth: 5 (`DefaultMaxForkDepth`). |
 | `task_complete` | Used by child agents to return a result to their parent. Not available at depth 0. |
+| `agent_swarm` | Fan out a prompt to multiple sub-agents in parallel and collect their results (`internal/harness/tools/swarm.go:9`). |
 
 Registered when `SubagentManager != nil`.
 
@@ -197,6 +200,8 @@ Registered when `SubagentManager != nil`.
 | `get_subagent` | Poll subagent status by ID. |
 | `wait_subagent` | Block until a subagent completes. |
 | `cancel_subagent` | Cancel a running subagent. |
+| `message_subagent` | Send a follow-up message to a running subagent by resolving its subagent ID to a run ID, then steering that run. Params: `id`, `message`. |
+| `notify_parent` | Send a message back to the parent agent that spawned this run. Fails if this run has no recorded parent (was not spawned as a subagent). Params: `message`. |
 
 ### MCP integration
 
@@ -241,6 +246,28 @@ Most profile tools are always registered; `create_profile`, `update_profile`, an
 | `run_workflow` | `WorkflowService != nil` | Run a named workflow. Params: `name`, `args`, `wait`, `timeout_seconds`, `resume_run_id`. |
 | `run_recipe` | `RecipesDir != ""` | Execute a multi-step recipe from a YAML file. |
 | `create_prompt_extension` | always registered | Create a behavior or talent prompt extension. |
+
+### Model catalog
+
+| Tool | What it does |
+|------|--------------|
+| `list_models` | List, filter, and inspect available LLM models from the provider catalog. Params: `action` (`list`/`info`/`providers`), `provider`, `model_id`, `tool_calling`, `streaming`, `speed_tier`, `cost_tier`, `modality`, `best_for`, `strength`, `min_context`, `reasoning`. |
+
+### Deployment
+
+Always registered; the built-in adapter registry supports `railway` and `flyio`.
+
+| Tool | What it does |
+|------|--------------|
+| `deploy` | Deploy to, check status of, view logs for, or auto-detect a cloud platform (`railway`, `flyio`). Params: `platform` (auto-detected if omitted), `action` (`deploy`/`status`/`logs`/`detect`), `workspace`. |
+
+### Goals
+
+Registered when a goals manager is configured (`internal/goals`).
+
+| Tool | What it does |
+|------|--------------|
+| `goals` | Manage persistent, multi-session goals with dependency chains and progress tracking. Actions: `create` (with optional `depends_on`), `get`, `update` (status/progress/metadata), `list` (with status filter), `ready` (goals whose dependencies are all completed). Goals survive restarts and support verification criteria for definition-of-done enforcement. |
 
 ---
 
@@ -303,7 +330,7 @@ Tool groups are gated by flags and runtime dependencies. A group is silently abs
 
 | Tool group | Count | Enabling condition | Source |
 |------------|-------|--------------------|--------|
-| Cron tools | 6 | `EnableCron && CronClient != nil` | `catalog.go:86`, `tools_default.go:273` |
+| Cron tools | 8 | `EnableCron && CronClient != nil` | `catalog.go:86`, `tools_default.go:273` |
 | Callback tools | 3 | `EnableCallbacks && CallbackManager != nil` | `catalog.go:97`, `tools_default.go:283` |
 | LSP tools | 3 | `EnableLSP` (not in default registry) | `catalog.go:57` |
 | Sourcegraph | 1 | `Sourcegraph.Endpoint != ""` | `catalog.go:60` |
@@ -312,8 +339,12 @@ Tool groups are gated by flags and runtime dependencies. A group is silently abs
 | Web ops | 3 | `EnableAgent && EnableWebOps && WebFetcher != nil` | `catalog.go:82` |
 | Recipes | 1 | `RecipesDir != ""` | `tools_default.go:298` |
 | Agent tools (`agent`, `spawn_agent`, `task_complete`) | 3 | `EnableAgent && AgentRunner != nil` | `tools_default.go:256` |
-| Subagent tools (`run_agent`, `start/get/wait/cancel_subagent`) | 5 | `SubagentManager != nil` | `tools_default.go:344` |
+| `agent_swarm` | 1 | `AgentSwarmRunner != nil` | `tools_default.go:549` |
+| Subagent tools (`run_agent`, `start/get/wait/cancel_subagent`, `message_subagent`, `notify_parent`) | 7 | `SubagentManager != nil` (plus `RunSteerer != nil` for `message_subagent`/`notify_parent`) | `tools_default.go:535-558` |
 | Workflow tools | 2 | `WorkflowService != nil` | `tools_default.go:331` |
+| `list_models` | 1 | `ModelCatalog != nil` | `tools_default.go:461-463` |
+| `deploy` | 1 | always registered | `tools_default.go:601` |
+| `goals` | 1 | `GoalManager != nil` | `tools_default.go:604-609` |
 
 ### Recipes vs workflows vs skills — what's the difference?
 

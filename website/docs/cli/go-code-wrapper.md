@@ -134,8 +134,8 @@ go-code "summarize the diff"
 case $? in
   0) echo "run completed" ;;
   2) echo "run failed" ;;
-  3) echo "run blocked on input — resume interactively" ;;
-  6) echo "run cancelled — resumable via go-code continue <run-id> ..." ;;
+  3) echo "run blocked on input — answer with harnesscli input <run-id> \"<q>=<a>\", or resume interactively with go-code --resume <run-id>" ;;
+  6) echo "run cancelled — not resumable; harnesscli continue requires status=completed. Start a new run instead." ;;
 esac
 ```
 
@@ -154,6 +154,7 @@ The full code table (`0` completed, `1` client error, `2` failed, `3` blocked, `
 | `go-code` | `--tui` | Launches the interactive BubbleTea TUI |
 | `go-code "prompt"` | `-prompt "..."` | Runs a single prompt, streams events, exits |
 | `go-code --server` | (server lifecycle only) | Starts `harnessd` in background and exits |
+| `go-code --resume <run-id>` | `--tui -resume <run-id>` | Launches the TUI resuming an existing conversation |
 | `go-code runs` | `list` | Lists known runs |
 | `go-code list` | `list` | Alias for `runs` |
 | `go-code show <id>` | `status` | Shows one run |
@@ -170,7 +171,7 @@ The full code table (`0` completed, `1` client error, `2` failed, `3` blocked, `
 
 ### Server address: `HARNESS_ADDR`
 
-The `HARNESS_ADDR` environment variable controls the listen address. The default is `:8080`. The wrapper extracts the port from this value and constructs the base URL as `http://127.0.0.1:<port>`.
+The `HARNESS_ADDR` environment variable controls the listen address. The default is `127.0.0.1:8080`. The wrapper extracts the port from this value and constructs the base URL as `http://127.0.0.1:<port>`.
 
 ```bash
 # Run on a different port

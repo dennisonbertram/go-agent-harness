@@ -30,7 +30,7 @@ Key properties:
 - **Written in Go.** One static binary, no language runtime to install, and goroutine-based concurrency underneath the orchestration. It cross-compiles and drops into a tiny container image.
 - **Built for parallelism.** A workflow engine fans agents out with `ctx.Parallel()` and `ctx.Pipeline()` (bounded by a concurrency semaphore); isolated git worktrees let many agents work one repository at once with no checkout conflicts; warm workspace pools, containers, and VMs extend that across machines, with a relay control plane for multi-location routing in progress.
 - **Local-first.** `harnessd` runs on your laptop, pointed at your working directory. No repository upload, no remote execution required. Cloud and relay features exist but are optional additions on top of this local core.
-- **Provider-aware routing.** A JSON catalog (`catalog/models.json`) describes 10 providers — `openai`, `anthropic`, `gemini`, `deepseek`, `groq`, `xai`, `kimi`, `qwen`, `together`, `openrouter` — with per-provider API keys, pricing, and capability flags. go-code routes to whichever provider and model you configure, with an optional per-run cost ceiling (`HARNESS_MAX_COST_PER_RUN_USD`).
+- **Provider-aware routing.** A JSON catalog (`catalog/models.json`) describes 15 providers — `openai`, `anthropic`, `gemini`, `deepseek`, `groq`, `cerebras`, `xai`, `kimi`, `kimi-subscription`, `qwen`, `together`, `codex-subscription`, `openrouter`, `ollama`, `lmstudio` — with per-provider API keys, pricing, and capability flags. go-code routes to whichever provider and model you configure, with an optional per-run cost ceiling (`HARNESS_MAX_COST_PER_RUN_USD`).
 - **Streamed everything.** Every event — LLM token deltas, tool calls, cost accounting, workspace provisioning — is emitted on an SSE stream at `GET /v1/runs/{id}/events`. The TUI and CLI consume the same stream that your own scripts can consume.
 - **Key-free smoke path.** Set `HARNESS_PROVIDER=fake` to run the full stack without any API key. This is how CI tests and new contributor smoke checks work.
 
@@ -168,7 +168,7 @@ Registered workflows are exposed at `POST /v1/script-workflows/{name}/runs` and 
 
 go-code uses a 6-layer configuration cascade (lowest to highest priority):
 
-1. Built-in defaults (`harnessd` default model: `gpt-4.1-mini`, listen address: `:8080`)
+1. Built-in defaults (`harnessd` default model: `gpt-4.1-mini`, listen address: `127.0.0.1:8080`)
 2. User global config: `~/.harness/config.toml`
 3. Project config: `.harness/config.toml` in the workspace root
 4. Named profile: `~/.harness/profiles/<name>.toml` (via `harnessd --profile <name>`)
@@ -179,9 +179,9 @@ The most useful environment variables to know up front:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `HARNESS_ADDR` | `:8080` | Server listen address |
+| `HARNESS_ADDR` | `127.0.0.1:8080` | Server listen address |
 | `HARNESS_MODEL` | `gpt-4.1-mini` | Default LLM model |
-| `HARNESS_MAX_STEPS` | `8` | Max tool-call steps per run |
+| `HARNESS_MAX_STEPS` | `0` (unlimited) | Max tool-call steps per run |
 | `HARNESS_MAX_COST_PER_RUN_USD` | `0` (unlimited) | Per-run cost ceiling in USD |
 | `HARNESS_PROVIDER` | (catalog) | Set to `fake` for key-free smoke testing |
 | `HARNESS_WORKSPACE` | `.` | Workspace root for the agent |

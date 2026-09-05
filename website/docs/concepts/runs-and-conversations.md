@@ -49,7 +49,7 @@ A run moves through a well-defined set of statuses over its lifetime:
 | `completed` | Finished successfully. `run.completed` is emitted and the stream closes. |
 | `failed` | Finished with an error. `run.failed` is emitted and the stream closes. |
 | `cancelled` | Stopped by a `POST /v1/runs/{id}/cancel` call. `run.cancelled` is emitted and the stream closes. |
-| `waiting_for_user` | Paused on an interactive question (`AskUserQuestion` tool). Resumes when answers are submitted. |
+| `waiting_for_user` | Paused on an interactive question (`AskUserQuestion` tool). Resumes when answers are submitted via `POST /v1/runs/{id}/input` (or `harnesscli input <run-id> "<question>=<answer>"`). |
 | `waiting_for_approval` | Paused on a tool call that requires explicit operator approval. Resumes when approved or denied. |
 
 The three **terminal events** — `run.completed`, `run.failed`, and `run.cancelled` — signal the definitive end of the run. When your SSE client receives any of these, it should close the connection.

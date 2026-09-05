@@ -6,7 +6,7 @@ sidebar_position: 2
 
 import { Callout, Tabs, TabsList, TabsTrigger, TabsContent, Card, CardHeader, CardTitle, CardContent } from '@site/src/components/ui';
 
-`harnessd` exposes a REST + Server-Sent Events (SSE) API over a single TCP port (default `:8080`). Every agent run, subagent, scheduled job, script workflow, and relay worker is reachable through this surface. This page covers the primary public route inventory — method, scope, request/response shape, and notes on when a route requires an optional server component. Note: the definition-based workflow routes (`/v1/workflows*`, `/v1/workflow-runs/*`) are registered but not yet fully documented here.
+`harnessd` exposes a REST + Server-Sent Events (SSE) API over a single TCP port (default `127.0.0.1:8080`). Every agent run, subagent, scheduled job, script workflow, and relay worker is reachable through this surface. This page covers the primary public route inventory — method, scope, request/response shape, and notes on when a route requires an optional server component. Note: the definition-based workflow routes (`/v1/workflows*`, `/v1/workflow-runs/*`) are registered but not yet fully documented here.
 
 **Key terms used throughout this page:**
 
@@ -46,6 +46,16 @@ All routes (except `/healthz` and the webhook routes) pass through `authMiddlewa
 
 ---
 
+## Operational
+
+| Method | Path | Scope | Notes |
+|--------|------|-------|-------|
+| `GET` | `/v1/hooks` | `runs:read` | Startup-computed listing of loaded config-driven lifecycle hooks (name, event, kind, source, matcher) and skipped hook files with the skip reason. Read-only — trust is managed offline with `harnesscli hooks trust\|revoke\|list`. |
+| `POST` | `/v1/config/reload` | `admin` | Reload daemon config from disk. 501 when config reload is not enabled on this server. |
+| `GET` | `/viz`, `/viz/` | `runs:read` | Embedded read-only session visualizer shell (static assets). `/viz` redirects to `/viz/` only after auth and scope checks pass. |
+
+---
+
 ## Runs and Conversations
 
 Runs are the core unit of execution in `harnessd`. A run accepts a prompt, invokes an LLM agent with a set of tools, streams back events, and reaches a terminal state.
@@ -69,16 +79,17 @@ Runs are the core unit of execution in `harnessd`. A run accepts a prompt, invok
 | `GET` | `/v1/runs/{id}/events` | `runs:read` | **SSE stream.** Supports `Last-Event-ID` reconnection. Terminal events close the stream. |
 | `GET` | `/v1/runs/{id}/summary` | `runs:read` | Post-run telemetry: steps, tokens, cost, tool calls, cache hit rate. |
 | `GET` | `/v1/runs/{id}/context` | `runs:read` | Context window status for an active run. |
-| `GET` | `/v1/runs/{id}/input` | `runs:read` | Get a pending `ask_user_question` request. |
+| `GET` | `/v1/runs/{id}/input` | `runs:read` | Get a pending `AskUserQuestion` request. |
 | `POST` | `/v1/runs/{id}/input` | `runs:write` | Submit answers. Body: `{"answers": {"q_id": "answer"}}`. Returns HTTP 202. |
 | `GET` | `/v1/runs/{id}/todos` | `runs:read` | Get the todo list for the run. |
 | `PUT` | `/v1/runs/{id}/todos` | `runs:write` | Replace the todo list. Body: `{"todos": [...]}`. |
-| `POST` | `/v1/runs/{id}/continue` | `runs:write` | Start a new run in the same conversation. Body: `{"prompt":"…","allowed_tools":[],"permissions":{}}`. Returns HTTP 202. |
+| `POST` | `/v1/runs/{id}/continue` | `runs:write` | Start a new run in the same conversation. Body: `{"prompt":"…","allowed_tools":[],"permissions":{}}`. Returns HTTP 202. **Requires the source run's status to be `completed`; returns HTTP 409 `run_not_completed` otherwise** (`internal/harness/runner.go:2217`, `internal/server/http_runs.go:817`). A cancelled run cannot be continued. |
 | `POST` | `/v1/runs/{id}/steer` | `runs:write` | Inject a steering message into an active run. Body: `{"prompt":"…"}`. Returns HTTP 202 `{"status":"accepted"}`. |
 | `POST` | `/v1/runs/{id}/compact` | `runs:write` | Trigger in-memory context compaction. Body: `{"mode":…,"keep_last":N}`. Returns `{"ok":true,"messages_removed":N}`. |
 | `POST` | `/v1/runs/{id}/cancel` | `runs:write` | Request cooperative cancellation. Returns `{"status":"cancelling"}`. |
 | `POST` | `/v1/runs/{id}/approve` | `runs:write` | Approve a pending tool call (requires `ApprovalBroker`). Returns `{"status":"approved"}`. |
 | `POST` | `/v1/runs/{id}/deny` | `runs:write` | Deny a pending tool call. Returns `{"status":"denied"}`. |
+| `POST` | `/v1/runs/{id}/replay` | `runs:write` | Re-execute a completed durable run in its original conversation. Distinct from `POST /v1/runs/replay` below — this takes a durable run ID, not a filesystem path. |
 | `POST` | `/v1/runs/replay` | `runs:write` | Replay a recorded rollout. Body fields: `rollout_path` (required), `mode` (`"simulate"` or `"fork"`, required), `fork_step` (required for fork mode), `detect_drift` (bool, simulate only). |
 
 ### Conversation routes
@@ -90,6 +101,10 @@ Runs are the core unit of execution in `harnessd`. A run accepts a prompt, invok
 | `GET` | `/v1/conversations/{id}/messages` | `runs:read` | In-memory messages for the conversation. |
 | `GET` | `/v1/conversations/{id}/runs` | `runs:read` | All runs for a conversation. |
 | `GET` | `/v1/conversations/{id}/export` | `runs:read` | JSONL (ndjson) export of all messages. |
+| `GET` | `/v1/conversations/{id}/events` | `runs:read` | **SSE stream** of events from every run on the conversation, including a run that has not started yet — unlike `/v1/runs/{id}/events`, which is scoped to one run. |
+| `GET` | `/v1/conversations/{id}/rewind-points` | `runs:read` | List file-snapshot rewind points recorded during the conversation. |
+| `POST` | `/v1/conversations/{id}/rewind` | `runs:write` | **Destructive.** Restore a `point_id` (writes files, truncates later conversation history). Accepts `force` to override the default refusal when files were modified outside the snapshot. |
+| `POST` | `/v1/conversations/{id}/undo` | `runs:write` | Drop recent prompts from the active context (issue #805). |
 | `POST` | `/v1/conversations/{id}/compact` | `runs:write` | Replace early messages with a summary. Body: `{"keep_from_step":N,"summary":"…","role":"system"}`. Auto-generates summary via LLM when `summary` is omitted. |
 | `POST` | `/v1/conversations/{id}/fork` | `runs:write` | Duplicate the conversation — full message history included — under a server-minted ID. No body. Returns `{"conversation_id":"…","forked_from":"…","message_count":N}`. The fork inherits the source's workspace and tenant (cross-tenant requests are rejected with 404); pinned flag and token/cost counters start at zero. Works for persisted conversations and ones held only in server memory (mid-run), capturing the latest in-memory view. 404 unknown source; 405 for non-POST; 501 when conversation persistence is not configured. Afterwards the two conversations diverge independently. |
 | `POST` | `/v1/conversations/cleanup` | `runs:write` | Bulk-delete old conversations. Body: `{"max_age_days":30}`. Returns `{"deleted":N}`. |
@@ -121,7 +136,15 @@ data: {"id":"…","run_id":"…","type":"…","timestamp":"…","payload":{…}}
 | `GET` | `/v1/models` | `runs:read` | Returns `{"models":[{id,provider,aliases,input_cost_per_mtok,output_cost_per_mtok}]}`. |
 | `GET` | `/v1/providers` | `runs:read` | Returns `{"providers":[{name,configured,api_key_env,base_url,model_count}]}`. |
 | `PUT` | `/v1/providers/{name}/key` | `admin` | Set a provider API key at runtime. Body: `{"key":"…"}`. Returns HTTP 204. |
+| `POST` | `/v1/providers/{name}/import-subscription` | `admin` | Import a vendor-CLI-authenticated session for `codex-subscription` or `kimi-subscription` from files already present on the harnessd host. Any other provider name 404s. Returns HTTP 204. |
 | `POST` | `/v1/summarize` | `runs:write` | LLM-generated summary of a message list. Body: `{"messages":[…],"system":"…"}`. Returns `{"summary":"…"}`. |
+| `GET` | `/v1/tools` | `runs:read` | Enumerate the registered LLM tool catalog (core and deferred), with tier, tags, owner, and enabling condition per tool. |
+| `GET` | `/v1/model-settings` | `runs:read` | Snapshot of per-provider model-settings state. Requires the model-settings store to be configured. |
+| `POST` | `/v1/model-settings/providers` | `admin` | Add or update a provider entry in the model-settings store. |
+| `DELETE` | `/v1/model-settings/providers/{name}` | `admin` | Remove one provider's model-settings entry. |
+| `POST` | `/v1/model-settings/providers/{name}/fetch` | `admin` | Fetch and count that provider's live model list. |
+| `POST` | `/v1/model-settings/providers/{name}/expose` | `admin` | Toggle whether the provider's models are exposed. Body: `{"exposed": bool}`. |
+| `POST` | `/v1/model-settings/providers/{name}/cost` | `admin` | Set a per-model cost override. Body: `{"model":"…","input":N,"output":N}`. |
 
 ---
 
@@ -170,6 +193,15 @@ All subagent routes return 501 when `ServerOptions.SubagentManager` is nil.
 | `PUT` | `/v1/profiles/{name}` | `runs:write` | Update a user-tier profile. Returns 403 for built-in names. |
 | `DELETE` | `/v1/profiles/{name}` | `runs:write` | Delete a user-tier profile. Returns 403 for built-ins. |
 
+### Tasks, background jobs, and callbacks
+
+| Method | Path | Scope | Notes |
+|--------|------|-------|-------|
+| `GET` | `/v1/tasks` | `runs:read` | Unified view of subagent tasks (and other background work) across the server. |
+| `POST` | `/v1/jobs/{id}/kill` | `runs:write` | Kill a background shell job started with `run_in_background: true`. Tenant-scoped when auth is enabled. |
+| `GET` | `/v1/jobs/{id}/output` | `runs:read` | Fetch a background job's captured output snapshot (the same payload as the `job_output` tool). |
+| `POST` | `/v1/callbacks/{id}/cancel` | `runs:write` | Cancel a pending delayed callback. 501 when no callback manager is configured. |
+
 ---
 
 ## Cron, Checkpoints, Recipes, MCP, Networks, Script Workflows, Relay
@@ -187,6 +219,8 @@ All subagent routes return 501 when `ServerOptions.SubagentManager` is nil.
 | `DELETE` | `/v1/cron/jobs/{id}` | `runs:write` | Soft-delete job. Returns HTTP 204. |
 | `POST` | `/v1/cron/jobs/{id}/pause` | `runs:write` | Pause job. |
 | `POST` | `/v1/cron/jobs/{id}/resume` | `runs:write` | Resume paused job. |
+| `GET` | `/v1/cron/jobs/{id}/executions` | `runs:read` | List a job's execution history. Query: `limit`, `offset`. Job ID only — names are not accepted. |
+| `POST` | `/v1/cron/runs` | `runs:write` | Ingress endpoint the embedded/external cron scheduler calls to start a run for a fired job. |
 
 ### Checkpoints
 
@@ -262,6 +296,17 @@ All relay routes return 501 when `HARNESS_RELAY_DB` is not set.
 | `DELETE` | `/v1/relay/workers/{id}` | `runs:write` | Deregister worker. |
 | `POST` | `/v1/relay/workers/{id}/heartbeat` | `runs:write` | Submit heartbeat. Body: `{"load":N,"status":"online"}`. `status` must be `"online"` or `"draining"`. Workers not heartbeating within 30 seconds transition to `"stale"`. |
 
+The following relay control-plane routes are registered alongside worker CRUD but cover placement, contract composition, capability policy, and operator visibility. All 501 when the relay control plane is not wired.
+
+| Method | Path | Scope | Notes |
+|--------|------|-------|-------|
+| `POST` | `/v1/relay/placements` | `runs:write` | Create a work placement across registered workers. |
+| `POST` | `/v1/relay/contracts` | `runs:write` | Compose a relay contract. |
+| `POST` | `/v1/relay/policy/check` | `runs:read` | Check a single action against capability policy. |
+| `POST` | `/v1/relay/policy/filter` | `runs:read` | Filter a set of actions/workers by capability policy. |
+| `GET` | `/v1/relay/operator/workers` | `runs:read` | Operator-facing worker inventory view. |
+| `GET` | `/v1/relay/capabilities/{worker}` | `runs:read` | Get one worker's capability inventory. Requires the relay worker store configured (separately from the control plane). |
+
 ### Webhooks
 
 Webhook routes bypass Bearer auth entirely — they authenticate via HMAC signature headers. Enable each webhook by setting the corresponding secret env var.
@@ -287,12 +332,21 @@ Webhook routes bypass Bearer auth entirely — they authenticate via HMAC signat
 
 Source: `internal/harness/types.go`.
 
+<Callout type="info">
+`workspace_path` (honored) and the "no default step cap" behavior for `max_steps: 0` land in issues #1372 and #1376 respectively; this page documents the post-merge contract.
+</Callout>
+
 ```json
 {
   "prompt": "write a hello world in Go",
+  "attachments": [],
+  "plan_mode": false,
+  "plan_file": "",
   "model": "gpt-4o",
   "provider_name": "openai",
   "workspace_type": "",
+  "workspace_path": "",
+  "extra_dirs": [],
   "allow_fallback": false,
   "fallback_providers": [],
   "system_prompt": "",
@@ -313,6 +367,7 @@ Source: `internal/harness/types.go`.
   "max_cost_usd": 0.0,
   "reasoning_effort": "",
   "allowed_tools": [],
+  "denied_tools": [],
   "mcp_servers": [
     {"name": "sqlite", "command": "uvx", "args": ["mcp-server-sqlite", "--db-path", "/tmp/my.db"]}
   ],
@@ -326,18 +381,25 @@ Source: `internal/harness/types.go`.
   "role_models": {
     "primary": "",
     "summarizer": ""
-  }
+  },
+  "rules": []
 }
 ```
 
 Selected field notes:
 
 - `prompt` is required for a direct run. Omit when using `profile` + `skill` via `POST /v1/agents`.
+- `attachments` carries typed non-text content (currently images) submitted with the prompt; the run is rejected if the effective model lacks the matching modality.
+- `plan_mode` starts the run in enforced read-only planning; mutation is limited to `plan_file` (default `.harness/plan.md`) until the operator approves via `POST /v1/runs/{id}/approve`.
 - `workspace_type` accepts: `""` (server default), `"local"`, `"worktree"`, `"container"`, `"vm"`.
-- `max_steps` and `max_turns`: `0` means runner default/unlimited; negative values are rejected.
+- `workspace_path` roots the run's tools in an existing directory when it is an absolute path to a directory that exists; it does not provision a workspace (`workspace_type` does that). Sent by `harnesscli -workspace`.
+- `extra_dirs` grants the run read/work access to additional directory roots beyond the workspace root (each must be an absolute path to an existing directory).
+- `max_steps` and `max_turns`: `0` means unlimited — there is no default step cap; negative values are rejected.
 - `max_cost_usd`: `0` means unlimited; the run emits `run.cost_limit_reached` on breach (run still completes normally).
+- `denied_tools` lists tool names that must never be offered to or callable from this run, even if `allowed_tools` or an activated skill would otherwise grant them.
 - `permissions.sandbox`: `"unrestricted"` (default), `"local"`, or `"workspace"`.
 - `permissions.approval`: `"none"` (default), `"destructive"`, or `"all"`.
+- `rules` applies fine-grained allow/ask/deny effects to tool calls; evaluated together with `permissions.rules`, with `rules` appended after.
 - `initiator_api_key_prefix` is server-populated from the auth context — it is never accepted from the request body.
 
 ### `Run` — `GET /v1/runs/{id}` response
@@ -417,7 +479,7 @@ Streaming paths (`/events`, `/stream`, `/wait` suffix) bypass the 30-second hand
 
 | Env var | Default | Effect |
 |---------|---------|--------|
-| `HARNESS_ADDR` | `:8080` | HTTP listen address |
+| `HARNESS_ADDR` | `127.0.0.1:8080` | HTTP listen address |
 | `HARNESS_AUTH_DISABLED` | `""` (false) | Set `"true"` to bypass all Bearer auth |
 | `HARNESS_RUN_DB` | `""` | SQLite path; enables `GET /v1/runs` and auth |
 | `HARNESS_RELAY_DB` | `""` | SQLite path; enables `/v1/relay/workers` routes |

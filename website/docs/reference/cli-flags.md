@@ -28,7 +28,7 @@ Go's `flag` package accepts both single-dash and double-dash forms for every fla
 | `--mcp` | bool | `false` | Start as an MCP stdio server instead of an HTTP server. Reads stdin and writes stdout; does not bind a TCP port. |
 | `--mcp-workspace` | string | `""` (resolves to `$PWD`) | Workspace root used when `--mcp` is active. Falls back to `HARNESS_WORKSPACE`, then `.`. |
 
-Source: `cmd/harnessd/main.go:170-178`
+Source: `cmd/harnessd/main.go:257-265`
 
 ### Key environment variables
 
@@ -36,9 +36,9 @@ Source: `cmd/harnessd/main.go:170-178`
 
 | Variable | Default | Description |
 |---|---|---|
-| `HARNESS_ADDR` | `:8080` | HTTP listen address (e.g. `:9000` or `127.0.0.1:8080`). |
+| `HARNESS_ADDR` | `127.0.0.1:8080` | HTTP listen address (e.g. `:9000` or `127.0.0.1:8080`). A non-loopback bind is refused at startup unless authentication is configured or `HARNESS_AUTH_DISABLED=true` is set deliberately (`cmd/harnessd/bind_guard.go:29-42`, issue #1328). |
 | `HARNESS_MODEL` | `"gpt-4.1-mini"` | Default LLM model identifier. |
-| `HARNESS_MAX_STEPS` | `8` | Maximum tool-call steps per run. Set to `0` in config for unlimited; the daemon resets a `0` config default back to `8` for backward compatibility. |
+| `HARNESS_MAX_STEPS` | `0` (unlimited) | Maximum tool-call steps per run. `0` means unlimited — there is no default step cap. |
 | `HARNESS_WORKSPACE` | `.` | Workspace root path. |
 | `HARNESS_PROVIDER` | (catalog) | Set to `"fake"` for key-free deterministic smoke testing. |
 | `HARNESS_FAKE_TURNS` | `""` | Path to the JSON turns file when `HARNESS_PROVIDER=fake`. Required when the fake provider is active. |
@@ -77,7 +77,9 @@ Source: `cmd/harnesscli/main.go:123`
 | `-task-context` | string | `""` | Task context injected into the startup prompt. |
 | `-prompt-profile` | string | `""` | Prompt profile override for model routing. |
 | `-prompt-custom` | string | `""` | Custom prompt extension text appended to the prompt. |
-| `-workspace` | string | `""` (resolves to cwd) | Workspace directory for this run. Resolved via `os.Getwd()` when empty. |
+| `-workspace` | string | `""` (resolves to cwd) | Workspace directory for this run. Resolved via `os.Getwd()` when empty, sent as `workspace_path`, and honored by the server when it is an absolute path to an existing directory (tools are rooted there). |
+| `-plan-mode` | bool | `false` | Start the run in enforced read-only plan mode (sent as `plan_mode`). |
+| `-resume` | string | `""` | Resume an existing conversation by ID in the TUI; implies `-tui`. |
 | `-tui` | bool | `false` | Launch the interactive BubbleTea TUI. Requires a real terminal — fails with an error if stdout is a pipe. |
 | `-list-profiles` | bool | `false` | Fetch and print available profiles, then exit. |
 | `-prompt-behavior` | csvListFlag | (empty) | Behavior extension IDs. Accepts comma-separated values or repeated flags. |
@@ -165,6 +167,26 @@ Output is pretty-printed JSON to stdout.
 
 Source: `cmd/harnesscli/runctl.go:334-340`
 
+### `input` subcommand
+
+Answers a run blocked on `run.waiting_for_user`. Takes a run ID as the first positional argument and one or more `key=value` answer pairs as the remaining arguments. Calls `POST /v1/runs/{id}/input` with body `{"answers": {...}}`.
+
+| Flag | Default | Description |
+|---|---|---|
+| `-base-url` | `http://localhost:8080` | Harness API base URL. |
+
+Source: `internal/server/http_runs.go:355,863-883`
+
+### `steer` subcommand
+
+Injects a steering message into an active run without stopping it. Takes a run ID as the first positional argument and the message as the remaining arguments (joined with spaces). Calls `POST /v1/runs/{id}/steer`.
+
+| Flag | Default | Description |
+|---|---|---|
+| `-base-url` | `http://localhost:8080` | Harness API base URL. |
+
+Source: `cmd/harnesscli/runctl.go:175-215`
+
 ### `search` subcommand
 
 Takes one or more positional arguments as the query (joined with spaces). Fetches all runs from `GET /v1/runs` and filters client-side — there is no dedicated server search endpoint.
@@ -219,6 +241,21 @@ Source: `cmd/harnesscli/auth.go:32-37`
 `auth login` does not contact the server. The key is generated locally and stored at `~/.harness/config.json` (permissions: directory `0700`, file `0600`). The server URL you pass is stored as metadata only — no validation occurs.
 </Callout>
 
+### `auth kimi` / `auth codex` subcommands
+
+Manage subscription auth for Kimi Code (epic #848) and Codex (epic #847). Both reuse a vendor-CLI-authenticated session through a harness-owned credential copy; neither writes under the vendor's own config directory.
+
+| Subcommand | Description |
+|---|---|
+| `auth kimi login` | Import the `kimi-code`-authenticated session into `~/.harness/subscription-auth/kimi.json`. |
+| `auth kimi status` | Print the stored credential's status. |
+| `auth kimi logout` | Remove `~/.harness/subscription-auth/kimi.json`. |
+| `auth codex login` | Import the ChatGPT-authenticated Codex session into `~/.harness/subscription-auth/codex.json`. |
+| `auth codex status` | Print the stored credential's status. |
+| `auth codex logout` | Remove `~/.harness/subscription-auth/codex.json`. |
+
+Source: `cmd/harnesscli/auth.go:89-183`
+
 ---
 
 ## `go-code` — the user-facing wrapper
@@ -239,14 +276,15 @@ Source: `cmd/harnesscli/auth.go:32-37`
 | `go-code replay <run-id-or-path>` | `replay` | Replays a recorded run. |
 | `go-code search <query>` | `search` | Searches run metadata. |
 | `go-code improve [--target seam]` | `improve` | Runs or plans the self-improvement test loop. |
+| `go-code --resume <run-id>` | `tui` | Launches the TUI resuming an existing conversation (passes `-resume <run-id>` to `harnesscli`). |
 
-Source: `scripts/go-code.sh:31-56`, `scripts/go-code.sh:210-282`
+Source: `scripts/go-code.sh:31-56`, `scripts/go-code.sh:210-282`, `scripts/go-code.sh:10`
 
 ### Relevant environment variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `HARNESS_ADDR` | `:8080` | Server listen address. The port is extracted and used to construct the base URL passed to `harnesscli`. |
+| `HARNESS_ADDR` | `127.0.0.1:8080` | Server listen address. The port is extracted and used to construct the base URL passed to `harnesscli`. |
 | `GO_CODE_DATA_DIR` | (auto-detected) | Override the runtime asset root (prompts, catalog). |
 | `HARNESS_MODEL_CATALOG_PATH` | (auto-detected) | Path to `catalog/models.json`. |
 
@@ -308,8 +346,14 @@ Cron expressions are 5-field UTC only (Minute Hour DOM Month DOW). The `robfig/c
 | `CRONSD_ADDR` | `:9090` | Listen address. |
 | `CRONSD_DB_PATH` | `~/.go-harness/cronsd.db` | SQLite database file path. |
 | `CRONSD_MAX_CONCURRENT` | `5` | Maximum simultaneous job executions. |
+| `CRONSD_INGRESS_API_KEY` | `""` | API key required on inbound requests to `cronsd` itself. |
+| `CRONSD_INGRESS_TENANT_ID` | `""` | Tenant ID associated with `CRONSD_INGRESS_API_KEY`. |
+| `CRONSD_HARNESS_URL` | `""` | Base URL of the `harnessd` instance `cronsd` dispatches jobs to. |
+| `CRONSD_HARNESS_API_KEY` | `""` | API key `cronsd` uses when calling `harnessd`. Must differ from `CRONSD_INGRESS_API_KEY`. |
+| `CRONSD_HARNESS_CONNECT_TIMEOUT` | `5s` | Connect timeout for `cronsd` → `harnessd` requests. |
+| `CRONSD_HARNESS_REQUEST_TIMEOUT` | `15s` | Overall request timeout for `cronsd` → `harnessd` requests. |
 
-Source: `cmd/cronsd/main.go:65-69`
+Source: `cmd/cronsd/main.go:173-204`
 
 `cronsd` has no CLI flags beyond the implicit help output. All configuration is via environment variables.
 

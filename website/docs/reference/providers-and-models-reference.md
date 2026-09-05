@@ -26,12 +26,17 @@ go-code ships with ten providers pre-wired in the catalog. Each entry specifies 
 | `anthropic` | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `https://api.anthropic.com/v1` |
 | `deepseek` | DeepSeek | `openai_compat` | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` |
 | `groq` | Groq | `openai_compat` | `GROQ_API_KEY` | `https://api.groq.com/openai/v1` |
+| `cerebras` | Cerebras | `openai_compat` | `CEREBRAS_API_KEY` | `https://api.cerebras.ai/v1` |
 | `xai` | xAI (Grok) | `openai_compat` | `XAI_API_KEY` | `https://api.x.ai/v1` |
 | `kimi` | Kimi (Moonshot) | `openai_compat` | `MOONSHOT_API_KEY` | `https://api.moonshot.ai/v1` |
+| `kimi-subscription` | Kimi Code Subscription | `openai_compat` | (vendor-CLI session import) | `https://api.kimi.com/coding/v1` |
 | `qwen` | Qwen (DashScope) | `openai_compat` | `DASHSCOPE_API_KEY` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
 | `together` | Together AI | `openai_compat` | `TOGETHER_API_KEY` | `https://api.together.xyz/v1` |
+| `codex-subscription` | Codex (ChatGPT subscription) | `openai_compat` | (vendor-CLI session import) | `https://chatgpt.com/backend-api/codex` |
 | `openrouter` | OpenRouter | `openai_compat` | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` |
 | `gemini` | Google Gemini | `openai_compat` | `GOOGLE_API_KEY` | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| `ollama` | Ollama | `openai_compat` | (none — local server) | `http://localhost:11434/v1` |
+| `lmstudio` | LM Studio | `openai_compat` | (none — local server) | `http://localhost:1234/v1` |
 
 **Protocol values** — `anthropic` means the server uses the native Anthropic messages client (`internal/provider/anthropic`). `openai_compat` means the OpenAI-compatible client (`internal/provider/openai`) is used, even when the upstream API is not from OpenAI.
 
@@ -284,9 +289,9 @@ Aliases are short names that resolve to full model IDs. They are defined per-pro
 
 Kimi and Gemini define no aliases in the current catalog.
 
-### OpenRouter dynamic discovery and the `/` heuristic
+### Live model discovery and the `/` heuristic
 
-OpenRouter hosts thousands of models not listed in the static catalog. When `OPENROUTER_API_KEY` is set, go-code fetches `https://openrouter.ai/api/v1/models` with a 5-minute TTL cache. Live results are merged additively into the static catalog — static metadata wins on conflicts.
+Live discovery is not OpenRouter-only: OpenRouter, OpenAI, Anthropic, and DeepSeek entries all refresh from the provider's own models endpoint on a 5-minute TTL (`internal/provider/openai/discovery.go:24`, `internal/provider/anthropic/discovery.go:24`). When the matching API key is set, go-code fetches the live list (for OpenRouter: `https://openrouter.ai/api/v1/models`) and merges it additively into the static catalog — static metadata wins on ID conflicts, and a failed refresh serves the last successful result rather than removing static models.
 
 **The `/` heuristic:** any model ID containing a `/` character is automatically routed to the `openrouter` provider whenever the `openrouter` provider entry is present in the loaded catalog — key configuration is not required for routing. A missing key surfaces as an error at client creation. This means you can write `"model": "openai/gpt-4.1"` directly in a `RunRequest` without setting `provider_name`, and the harness will route it to OpenRouter.
 

@@ -6,7 +6,7 @@ sidebar_position: 1
 
 import { Callout, Steps, Step, Tabs, TabsList, TabsTrigger, TabsContent, Card, CardHeader, CardTitle, CardContent } from '@site/src/components/ui';
 
-`harnessd` is the HTTP daemon at the center of go-code. It boots a complete agent runtime — LLM provider, tool registry, memory, cron scheduler, MCP client, skills, and workflow engines — and exposes everything over a REST + SSE (Server-Sent Events) API on a single TCP port (`:8080` by default). Clients like `harnesscli`, the BubbleTea TUI, or any HTTP client can submit agent runs, stream live events, steer running agents, and manage conversations without coupling directly to the Go runtime.
+`harnessd` is the HTTP daemon at the center of go-code. It boots a complete agent runtime — LLM provider, tool registry, memory, cron scheduler, MCP client, skills, and workflow engines — and exposes everything over a REST + SSE (Server-Sent Events) API on a single TCP port (`127.0.0.1:8080` by default). Clients like `harnesscli`, the BubbleTea TUI, or any HTTP client can submit agent runs, stream live events, steer running agents, and manage conversations without coupling directly to the Go runtime.
 
 If you need a daemon that stays running while you iterate in other terminals, or you want to connect Claude Desktop and other MCP hosts to your local agent runtime, `harnessd` is where you start.
 
@@ -36,7 +36,7 @@ OPENAI_API_KEY=sk-...  HARNESS_WORKSPACE=$(pwd) ./harnessd
 When the daemon is ready it prints:
 
 ```
-harness server listening on :8080
+harness server listening on 127.0.0.1:8080
 ```
 
 You can then POST runs to `http://localhost:8080/v1/runs` and stream events from `http://localhost:8080/v1/runs/{id}/events`.
@@ -152,13 +152,13 @@ The address `harnessd` binds to is resolved in five layers, lowest to highest pr
 
 | Priority | Source | Example |
 |----------|--------|---------|
-| 1 — lowest | Built-in default | `:8080` |
+| 1 — lowest | Built-in default | `127.0.0.1:8080` |
 | 2 | `~/.harness/config.toml` (`addr` field) | `:9000` |
 | 3 | `<workspace>/.harness/config.toml` (`addr` field) | `:9000` |
 | 4 | Named profile (via `--profile`) | `:9090` |
 | 5 — highest | `HARNESS_ADDR` env var | `:8888` |
 
-The resolved address is passed directly to `net/http.Server.Addr`. Use the socket form (`:8080`), not a full URL.
+The resolved address is passed directly to `net/http.Server.Addr`. Use the socket form (`127.0.0.1:8080` or `:9000`), not a full URL. Binding beyond loopback is refused at startup unless authentication is configured or `HARNESS_AUTH_DISABLED=true` is set deliberately (`cmd/harnessd/bind_guard.go:29-42`, issue #1328).
 
 ### HTTP server timeout constants
 
@@ -263,10 +263,10 @@ The full set of `HARNESS_*` variables is documented on the [Configuration](/docs
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HARNESS_ADDR` | `:8080` | HTTP listen address in socket form. |
+| `HARNESS_ADDR` | `127.0.0.1:8080` | HTTP listen address in socket form. |
 | `HARNESS_WORKSPACE` | `.` | Workspace root — anchors all relative paths. |
 | `HARNESS_MODEL` | `gpt-4.1-mini` | Default LLM model for runs. |
-| `HARNESS_MAX_STEPS` | `8` | Max tool-calling steps per run. Set to `0` to remove the cap. |
+| `HARNESS_MAX_STEPS` | `0` (unlimited) | Max tool-calling steps per run. There is no default step cap. |
 | `HARNESS_PROVIDER` | — | Set to `fake` for key-free mode. |
 | `HARNESS_FAKE_TURNS` | — | Path to the JSON turns file when `HARNESS_PROVIDER=fake`. Required when using fake mode. |
 | `HARNESS_AUTH_DISABLED` | — | Set to `true` to disable Bearer-token auth. |

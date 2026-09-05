@@ -20,7 +20,7 @@ This page maps every named component and shows how a prompt travels from your te
 
 The `go-code` shell script (`scripts/go-code.sh`) is the single user-facing entry point. When you run it, it:
 
-1. Detects whether a healthy `harnessd` is already listening on `HARNESS_ADDR` (default `:8080`).
+1. Detects whether a healthy `harnessd` is already listening on `HARNESS_ADDR` (default `127.0.0.1:8080`).
 2. If not, starts one in the background.
 3. Forwards your command to `harnesscli`.
 4. On exit, stops the server only if it started it — a pre-existing server is always left running.

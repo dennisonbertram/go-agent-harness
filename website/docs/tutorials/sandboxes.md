@@ -47,7 +47,7 @@ HARNESS_FAKE_TURNS=/tmp/fake_turns.json \
 go run ./cmd/harnessd
 ```
 
-The server listens on `:8080` by default (`HARNESS_ADDR`).
+The server listens on `127.0.0.1:8080` by default (`HARNESS_ADDR`).
 
   </Step>
   <Step title="Submit a run with workspace_type local">

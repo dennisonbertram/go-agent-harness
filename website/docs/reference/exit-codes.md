@@ -26,13 +26,13 @@ Applies to: `harnesscli -prompt ...` (default streaming run mode) and `harnesscl
 | `1` | Client-side error | Bad flags, missing prompt, connection/HTTP failure, stream transport error. Also the defensive default for an unknown or empty terminal event type, so a scripting caller never mistakes an unrecognized outcome for success. |
 | `2` | Run failed | Terminal event `run.failed` — a turn failed server-side (satisfies kimi's "non-zero on turn failure"). |
 | `3` | Blocked | The run cannot proceed without input it will never get headlessly: `run.waiting_for_user`, `tool.approval_required`, or `plan.approval_required` observed while stdin is **not** a terminal. See [blocked runs](#blocked-runs-exit-3). |
-| `6` | Paused / cancelled | Terminal event `run.cancelled`. Work is interrupted but resumable via `harnesscli continue <run-id> <prompt>`. |
+| `6` | Paused / cancelled | Terminal event `run.cancelled`. Work is interrupted; a cancelled run cannot be resumed — `harnesscli continue` requires the source run's status to be `completed` and returns HTTP 409 `run_not_completed` otherwise (`internal/harness/runner.go:2217`, `internal/server/http_runs.go:817`). Start a new run to continue the work. |
 | `130` | Interrupted | SIGINT/SIGTERM while streaming (`128 + SIGINT`, the conventional shell code). The CLI best-effort cancels the still-executing server-side run before exiting. |
 
 ### kimi-code alignment rationale
 
 - `0` for a completed run/goal is identical in both CLIs.
-- `3` (blocked) and `6` (paused) reuse kimi's exact codes for the same semantics: a headless caller can distinguish "needs a human" (`3`) from "stopped but resumable" (`6`) without reading any output.
+- `3` (blocked) and `6` (paused) reuse kimi's exact codes for the same semantics: a headless caller can distinguish "needs a human" (`3`) from "cancelled" (`6`) without reading any output. Unlike kimi's pause semantics, a go-code run that exits `6` (`run.cancelled`) cannot itself be resumed — see the note in the contract table above.
 - `2` for `run.failed` satisfies kimi's "non-zero on turn failure" guarantee while staying distinct from `1` (the failure is server-side, not a client usage or transport problem), so `if [ $? -eq 1 ]` retry-the-invocation logic keeps its current meaning.
 - `1` and `130` are go-code's current behavior and are unchanged; `130` is the standard shell convention both CLIs follow.
 
@@ -40,7 +40,7 @@ Applies to: `harnesscli -prompt ...` (default streaming run mode) and `harnesscl
 
 ## Run terminal events
 
-The terminal event set is exactly three event types — `run.completed`, `run.failed`, `run.cancelled` — as defined by `IsTerminalEvent` (`internal/harness/events.go:472`). After a terminal event the SSE stream ends; the exit code is derived from which terminal event arrived:
+The terminal event set is exactly three event types — `run.completed`, `run.failed`, `run.cancelled` — as defined by `IsTerminalEvent` (`internal/harness/events.go:477`). After a terminal event the SSE stream ends; the exit code is derived from which terminal event arrived:
 
 | Terminal event | Source constant | Exit code |
 |---|---|---|
@@ -66,15 +66,15 @@ A run is **blocked** when it cannot make progress without input a headless calle
 
 | Signal | Source constant | Run status while blocked | Kind |
 |---|---|---|---|
-| `run.waiting_for_user` | `EventRunWaitingForUser` (`internal/harness/events.go:22`) | `waiting_for_user` (`RunStatusWaitingForUser`, `internal/harness/types.go:337`) | Question-blocked: the run invoked `ask_user_question`. |
-| `tool.approval_required` | `EventToolApprovalRequired` (`internal/harness/events.go:69`) | `waiting_for_approval` (`RunStatusWaitingForApproval`, `internal/harness/types.go:338`) | Approval-blocked: a tool call needs operator approval. |
-| `plan.approval_required` | `EventPlanApprovalRequired` (`internal/harness/events.go:83`) | `waiting_for_approval` (`internal/harness/types.go:338`) | Approval-blocked: a plan needs operator approval. |
+| `run.waiting_for_user` | `EventRunWaitingForUser` (`internal/harness/events.go:22`) | `waiting_for_user` (`RunStatusWaitingForUser`, `internal/harness/types.go:401`) | Question-blocked: the run invoked the `AskUserQuestion` tool (`internal/harness/tools/ask_user_question.go:12`). |
+| `tool.approval_required` | `EventToolApprovalRequired` (`internal/harness/events.go:69`) | `waiting_for_approval` (`RunStatusWaitingForApproval`, `internal/harness/types.go:402`) | Approval-blocked: a tool call needs operator approval. |
+| `plan.approval_required` | `EventPlanApprovalRequired` (`internal/harness/events.go:83`) | `waiting_for_approval` (`internal/harness/types.go:402`) | Approval-blocked: a plan needs operator approval. |
 
 There is no dedicated "waiting-for-approval" run event — the approval-required events are the signal, and the run status transitions to `waiting_for_approval`.
 
 Behavior when a blocked signal is observed in one-shot or streaming `continue` mode (implemented in epic #823 slice 3):
 
-- **stdin is not a terminal** (piped/redirected, the CI case): the CLI prints the blocked reason and run ID to **stderr**, stops streaming, and exits `3`. The server-side run is left intact — no auto-cancel — so an operator can resume it later with `harnesscli continue <run-id> <prompt>` (the resume command is named in the stderr message) or by answering via `POST /v1/runs/{id}/input` (questions) or `/approve` / `/deny` (approvals).
+- **stdin is not a terminal** (piped/redirected, the CI case): the CLI prints the blocked reason and run ID to **stderr**, stops streaming, and exits `3`. The server-side run is left intact — no auto-cancel — so an operator can unblock it: a question-blocked run (`waiting_for_user`) is answered with `harnesscli input <run-id> "<question>=<answer>"` (`POST /v1/runs/{id}/input`); an approval-blocked run (`waiting_for_approval`) is resolved with `POST /v1/runs/{id}/approve` or `/deny`. `harnesscli continue` does **not** apply here — it only works on runs whose status is already `completed` (see the `run.cancelled` row above), and a blocked run is neither completed nor cancelled.
 - **stdin is a terminal**: behavior is unchanged — the stream stays open and no exit-3 shortcut is taken. Interactive answer wiring in the streaming loop is a separate epic's scope; that epic must preserve exit `3` for non-interactive stdin.
 
 The terminal check uses the package's shared injectable `term.IsTerminal`-based stdin double (`stdinIsTerminal`, `cmd/harnesscli/plugins.go:107`), the same style of terminal detection the `--tui` path uses for stdout.
@@ -86,7 +86,8 @@ The terminal check uses the package's shared injectable `term.IsTerminal`-based 
 | Command | Covered by this contract? | Exit codes |
 |---|---|---|
 | `harnesscli -prompt ...` (streaming run mode) | **Yes** | `0`, `1`, `2`, `3`, `6`, `130` per the table above. |
-| `harnesscli continue <run-id> <prompt>` (streaming, the default) | **Yes** | Same mapping as the one-shot path. |
+| `harnesscli continue <run-id> <prompt>` (streaming, the default) | **Yes** | Same mapping as the one-shot path. Only applies to a run whose status is `completed`; otherwise the server returns HTTP 409 `run_not_completed` and the CLI exits `1`. |
+| `harnesscli input <run-id> "<question>=<answer>"` (answers a `waiting_for_user` run) | No (non-streaming) | `0` on success, `1` on error. |
 | `harnesscli continue -no-stream ...` | No (never observes events) | Prints `run_id=<id>` and exits `0`; `1` on client error. |
 | `list`, `status` / `show`, `cancel`, `replay`, `search` | No (non-streaming) | Unchanged: `0` on success, `1` on error. This contract documents but does not change them. |
 | `--tui` | No | Interactive TUI exit behavior is out of scope; the contract covers headless/streaming mode only. |
@@ -143,7 +144,7 @@ Every code in the contract traces to an existing event constant, run status, or 
 | `0` | `EventRunCompleted` (`internal/harness/events.go:20`); current `run()` return at `cmd/harnesscli/main.go:220` |
 | `1` | Current usage/transport error returns (`cmd/harnesscli/main.go:164`, `:176`, `:183`, `:211`, `:236`; `cmd/harnesscli/runctl.go`) |
 | `2` | `EventRunFailed` (`internal/harness/events.go:21`) |
-| `3` | `EventRunWaitingForUser` (`internal/harness/events.go:22`), `EventToolApprovalRequired` (`internal/harness/events.go:69`), `EventPlanApprovalRequired` (`internal/harness/events.go:83`); statuses `RunStatusWaitingForUser` / `RunStatusWaitingForApproval` (`internal/harness/types.go:337-338`) |
+| `3` | `EventRunWaitingForUser` (`internal/harness/events.go:22`), `EventToolApprovalRequired` (`internal/harness/events.go:69`), `EventPlanApprovalRequired` (`internal/harness/events.go:83`); statuses `RunStatusWaitingForUser` / `RunStatusWaitingForApproval` (`internal/harness/types.go:401-402`) |
 | `6` | `EventRunCancelled` (`internal/harness/events.go:34`) |
 | `130` | Current `handleStreamError` interrupt path (`cmd/harnesscli/main.go:233`) |
 

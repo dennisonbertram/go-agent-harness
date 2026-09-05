@@ -407,7 +407,7 @@ func runServiceInstall(args []string) int {
 	fs := flag.NewFlagSet("service install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	binary := fs.String("binary", "", "path to the harnessd binary (default: look up harnessd on PATH)")
-	addr := fs.String("addr", "", "listen address for harnessd (default: resolve like harnessd — HARNESS_ADDR env or :8080)")
+	addr := fs.String("addr", "", "listen address for harnessd (default: resolve like harnessd — HARNESS_ADDR env or 127.0.0.1:8080)")
 	logDir := fs.String("log-dir", "", "directory for service logs (default ~/.harness/logs)")
 	dryRun := fs.Bool("dry-run", false, "print the rendered unit file and target path without writing anything")
 	if err := fs.Parse(args); err != nil {

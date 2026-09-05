@@ -58,7 +58,7 @@ HARNESS_AUTH_DISABLED=true \
 go run ./cmd/harnessd
 ```
 
-The server prints `harness server listening on :8080` when it is ready. The three environment variables are doing important work here:
+The server prints `harness server listening on 127.0.0.1:8080` when it is ready. The three environment variables are doing important work here:
 
 - `HARNESS_PROVIDER=fake` — uses a built-in scripted provider instead of a real LLM. No network calls, no API key required.
 - `HARNESS_FAKE_TURNS=/tmp/turns.json` — path to the turns file above. The fake provider requires this; if it is unset the server exits at startup with a fatal error.

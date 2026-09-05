@@ -52,7 +52,7 @@ The process exit code reports the run's outcome, so scripts and CI can branch on
 | `1` | Client-side error: bad flags, missing prompt, connection/HTTP/stream failure |
 | `2` | `run.failed` — a turn failed server-side |
 | `3` | Blocked — the run needs input it will never get headlessly (`run.waiting_for_user`, `tool.approval_required`, or `plan.approval_required` observed while stdin is non-interactive) |
-| `6` | `run.cancelled` — interrupted but resumable via `harnesscli continue <run-id> <prompt>` |
+| `6` | `run.cancelled` — interrupted; **not** resumable via `harnesscli continue` (that command requires the source run's status to be `completed` and returns HTTP 409 otherwise). Start a new run to continue the work. |
 | `130` | SIGINT/SIGTERM while streaming |
 
 The `run_id=` / `terminal_event=` stdout lines are unchanged by this mapping. See [Exit Codes](/docs/reference/exit-codes) for the full contract — blocked-signal details, goal-status reservations, and per-command coverage.
@@ -69,7 +69,9 @@ The `run_id=` / `terminal_event=` stdout lines are unchanged by this mapping. Se
 | `-task-context` | `""` | Task context injected into the startup prompt |
 | `-prompt-profile` | `""` | Prompt profile override for model routing |
 | `-prompt-custom` | `""` | Custom prompt extension text |
-| `-workspace` | cwd | Workspace directory for this run |
+| `-workspace` | cwd | Workspace directory for this run (sent as `workspace_path`; see the callout below) |
+| `-plan-mode` | `false` | Start the run in enforced read-only plan mode (`plan_mode` in the request); see [Enforced Plan Mode](/docs/concepts/configuration) |
+| `-resume` | `""` | Resume an existing conversation by ID in the TUI; implies `-tui` |
 | `-tui` | `false` | Launch the interactive BubbleTea TUI (requires a real terminal) |
 | `-list-profiles` | `false` | List available profiles and exit |
 | `-prompt-behavior` | (empty) | Behavior extension IDs — repeatable or comma-separated |
@@ -102,7 +104,7 @@ terminal_event=run.completed
 ```
 
 <Callout type="info">
-`-workspace` defaults to the current working directory via `os.Getwd()`. The value is serialized as `workspace_path` in the run creation request, but the server's `POST /v1/runs` handler decodes into `harness.RunRequest`, which has no `workspace_path` field — the value is currently silently ignored server-side. Workspace selection is controlled by `workspace_type` and profile-level runner configuration, not by this flag.
+`-workspace` defaults to the current working directory via `os.Getwd()` and is sent as `workspace_path` in the run creation request. The server honors `workspace_path` when it is an absolute path to an existing directory: tools for the run are rooted there instead of the server's own working directory. `workspace_type` and profile-level runner configuration control workspace *provisioning* (local directory, git worktree, container, VM); `workspace_path` only selects which existing directory a non-provisioned (local-process) run is rooted in.
 </Callout>
 
 <Callout type="warning">
@@ -177,6 +179,10 @@ Output includes: ID, Status, Model, Created, Updated, Prompt (truncated at 80 ch
 
 Send a follow-up prompt to an existing run, creating a new run in the same conversation.
 
+<Callout type="warning">
+`continue` only works when the source run's status is `completed`. It returns HTTP 409 `run_not_completed` for any other status (`waiting_for_user`, `waiting_for_approval`, `running`, `queued`, `failed`, or `cancelled`) — a cancelled run cannot be resumed at all, and a run blocked on a question or approval must be unblocked first (see `harnesscli input` below, or `POST /v1/runs/{id}/approve` / `/deny`).
+</Callout>
+
 ```bash
 # Stream the continuation (default):
 harnesscli continue <run-id> Now explain it to a 5-year-old
@@ -195,6 +201,21 @@ The continuation prompt is everything after the run ID, joined with spaces.
 | `-no-stream` | `false` | Print only `run_id=<id>` and exit without streaming events |
 
 When `-no-stream` is false (the default), the new run's events are streamed and `terminal_event=<type>` is printed on completion; the same [exit-code contract](/docs/reference/exit-codes) as the one-shot mode applies. When `-no-stream` is true, only `run_id=<id>` is printed and the exit code stays `0`/`1` (no terminal event is observed).
+
+---
+
+### input
+
+Answer a run that is blocked on `run.waiting_for_user` (the run invoked the `AskUserQuestion` tool).
+
+```bash
+harnesscli input <run-id> "question-key=the answer"
+harnesscli input <run-id> "q1=yes" "q2=no"
+```
+
+**API:** `POST /v1/runs/{id}/input` with body `{"answers": {"<question-key>": "<answer>"}}`
+
+Each positional argument after the run ID is split on the first `=`; the part before `=` is the question key (as returned by `GET /v1/runs/{id}/input`) and the part after is the answer. The run resumes automatically once all pending questions are answered.
 
 ---
 
@@ -250,6 +271,109 @@ The query is all positional args joined with spaces. Matching is case-insensitiv
 
 ---
 
+### steer
+
+Inject a steering message into an active run without stopping it.
+
+```bash
+harnesscli steer <run-id> "focus on the auth module instead"
+```
+
+**API:** `POST /v1/runs/{id}/steer` with body `{"prompt": "..."}`
+
+The server queues the message; the harness delivers it to the agent as a user message at the next step boundary, and the run keeps going. Empty or whitespace-only prompts are rejected client-side before any request is sent.
+
+---
+
+### viz
+
+Print the URL for the `/viz` static visualization UI served by `harnessd`, optionally opening it in the default browser.
+
+```bash
+harnesscli viz
+harnesscli viz --open
+```
+
+---
+
+### acp
+
+Serve the Agent Client Protocol (newline-delimited JSON-RPC 2.0) over stdin/stdout so ACP-compatible editors (Zed, JetBrains via ACP) can drive go-code as a subprocess. This is the same protocol the standalone `harness-acp` binary exposes; `harnesscli acp` is an equivalent entrypoint reached through the main CLI. See the [ACP runbook](https://github.com/dennisonbertram/go-code/blob/main/docs/runbooks/acp.md) for the manual Zed verification checklist.
+
+```bash
+harnesscli acp
+harnesscli acp -server http://my-harness:9090
+```
+
+stdout is a pure protocol channel — all diagnostics go to stderr.
+
+---
+
+### plugin
+
+Manage installable plugin bundles (`plugin.json` bundles under `~/.go-harness/plugins`).
+
+```bash
+harnesscli plugin install <path-or-url>
+harnesscli plugin list
+harnesscli plugin uninstall <name>
+harnesscli plugin update <name>
+harnesscli plugin trust <name>
+harnesscli plugin untrust <name>
+harnesscli plugin marketplace <subcommand>
+```
+
+Trusted bundles alone reach profiles, MCP validation, and hooks; enabled visibility is independent from executable trust. See `docs/design/plugins.md` for the bundle schema.
+
+---
+
+### mcp
+
+Manage saved credentials for remote MCP servers configured for this CLI.
+
+```bash
+harnesscli mcp login <server-name>
+harnesscli mcp status <server-name>
+harnesscli mcp logout <server-name>
+```
+
+---
+
+### hooks
+
+Manage trust for config-driven lifecycle hook files (shell/HTTP hooks, epic #737).
+
+```bash
+harnesscli hooks trust <hook-file>
+harnesscli hooks revoke <hook-file>
+harnesscli hooks list
+```
+
+Hook loading itself is read-only and startup-computed; use `GET /v1/hooks` to see what a running `harnessd` actually loaded. See `docs/design/plugins.md` → "Config-driven hooks" for the hook-file schema.
+
+---
+
+### service
+
+Install, manage, and check the status of `harnessd` as an OS-level background service (launchd on macOS, systemd on Linux).
+
+```bash
+harnesscli service install --binary /path/to/harnessd --addr 127.0.0.1:8080
+harnesscli service start
+harnesscli service stop
+harnesscli service status
+harnesscli service uninstall
+```
+
+| Flag (install) | Default | Description |
+|---|---|---|
+| `--binary` | look up `harnessd` on `PATH` | Path to the `harnessd` binary |
+| `--addr` | resolve like `harnessd` — `HARNESS_ADDR` env or `127.0.0.1:8080` | Listen address for harnessd |
+| `--log-dir` | `~/.harness/logs` | Directory for service logs |
+| `--dry-run` | `false` | Print the rendered unit file and target path without writing anything |
+
+---
+
 ## auth login and config files
 
 ### auth login
@@ -276,6 +400,32 @@ On success, `auth login`:
 2. Prints the file path, the raw key, and a ready-to-use `Authorization: Bearer <key>` example.
 
 The generated key carries three scopes: `store.ScopeRunsRead`, `store.ScopeRunsWrite`, and `store.ScopeAdmin`.
+
+### auth kimi
+
+Manage Kimi Code subscription auth (epic #848). Reuses a `kimi-code`-authenticated vendor session through a harness-owned credential copy at `~/.harness/subscription-auth/kimi.json`; it never writes under `~/.kimi-code/`.
+
+```bash
+kimi-code login          # vendor CLI login, done once outside harnesscli
+harnesscli auth kimi login
+harnesscli auth kimi status
+harnesscli auth kimi logout
+```
+
+`logout` removes only `~/.harness/subscription-auth/kimi.json`.
+
+### auth codex
+
+Manage Codex subscription auth (epic #847). Reuses a ChatGPT-authenticated vendor Codex session through a harness-owned credential copy at `~/.harness/subscription-auth/codex.json`; it never writes under `~/.codex/` and only reads from it.
+
+```bash
+codex login               # vendor CLI login, done once outside harnesscli
+harnesscli auth codex login
+harnesscli auth codex status
+harnesscli auth codex logout
+```
+
+`logout` removes only `~/.harness/subscription-auth/codex.json`. The `openai` provider (`OPENAI_API_KEY`) remains the primary, unaffected path.
 
 ### Config file locations
 
@@ -390,12 +540,11 @@ For reference, here are all the server routes that `harnesscli` calls:
 | `POST` | `/v1/runs/{id}/continue` | continue |
 | `POST` | `/v1/runs/replay` | replay |
 | `GET` | `/v1/profiles` | -list-profiles |
-| `GET` | `/v1/runs/{id}/input` | ask-user (non-TUI, see note) |
-| `POST` | `/v1/runs/{id}/input` | ask-user (non-TUI, see note) |
-
-<Callout type="warning">
-`handleAskUserQuestion` — the function that calls `/v1/runs/{id}/input` to handle interactive `run.waiting_for_user` events — is defined in `cmd/harnesscli/askuser.go` and tested independently, but is **not wired** into the non-TUI streaming loop in `main.go`. Interactive question-answering in streaming mode is not yet available outside the TUI.
-</Callout>
+| `GET` | `/v1/runs/{id}/input` | `input` (reads pending questions) |
+| `POST` | `/v1/runs/{id}/input` | `input` (posts answers) |
+| `POST` | `/v1/runs/{id}/steer` | steer |
+| `POST` | `/v1/runs/{id}/approve` | approve (TUI) |
+| `POST` | `/v1/runs/{id}/deny` | deny (TUI) |
 
 ---
 

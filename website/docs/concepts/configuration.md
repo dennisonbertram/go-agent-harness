@@ -41,7 +41,7 @@ Both config files use **TOML**. The full schema is divided into a top-level core
 # ── Core ──────────────────────────────────────────────────
 model = "gpt-4.1-mini"   # LLM model identifier
 max_steps = 0            # 0 = unlimited (the harnessd runtime default, no implicit cap)
-addr = ":8080"           # HTTP listen address (socket form, not a URL)
+addr = "127.0.0.1:8080"  # HTTP listen address (socket form, not a URL)
 
 # ── Per-run cost ceiling ──────────────────────────────────
 [cost]
@@ -162,7 +162,7 @@ Invalid `HARNESS_*` values fail silently. Always verify your environment after a
 | Variable | TOML key | Default | Description |
 |----------|----------|---------|-------------|
 | `HARNESS_MODEL` | `model` | `gpt-4.1-mini` | LLM model identifier |
-| `HARNESS_ADDR` | `addr` | `:8080` | HTTP listen address (socket form) |
+| `HARNESS_ADDR` | `addr` | `127.0.0.1:8080` | HTTP listen address (socket form) |
 | `HARNESS_MAX_STEPS` | `max_steps` | `0` (unlimited) | Max tool-call steps per run |
 | `HARNESS_MAX_COST_PER_RUN_USD` | `cost.max_per_run_usd` | `0.0` (unlimited) | Per-run cost ceiling in USD |
 | `HARNESS_WORKSPACE` | — | `.` | Workspace root; controls project config and DB paths |
@@ -313,7 +313,7 @@ A profile may also declare `extends = "<base-profile-name>"` to inherit fields f
 <Callout variant="info">
 **`HARNESS_ADDR` is a socket address, not a URL.**
 
-The default is `:8080` — a bare port suitable for `net.Listen`. It is not `http://localhost:8080`. Clients connect to `http://localhost:8080`; the server *listens* on `:8080`.
+The default is `127.0.0.1:8080` — a host:port pair suitable for `net.Listen`, not `http://localhost:8080`. Clients connect to `http://localhost:8080`; the server *listens* on `127.0.0.1:8080`. A non-loopback bind (for example a bare `:PORT`) is refused at startup unless authentication is configured or `HARNESS_AUTH_DISABLED=true` is set deliberately (`cmd/harnessd/bind_guard.go:29-42`, issue #1328).
 </Callout>
 
 ## Next steps
