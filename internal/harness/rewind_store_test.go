@@ -306,6 +306,65 @@ func TestFinalizeRewindPoint_DoesNotCrossContaminateOtherPaths(t *testing.T) {
 	}
 }
 
+// TestRestoreRewindPoint_SecondConsecutiveRestoreToOlderPointNotRefused is a
+// regression for a follow-up to issue #1371: after RestoreRewindPoint writes
+// a point's pre-image back to disk, surviving snapshot rows for that path
+// (the target point and any older ones) still carried the pre-rewind
+// expected_hash, so a second, older restore in the same path chain was
+// refused as "modified outside the agent" even though the only change was
+// the first restore itself.
+func TestRestoreRewindPoint_SecondConsecutiveRestoreToOlderPointNotRefused(t *testing.T) {
+	ctx := context.Background()
+	store := newTestConversationStore(t)
+	root := t.TempDir()
+	path := filepath.Join(root, "a.txt")
+	convID := "double-restore-conv"
+
+	if err := os.WriteFile(path, []byte("v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pointA := RewindPoint{ID: "pA", ConversationID: convID, Step: 0, Tool: "edit"}
+	if err := CaptureRewindPreImage(ctx, store, pointA, root, []byte(`{"path":"a.txt"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("v2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := FinalizeRewindPoint(ctx, store, "pA", root); err != nil {
+		t.Fatal(err)
+	}
+
+	pointB := RewindPoint{ID: "pB", ConversationID: convID, Step: 1, Tool: "edit"}
+	if err := CaptureRewindPreImage(ctx, store, pointB, root, []byte(`{"path":"a.txt"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("v3"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := FinalizeRewindPoint(ctx, store, "pB", root); err != nil {
+		t.Fatal(err)
+	}
+
+	// Restore to the newest point first: pB's pre-image is v2.
+	if _, err := store.RestoreRewindPoint(ctx, convID, "pB", root, false); err != nil {
+		t.Fatalf("first restore (newest point) refused: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "v2" {
+		t.Fatalf("after first restore file=%q err=%v, want v2", got, err)
+	}
+
+	// Restore to the older point next, without force. This must succeed:
+	// the only change since the first restore was that restore itself.
+	if _, err := store.RestoreRewindPoint(ctx, convID, "pA", root, false); err != nil {
+		t.Fatalf("second restore to an older point refused: %v", err)
+	}
+	got, err = os.ReadFile(path)
+	if err != nil || string(got) != "v1" {
+		t.Fatalf("after second restore file=%q err=%v, want v1", got, err)
+	}
+}
+
 func TestConversationSnapshotCapSkipsAdditionalContent(t *testing.T) {
 	ctx := context.Background()
 	store := newTestConversationStore(t)
