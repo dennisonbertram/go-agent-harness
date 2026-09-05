@@ -594,6 +594,10 @@ func (s *SQLiteConversationStore) SaveRewindPoint(ctx context.Context, point Rew
 
 // FinalizeRewindPoint persists post-tool hashes used to guard against external edits.
 func (s *SQLiteConversationStore) FinalizeRewindPoint(ctx context.Context, pointID, workspace string) error {
+	var convID string
+	if err := s.db.QueryRowContext(ctx, `SELECT conversation_id FROM rewind_points WHERE id=?`, pointID).Scan(&convID); err != nil {
+		return fmt.Errorf("finalize rewind point conversation: %w", err)
+	}
 	points, err := s.db.QueryContext(ctx, `SELECT path, skipped FROM rewind_file_snapshots WHERE point_id=?`, pointID)
 	if err != nil {
 		return err
@@ -635,7 +639,14 @@ func (s *SQLiteConversationStore) FinalizeRewindPoint(ctx context.Context, point
 		} else if !os.IsNotExist(err) {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE rewind_file_snapshots SET expected_hash=? WHERE point_id=? AND path=?`, hash, pointID, snapshot.path); err != nil {
+		// An earlier point that also snapshots this path is only "as the
+		// agent left it" once this later tool call completes, so its guard
+		// must expect the file's current agent-written content too — not
+		// the stale hash captured before this tool ran. Refresh every
+		// snapshot row for this path across the whole conversation, not
+		// just this point, so an older rewind point is not refused after a
+		// later agent-only edit to the same file (issue #1371).
+		if _, err := tx.ExecContext(ctx, `UPDATE rewind_file_snapshots SET expected_hash=? WHERE path=? AND point_id IN (SELECT id FROM rewind_points WHERE conversation_id=?)`, hash, snapshot.path, convID); err != nil {
 			return err
 		}
 	}
