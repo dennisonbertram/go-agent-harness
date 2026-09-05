@@ -1349,7 +1349,15 @@ func (se *stepEngine) run() {
 						if err := metaStore.EnsureConversationMeta(pe.toolCtx, meta.ConversationID, workspace, tenantID); err != nil {
 							r.emit(runID, EventToolCallCompleted, map[string]any{"call_id": pe.call.ID, "tool": pe.call.Name, "rewind_warning": err.Error()})
 						} else {
-							point := RewindPoint{ID: fmt.Sprintf("%s-%d-%s", runID, step, pe.call.ID), ConversationID: meta.ConversationID, Step: step, Tool: pe.call.Name}
+							// MessageBoundary is the conversation-wide message count at
+							// this exact point: messages already holds every prior run's
+							// persisted history plus this run's user prompt and the
+							// assistant tool-call message that is about to execute, in
+							// the same order Runner.completeRun will persist them. That
+							// makes it the correct truncation boundary for a restore
+							// (issue #1370) -- unlike Step, which only counts tool calls
+							// within this run and is meaningless across runs.
+							point := RewindPoint{ID: fmt.Sprintf("%s-%d-%s", runID, step, pe.call.ID), ConversationID: meta.ConversationID, Step: step, Tool: pe.call.Name, MessageBoundary: len(messages)}
 							if err := CaptureRewindPreImage(pe.toolCtx, rewind, point, workspace, pe.callArgs); err != nil {
 								r.emit(runID, EventToolCallCompleted, map[string]any{"call_id": pe.call.ID, "tool": pe.call.Name, "rewind_warning": err.Error()})
 							}

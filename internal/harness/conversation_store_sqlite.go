@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -766,7 +767,22 @@ func (s *SQLiteConversationStore) RestoreRewindPoint(ctx context.Context, convID
 		return result, fmt.Errorf("rewind begin tx: %w", err)
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `DELETE FROM conversation_messages WHERE conversation_id=? AND step>?`, convID, point.Step)
+	// point.Step is a run-local tool-call counter (see runner_step_engine.go),
+	// not comparable to conversation_messages.step, which is a
+	// conversation-wide message index shared across every run on this
+	// conversation (issue #1370). point.MessageBoundary records that
+	// conversation-wide index at capture time and is the only field safe to
+	// truncate against. Points captured before this field existed have
+	// MessageBoundary==0 ("not recorded"); rather than silently deleting
+	// everything, fall back to the legacy (imperfect, multi-run-unsafe)
+	// step comparison and log a warning so operators can see it happened.
+	var res sql.Result
+	if point.MessageBoundary > 0 {
+		res, err = tx.ExecContext(ctx, `DELETE FROM conversation_messages WHERE conversation_id=? AND step>=?`, convID, point.MessageBoundary)
+	} else {
+		log.Printf("rewind: point %q (conversation %q) has no recorded message boundary; falling back to step-based truncation, which can delete unrelated messages in a multi-run conversation", point.ID, convID)
+		res, err = tx.ExecContext(ctx, `DELETE FROM conversation_messages WHERE conversation_id=? AND step>?`, convID, point.Step)
+	}
 	if err != nil {
 		return result, fmt.Errorf("rewind truncate messages: %w", err)
 	}

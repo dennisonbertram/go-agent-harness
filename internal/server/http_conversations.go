@@ -428,6 +428,13 @@ func (s *Server) handleRestoreRewind(w http.ResponseWriter, r *http.Request, con
 		writeError(w, code, "rewind_refused", err.Error())
 		return
 	}
+	// The restore above truncates conversation_messages in the store, but the
+	// runner's in-memory conversation mirror (populated at each run's
+	// completion) is a separate write-behind cache that the store mutation
+	// never touches. Without invalidating it here, /messages and the next
+	// run's context keep serving the pre-rewind history until a daemon
+	// restart forces a reload from the (now-truncated) store (issue #1370).
+	s.runner.InvalidateConversationHistory(convID)
 	writeJSON(w, http.StatusOK, result)
 }
 
