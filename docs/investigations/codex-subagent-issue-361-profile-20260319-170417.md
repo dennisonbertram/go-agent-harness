@@ -5,17 +5,17 @@
 - Recommending the narrowest stable smoke-test contract for this profile/path/env combo.
 
 ## 2) Files inspected
-- [docs/investigations/issue-361-grooming.md](/Users/dennisonbertram/Develop/go-agent-harness/docs/investigations/issue-361-grooming.md)
-- [docs/investigations/issue-362-grooming.md](/Users/dennisonbertram/Develop/go-agent-harness/docs/investigations/issue-362-grooming.md)
-- [docs/plans/issue-362-plan.md](/Users/dennisonbertram/Develop/go-agent-harness/docs/plans/issue-362-plan.md)
-- [docs/runbooks/golden-path-deployment.md](/Users/dennisonbertram/Develop/go-agent-harness/docs/runbooks/golden-path-deployment.md)
-- [internal/profiles/builtins/full.toml](/Users/dennisonbertram/Develop/go-agent-harness/internal/profiles/builtins/full.toml)
-- [internal/profiles/profile.go](/Users/dennisonbertram/Develop/go-agent-harness/internal/profiles/profile.go)
-- [internal/profiles/loader.go](/Users/dennisonbertram/Develop/go-agent-harness/internal/profiles/loader.go)
-- [cmd/harnessd/main.go](/Users/dennisonbertram/Develop/go-agent-harness/cmd/harnessd/main.go)
-- [internal/config/config.go](/Users/dennisonbertram/Develop/go-agent-harness/internal/config/config.go)
-- [internal/store/s3backup/s3backup.go](/Users/dennisonbertram/Develop/go-agent-harness/internal/store/s3backup/s3backup.go)
-- [scripts/smoke-test.sh](/Users/dennisonbertram/Develop/go-agent-harness/scripts/smoke-test.sh)
+- [docs/investigations/issue-361-grooming.md](../../docs/investigations/issue-361-grooming.md)
+- [docs/investigations/issue-362-grooming.md](../../docs/investigations/issue-362-grooming.md)
+- [docs/plans/issue-362-plan.md](../../docs/plans/issue-362-plan.md)
+- [docs/runbooks/golden-path-deployment.md](../../docs/runbooks/golden-path-deployment.md)
+- [internal/profiles/builtins/full.toml](../../internal/profiles/builtins/full.toml)
+- [internal/profiles/profile.go](../../internal/profiles/profile.go)
+- [internal/profiles/loader.go](../../internal/profiles/loader.go)
+- [cmd/harnessd/main.go](../../cmd/harnessd/main.go)
+- [internal/config/config.go](../../internal/config/config.go)
+- [internal/store/s3backup/s3backup.go](../../internal/store/s3backup/s3backup.go)
+- [scripts/smoke-test.sh](../../scripts/smoke-test.sh)
 
 ## 3) Concrete findings
 1. `internal/profiles/builtins/full.toml` currently enables:
