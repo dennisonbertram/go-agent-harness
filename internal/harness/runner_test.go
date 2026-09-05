@@ -510,6 +510,94 @@ func TestRestoreRewindPoint_NeverLeavesDanglingToolCall(t *testing.T) {
 	}
 }
 
+// TestRestoreRewindPoint_PruneKeepsOlderPointsFromEarlierRuns is a regression
+// found by live verification on main after #1378 merged: RestoreRewindPoint's
+// future-point pruning query (`DELETE FROM rewind_points WHERE ... step>? OR
+// (step=? AND id<>?)`) compared point.Step, the same run-local tool-call
+// counter whose message-truncation misuse issue #1370 already fixed. Step is
+// reused per run (run 2's edit point is step 1 within run 2, run 1's write
+// point is also step 1 within run 1 -- an entirely unrelated run), so
+// restoring the edit point deleted the write point too, and a later restore
+// to that still-valid older point returned "not found" even though it was
+// never superseded.
+func TestRestoreRewindPoint_PruneKeepsOlderPointsFromEarlierRuns(t *testing.T) {
+	workspace := t.TempDir()
+	registry := NewRegistry()
+	writeFile := func(_ context.Context, raw json.RawMessage) (string, error) {
+		var args struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return "", err
+		}
+		return "ok", os.WriteFile(filepath.Join(workspace, args.Path), []byte(args.Content), 0o600)
+	}
+	for _, name := range []string{"write", "edit"} {
+		if err := registry.Register(ToolDefinition{Name: name, Mutating: true, Parameters: map[string]any{"type": "object"}}, writeFile); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+
+	store := newTestConversationStore(t)
+	provider := &stubProvider{turns: []CompletionResult{
+		{ToolCalls: []ToolCall{{ID: "c1", Name: "write", Arguments: `{"path":"a.txt","content":"v1"}`}}},
+		{Content: "run1 done"},
+		{ToolCalls: []ToolCall{{ID: "c2", Name: "edit", Arguments: `{"path":"a.txt","content":"v2"}`}}},
+		{Content: "run2 done"},
+	}}
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel:         "test",
+		MaxSteps:             20,
+		ConversationStore:    store,
+		WorkspaceBaseOptions: WorkspaceProvisionOptions{RepoPath: workspace},
+	})
+	convID := "prune-older-point-conv"
+
+	run1, err := runner.StartRun(RunRequest{Prompt: "write a.txt", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun run1: %v", err)
+	}
+	waitForRunCompletion(t, runner, run1.ID)
+
+	run2, err := runner.StartRun(RunRequest{Prompt: "edit a.txt", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun run2: %v", err)
+	}
+	waitForRunCompletion(t, runner, run2.ID)
+
+	points, err := store.ListRewindPoints(context.Background(), convID)
+	if err != nil {
+		t.Fatalf("ListRewindPoints: %v", err)
+	}
+	var writePointID, editPointID string
+	for _, p := range points {
+		switch p.Tool {
+		case "write":
+			writePointID = p.ID
+		case "edit":
+			editPointID = p.ID
+		}
+	}
+	if writePointID == "" || editPointID == "" {
+		t.Fatalf("expected one rewind point per tool call: %#v", points)
+	}
+
+	if _, err := store.RestoreRewindPoint(context.Background(), convID, editPointID, workspace, true); err != nil {
+		t.Fatalf("RestoreRewindPoint(edit): %v", err)
+	}
+
+	// The older write-point, captured in an earlier and entirely unrelated
+	// run, must survive the edit-point restore's pruning: it was never
+	// superseded by anything, and this restore must still be possible.
+	if _, err := store.RestoreRewindPoint(context.Background(), convID, writePointID, workspace, true); err != nil {
+		t.Fatalf("RestoreRewindPoint(write) after an unrelated later-run restore: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(workspace, "a.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("a.txt still exists after restoring to the write point (its pre-image was absent): stat err=%v", statErr)
+	}
+}
+
 func TestRunnerInjectsMemorySnippetAndEmitsMemoryEvents(t *testing.T) {
 	t.Parallel()
 
