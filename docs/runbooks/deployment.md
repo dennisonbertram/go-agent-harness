@@ -36,3 +36,19 @@ Deploy MVP safely with practical controls; do not over-engineer for enterprise s
 - [ ] Monitor error rates and key metrics.
 - [ ] Record anomalies in observational log.
 - [ ] Create GitHub issues for any discovered defects.
+
+## Shutdown semantics
+
+On SIGINT/SIGTERM (or SIGHUP for config reload), `harnessd` stops accepting
+new callback/cron work, then cancels every still-in-flight run through the
+same path `POST /v1/runs/{id}/cancel` uses: this interrupts an in-progress
+provider call or tool execution (a `bash` tool child is killed by process
+group within milliseconds) and gives each run up to a bounded few seconds to
+reach `RunStatusCancelled` before the daemon moves on. The number of runs
+cancelled is logged. Only after that does the HTTP server drain (10s budget)
+and the run store close, so a cancelled run's terminal status is durable
+across a restart — a redeploy or `launchd`/`harnesscli service` restart does
+not leave orphaned tool subprocesses or runs stuck `running` forever (issue
+#1373). Store-close ordering while a client still holds an SSE subscription
+open, and per-request handler-context cancellation, are tracked separately
+(issue #1356) and are not covered by this bound.
