@@ -54,8 +54,8 @@ A run moves through a well-defined set of statuses over its lifetime:
 
 The three **terminal events** — `run.completed`, `run.failed`, and `run.cancelled` — signal the definitive end of the run. When your SSE client receives any of these, it should close the connection.
 
-<Callout variant="warning" title="Step limit applies by default">
-  `harnessd` defaults to a maximum of 8 LLM steps per run when `HARNESS_MAX_STEPS` is not explicitly set. A run that hits this limit emits `run.failed` with `"reason": "max_steps_reached"`. See the [Configuration](/docs/concepts/configuration) page for how to raise or remove this limit.
+<Callout variant="info" title="No step limit applies by default">
+  `harnessd` places no cap on the number of LLM steps a run can take unless one is set explicitly — via `HARNESS_MAX_STEPS`, `max_steps` in config, a profile, or a per-run request field. A run that hits an explicit cap emits `run.failed` with `"reason": "max_steps_reached"`. See the [Configuration](/docs/concepts/configuration) page for how to set a cap.
 </Callout>
 
 ---

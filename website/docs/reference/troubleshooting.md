@@ -103,24 +103,6 @@ HARNESS_AUTH_DISABLED=true \
 
 ---
 
-### `max_steps` is unexpectedly 8 when you expected unlimited
-
-**Symptom:** Runs hit the step cap at 8 even though you did not set `HARNESS_MAX_STEPS` and your config file has `max_steps = 0`.
-
-**Cause:** `harnessd` applies a backward-compatibility rule: if `max_steps` resolves to `0` after all config layers are merged and `HARNESS_MAX_STEPS` env var is absent, the runtime resets it to `8`. The value `0` in the config means "unlimited," but only when `HARNESS_MAX_STEPS` is explicitly present in the environment — even as `0`.
-
-**Fix:** Set `HARNESS_MAX_STEPS=0` explicitly in your environment to unlock unlimited steps:
-
-```bash
-HARNESS_MAX_STEPS=0 ./harnessd
-```
-
-<Callout type="warning">
-This is intentional behavior, not a bug. The default of 8 prevents runaway cost on misconfigured deployments. Always set `HARNESS_MAX_STEPS` explicitly in production.
-</Callout>
-
----
-
 ## Workspaces and integrations
 
 ### VM workspace: file and shell tools run on the host, not in the guest

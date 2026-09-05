@@ -46,3 +46,15 @@ func TestTUI010_DefaultTUIConfigValues(t *testing.T) {
 		t.Error("AltScreen should default to true")
 	}
 }
+
+// TestTUI010_DefaultTUIConfigHasNoStepCap is the regression test for issue
+// #1376: the TUI must not display or apply an implicit step cap. A
+// general-purpose coding harness must be able to work for any length of
+// time unless an operator explicitly sets a cap, so the default MaxSteps
+// must be 0 (unlimited), matching the daemon and internal/config defaults.
+func TestTUI010_DefaultTUIConfigHasNoStepCap(t *testing.T) {
+	cfg := tui.DefaultTUIConfig()
+	if cfg.MaxSteps != 0 {
+		t.Errorf("MaxSteps = %d, want 0 (unlimited default; no implicit run-length cap)", cfg.MaxSteps)
+	}
+}

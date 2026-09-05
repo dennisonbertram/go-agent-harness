@@ -26,6 +26,42 @@
   proves explicit `WorkspaceType` provisioning still wins when both fields are
   set. ACP and MCP `start_run` paths were checked and neither sends a
   workspace field today; both still compile unchanged.
+## 2026-09-05 — Issue #1376 remove implicit 8-step run cap
+
+- Symptom: with no `max_steps` configured anywhere, a run whose model made 8
+  tool calls ended `failed` with `error: "max steps (8) reached"`, even though
+  `internal/config.Defaults()` documents `MaxSteps: 0` as unlimited and the
+  runner's `effectiveMaxSteps` already treats `0` as unlimited.
+- Cause: `cmd/harnessd/config_reload.go`'s `loadHarnessConfig` silently reset
+  `MaxSteps` from `0` to `8` whenever `HARNESS_MAX_STEPS` was unset, and
+  `cmd/harnesscli/tui/config.go`'s `DefaultTUIConfig` also defaulted to `8`.
+  Both defaults were purely a daemon/TUI-layer artifact — the config schema,
+  `applyProfileDefaults`, and the runner never intended this.
+- Fix: removed the `harnessCfg.MaxSteps == 0 && getenv("HARNESS_MAX_STEPS")
+  == "" { harnessCfg.MaxSteps = 8 }` rule from `loadHarnessConfig`, and
+  changed `DefaultTUIConfig().MaxSteps` from `8` to `0`. Explicit caps set via
+  config, `HARNESS_MAX_STEPS`, a profile (e.g. the built-in `full` profile's
+  `max_steps = 30`), or a per-run request field are unaffected — only the
+  implicit substitution when nothing was set is removed.
+- Regression coverage: `TestLoadHarnessConfig_NoDefaultStepCap` asserts the
+  resolved config keeps `MaxSteps == 0`; `TestDaemonConfigPath_RunSurvivesMoreThanEightSteps`
+  runs the exact issue repro end to end (a fake provider scripted with 8
+  tool-call turns plus a final answer turn) through the full
+  `loadHarnessConfig -> assembleRunnerConfig -> harness.Runner` daemon wiring
+  and asserts the run completes rather than failing at the 8th step.
+  `TestTUI010_DefaultTUIConfigHasNoStepCap` covers the TUI default.
+- Docs: updated `website/docs/concepts/configuration.md`,
+  `website/docs/concepts/runs-and-conversations.md`,
+  `website/docs/reference/environment-variables.md`, and removed an
+  obsolete troubleshooting entry in `website/docs/reference/troubleshooting.md`
+  that described the old implicit-8 behavior as intentional.
+  `docs/runbooks/golden-path-deployment.md`'s `max_steps = 30` table row was
+  checked and left unchanged — it documents the `full` profile's own explicit
+  `max_steps = 30` (`internal/profiles/builtins/full.toml`), which is a
+  real, unrelated explicit cap, not the implicit daemon default this issue
+  fixed.
+- Verification: `go test ./cmd/harnessd ./cmd/harnesscli/... ./internal/config
+  -race` and `go vet` on the same packages, all green.
 
 ## 2026-08-08 — Issue #1285 attached lifecycle PTY (in implementation)
 

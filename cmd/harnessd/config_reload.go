@@ -31,9 +31,12 @@ import (
 )
 
 // loadHarnessConfig runs the full startup config resolution: layered Load,
-// Resolve, profile defaults, and the daemon-level MaxSteps default (0 → 8
-// unless HARNESS_MAX_STEPS is explicitly set). Startup and reload both use it
-// so a reload observes exactly what a restart would.
+// Resolve, and profile defaults. This is a general-purpose coding harness
+// that must be able to work for any length of time, so MaxSteps resolving to
+// 0 means unlimited — the daemon applies no implicit cap. Operators who want
+// a cap set it explicitly via config, HARNESS_MAX_STEPS, a profile, or a
+// per-run request field. Startup and reload both use this so a reload
+// observes exactly what a restart would.
 func loadHarnessConfig(opts config.LoadOptions, startupProfile *profiles.Profile, getenv func(string) string) (config.Config, error) {
 	harnessCfg, err := config.Load(opts)
 	if err != nil {
@@ -41,11 +44,6 @@ func loadHarnessConfig(opts config.LoadOptions, startupProfile *profiles.Profile
 	}
 	harnessCfg = harnessCfg.Resolve()
 	harnessCfg = applyProfileDefaults(harnessCfg, startupProfile, getenv)
-	// When max_steps is 0 from config (unlimited), preserve the daemon
-	// default of 8 unless the user has explicitly set HARNESS_MAX_STEPS.
-	if harnessCfg.MaxSteps == 0 && getenv("HARNESS_MAX_STEPS") == "" {
-		harnessCfg.MaxSteps = 8
-	}
 	return harnessCfg, nil
 }
 

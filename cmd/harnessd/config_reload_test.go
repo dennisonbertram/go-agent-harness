@@ -9,6 +9,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"go-agent-harness/internal/config"
+	"go-agent-harness/internal/fakeprovider"
 	"go-agent-harness/internal/harness"
 )
 
@@ -308,5 +311,106 @@ func TestConfigReloadFunc_Wiring(t *testing.T) {
 	opts = buildServerOptions(serverBootstrapOptions{})
 	if opts.ConfigReload != nil {
 		t.Error("buildServerOptions without reloader: ConfigReload is non-nil, want nil (501 path)")
+	}
+}
+
+// TestLoadHarnessConfig_NoDefaultStepCap is the regression test for issue
+// #1376: this is a general-purpose coding harness that must be able to work
+// for any length of time, so there must be no implicit run-length cap. With
+// no config file, no profile, and no HARNESS_MAX_STEPS set, loadHarnessConfig
+// must leave MaxSteps at 0 (unlimited) rather than silently substituting a
+// fixed step count that later fails real runs with "max steps (N) reached".
+func TestLoadHarnessConfig_NoDefaultStepCap(t *testing.T) {
+	tmp := t.TempDir()
+	loadOpts := config.LoadOptions{
+		UserConfigPath:    filepath.Join(tmp, "missing-user-config.toml"),
+		ProjectConfigPath: filepath.Join(tmp, "missing-project-config.toml"),
+		ProfilesDir:       filepath.Join(tmp, "profiles"),
+	}
+	getenv := func(string) string { return "" }
+
+	got, err := loadHarnessConfig(loadOpts, nil, getenv)
+	if err != nil {
+		t.Fatalf("loadHarnessConfig: %v", err)
+	}
+	if got.MaxSteps != 0 {
+		t.Fatalf("MaxSteps: got %d, want 0 (unlimited default; no implicit run-length cap)", got.MaxSteps)
+	}
+}
+
+// TestDaemonConfigPath_RunSurvivesMoreThanEightSteps is an end-to-end
+// regression test for issue #1376, exercising a different angle than
+// TestLoadHarnessConfig_NoDefaultStepCap: it proves the daemon's full
+// config-to-runner wiring (loadHarnessConfig -> assembleRunnerConfig ->
+// harness.Runner), not just the resolved config value. The fake provider is
+// scripted with 8 tool-call turns followed by a final answer turn — the
+// exact repro from the issue. If the implicit 8-step default were
+// reintroduced, this run would terminate `failed` with "max steps (8)
+// reached" after the 8th tool call instead of reaching the 9th, final turn.
+func TestDaemonConfigPath_RunSurvivesMoreThanEightSteps(t *testing.T) {
+	tmp := t.TempDir()
+	loadOpts := config.LoadOptions{
+		UserConfigPath:    filepath.Join(tmp, "missing-user-config.toml"),
+		ProjectConfigPath: filepath.Join(tmp, "missing-project-config.toml"),
+		ProfilesDir:       filepath.Join(tmp, "profiles"),
+	}
+	getenv := func(string) string { return "" }
+
+	harnessCfg, err := loadHarnessConfig(loadOpts, nil, getenv)
+	if err != nil {
+		t.Fatalf("loadHarnessConfig: %v", err)
+	}
+
+	deps := runnerConfigAssemblyDeps{
+		opts:      runnerConfigOptions{DefaultSystemPrompt: "test"},
+		getenv:    getenv,
+		workspace: t.TempDir(),
+		home:      t.TempDir(),
+		globalDir: t.TempDir(),
+	}
+	runnerCfg, _ := assembleRunnerConfig(harnessCfg, deps)
+
+	registry := harness.NewRegistry()
+	if err := registry.Register(harness.ToolDefinition{
+		Name:        "noop",
+		Description: "does nothing",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(context.Context, json.RawMessage) (string, error) {
+		return "ok", nil
+	}); err != nil {
+		t.Fatalf("register noop tool: %v", err)
+	}
+
+	turns := make([]fakeprovider.Turn, 0, 9)
+	for i := 0; i < 8; i++ {
+		turns = append(turns, fakeprovider.Turn{
+			ToolCalls: []harness.ToolCall{{
+				ID: fmt.Sprintf("call-%d", i), Name: "noop", Arguments: "{}",
+			}},
+		})
+	}
+	turns = append(turns, fakeprovider.Turn{Content: "all nine turns served"})
+	provider := fakeprovider.New(turns)
+
+	runner := harness.NewRunner(provider, registry, runnerCfg)
+	defer runner.Shutdown(context.Background())
+
+	run, err := runner.StartRun(harness.RunRequest{Prompt: "call noop repeatedly"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var final harness.Run
+	for time.Now().Before(deadline) {
+		st, ok := runner.GetRun(run.ID)
+		if ok && (st.Status == harness.RunStatusCompleted || st.Status == harness.RunStatusFailed) {
+			final = st
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if final.Status != harness.RunStatusCompleted {
+		t.Fatalf("run status: got %q (error %q), want %q — a run with 8 tool calls must not fail on an unconfigured step cap", final.Status, final.Error, harness.RunStatusCompleted)
 	}
 }
