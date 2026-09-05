@@ -12,6 +12,10 @@ It is designed for periodic quality checks, not leaderboard chasing:
 
 ## Included Tasks
 
+The runner drives every task directory under `benchmarks/terminal_bench/tasks`
+(21 tasks as of this writing, spanning Go bugfixes, refactors, and shell/docs
+repairs), not a fixed subset. A few representative examples:
+
 - `go-retry-schedule-fix`: simple Go bugfix that must end with `go test ./...` passing.
 - `staging-deploy-docs`: config + documentation edit that verifies stable file mutations.
 - `incident-summary-shell`: shell-script repair that verifies file generation and output formatting.
@@ -25,10 +29,17 @@ It is designed for periodic quality checks, not leaderboard chasing:
 Optional environment overrides:
 
 - `OPENAI_BASE_URL`
-- `HARNESS_BENCH_MODEL` (defaults to `gpt-5-nano`)
-- `HARNESS_BENCH_MAX_STEPS` (defaults to `12`)
+- `TERMINAL_BENCH_MODEL` (takes priority over `HARNESS_BENCH_MODEL`; `scripts/run-terminal-bench.sh:11`)
+- `HARNESS_BENCH_MODEL` (defaults to `gpt-5-mini`)
+- `HARNESS_BENCH_MAX_STEPS` (defaults to `100`, `benchmarks/terminal_bench/agent.py:33`)
 - `HARNESS_BENCH_MEMORY_MODE` (defaults to `off`)
+- `HARNESS_BENCH_TARGET_ARCH` (`amd64` or `arm64`; defaults to the host arch)
+- `BENCH_MIN_ACCURACY` (defaults to `70`; percent threshold enforced when computing pass/fail)
 - `TERMINAL_BENCH_OUTPUT_DIR`
+
+Flags: `--skip-build` (skip the Docker image build), `--build-base-only`
+(build the shared Terminal-Bench base image and exit), `--preflight-only`
+(run local preflight checks and exit).
 
 ## Local Run
 
@@ -47,7 +58,8 @@ Runner behavior:
 Workflow: `.github/workflows/terminal-bench-periodic.yml`
 
 - Triggers nightly via cron and on manual `workflow_dispatch`.
-- Uploads `.tmp/terminal-bench/` as a workflow artifact.
+- Uploads `.tmp/terminal-bench/latest` (the full result directory) and
+  `.tmp/terminal-bench/latest/report.md` as separate workflow artifacts.
 
 ## Failure Triage
 

@@ -29,6 +29,8 @@ The CLI currently accepts:
 - `-list-profiles`
 - `-tui`
 - `-workspace` (defaults to the CLI's current working directory)
+- `-plan-mode`
+- `-resume`
 
 The prompt-extension flags are forwarded into the run request and are the current way to exercise prompt customization from the CLI.
 
@@ -124,5 +126,5 @@ they are not a passing substitute.
 
 - CLI entrypoint: `cmd/harnesscli/main.go`
 - Auth subcommand dispatch and login flow: `cmd/harnesscli/auth.go`
-- Run HTTP API: `internal/server/http.go`
+- Run HTTP API: `internal/server/http_runs.go`
 - Run payload and response types: `internal/harness/types.go`

@@ -31,15 +31,21 @@ macapp/
 
 ## 2. Process architecture — one harnessd per project
 
-`harness.RunRequest` has **no** per-run workspace field. The workspace root is
-process-level (`HARNESS_WORKSPACE`), so a single harnessd serves exactly one
-project directory. `extra_dirs` grants a run access *beyond* that root (the
-TUI's `/add-dir`) but cannot relocate it.
+`harness.RunRequest` gained a per-run `workspace_path` field (issue #1372):
+`harnesscli --workspace`/the TUI send it, and the server roots that run's
+tools there (validated absolute, existing) instead of the process-level
+`HARNESS_WORKSPACE`. `extra_dirs` still grants a run access *beyond* the
+effective root (the TUI's `/add-dir`) but does not relocate it.
 
-Consequence: opening a second project means a second harnessd. The app
-supervises one child process per project window — spawn, health-check, shut
-down — the way Osaurus supervises its embedded server. This is a required
-epic, not an optimisation.
+Consequence at the time this decision was made (pre-#1372): opening a second
+project meant a second harnessd, since the workspace root was process-level
+only. The app supervises one child process per project window — spawn,
+health-check, shut down — the way Osaurus supervises its embedded server. This
+was a required epic, not an optimisation. Whether `workspace_path` changes that
+architecture (a single harnessd could now serve multiple projects by sending a
+different `workspace_path` per run) is a design question this document does not
+resolve — flagged here rather than answered, since it is a native-app
+architecture decision, not a factual doc/code mismatch.
 
 ## 3. Wire contract
 
@@ -51,7 +57,8 @@ generated from source, not from memory.
 - Streaming: `GET /v1/runs/{id}/events`, `text/event-stream`, envelope
   `{id, run_id, type, timestamp, payload}`. `id` is `<run id>:<seq>`; resume a
   dropped stream by sending it back as `Last-Event-ID`.
-- 80 canonical event types exist (`internal/harness/events.go`). `HarnessEventType`
+- 79 canonical event types exist (`AllEventTypes()`, `internal/harness/events.go`;
+  see `docs/design/event-catalog.md`). `HarnessEventType`
   names the ~42 the UI reacts to and preserves the rest as `.other(name)`, so a
   server that gains new events does not break an older app.
 
@@ -63,7 +70,7 @@ the server. So `HarnessKit` is tested twice:
 - Unit tests against a `URLProtocol` stub, plus an SSE parser tested against a
   byte-for-byte capture of a real run stream (`Fixtures/run-toolcall-golden.sse`),
   including a chunk-boundary-invariance property.
-- Live tests against a real harnessd (`scripts/live-harnessd.sh`), driving an
+- Live tests against a real harnessd (`macapp/scripts/live-harnessd.sh`), driving an
   actual run to completion over SSE. Skipped unless `HARNESS_TEST_BASE_URL` is
   set, so the default suite stays hermetic.
 
@@ -150,7 +157,7 @@ per-project store at `<workspace>/.harness/conversations.db`.
 `scripts/run-bench-smoke.sh`, the repo's key-free smoke, fails on `main`.
 
 `HARNESS_PROVIDER=fake` installs the fake provider as the runner's *default*,
-but per-run `Runner.resolveProvider` (`internal/harness/runner.go:2099`) prefers
+but per-run `Runner.resolveProvider` (`internal/harness/runner.go:3152`) prefers
 `providerRegistry.GetClientForModel(model)` and only falls back to the default
 when that lookup fails. Since the default model resolves to a real catalog
 provider, smoke runs hit that provider and fail (observed: `codex-subscription`

@@ -45,7 +45,9 @@ export GEMINI_API_KEY="..."
 ./harnessd --profile full
 ```
 
-The server listens on `:8080` by default.
+The server listens on `127.0.0.1:8080` by default (`internal/config/config.go:254`).
+A non-loopback bind without an API-key store or `HARNESS_AUTH_DISABLED=true` is
+refused (`bind_guard.go:29-43`).
 
 ---
 
@@ -56,9 +58,9 @@ The server listens on `:8080` by default.
 | Field | Default | Description |
 |-------|---------|-------------|
 | `model` | `gpt-4.1-mini` | Default model for runs that do not specify one |
-| `max_steps` | `30` | Maximum tool-use steps per run |
+| `max_steps` | `30` | Maximum tool-use steps per run. This is the `full` profile's own value — the daemon itself has no default step cap (`max_steps` is 0/unlimited unless a profile, request, or `HARNESS_MAX_STEPS` sets one) |
 | `max_cost_usd` | `2.00` | Per-run cost ceiling in USD |
-| `tools.allow` | `[]` (all) | Empty allow list means all tools are available |
+| `tools.allow` | `[]` (all) | Empty allow list means all tools are available (this is a profile TOML key, not a project `config.toml` key — see the note below) |
 
 ### Environment variable overrides
 
@@ -67,7 +69,7 @@ They take the highest precedence in the config layering order.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HARNESS_ADDR` | `:8080` | HTTP listen address (e.g. `:9090` or `127.0.0.1:8080`) |
+| `HARNESS_ADDR` | `127.0.0.1:8080` | HTTP listen address (e.g. `:9090` or `127.0.0.1:8080`) |
 | `HARNESS_MODEL` | profile value | Override the default model |
 | `HARNESS_MAX_STEPS` | profile value | Override max steps per run |
 | `HARNESS_MAX_COST_PER_RUN_USD` | profile value | Override per-run cost ceiling |
@@ -244,9 +246,9 @@ readable from the store after it has finished.
 | `/v1/runs/{id}/events` | GET | SSE stream of run events |
 | `/v1/profiles` | GET | List all profiles (built-in, project, user) |
 | `/v1/profiles/{name}` | GET | Get a single profile by name |
-| `/v1/profiles/{name}` | POST | Create a user profile (requires `profiles_dir` config) |
-| `/v1/profiles/{name}` | PUT | Update a user profile (requires `profiles_dir` config) |
-| `/v1/profiles/{name}` | DELETE | Delete a user profile (requires `profiles_dir` config) |
+| `/v1/profiles/{name}` | POST | Create a user profile |
+| `/v1/profiles/{name}` | PUT | Update a user profile |
+| `/v1/profiles/{name}` | DELETE | Delete a user profile |
 
 ---
 
@@ -259,4 +261,10 @@ readable from the store after it has finished.
   ./scripts/test-regression.sh
   ```
 - The `full` profile does not restrict tools. To restrict available tools, use
-  a custom profile or set `tools.allow` in a project-level `config.toml`.
+  a custom profile with an `[tools] allow` list (`internal/profiles/profile.go`).
+  The project-level `config.toml` (`WorkspaceRunnerConfig`,
+  `internal/config/workspace_config.go`) has no `tools` key — tool
+  allow/deny lists are a profile concept, not a workspace-config concept.
+- User-writable profiles live under `HARNESS_PROFILES_DIR` (must be absolute)
+  or, when unset, `~/.harness/profiles` — there is no `profiles_dir` TOML
+  config key (`cmd/harnessd/profile_paths.go:14-26`).

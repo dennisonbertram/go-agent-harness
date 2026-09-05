@@ -16,7 +16,7 @@ Operate optional observational memory in local harness deployments and prepare f
 - `HARNESS_MEMORY_REFLECT_THRESHOLD_TOKENS` (default `4000`)
 - `HARNESS_MEMORY_LLM_MODE` (`provider|openai|inherit`, default `provider` when `HARNESS_MEMORY_LLM_PROVIDER` is set, otherwise `openai` when `OPENAI_API_KEY` is set, otherwise `inherit`)
 - `HARNESS_MEMORY_LLM_PROVIDER` (provider key such as `openrouter`, `anthropic`, `openai`; used when `HARNESS_MEMORY_LLM_MODE=provider`)
-- `HARNESS_MEMORY_LLM_MODEL` (default `gpt-5-nano`)
+- `HARNESS_MEMORY_LLM_MODEL` (default `gpt-5-nano`, only when `HARNESS_MEMORY_LLM_MODE=openai`; other modes have no built-in default and must set this explicitly, `cmd/harnessd/main.go:527-529`)
 - `HARNESS_MEMORY_LLM_BASE_URL` (defaults to `OPENAI_BASE_URL`)
 - `HARNESS_MEMORY_LLM_API_KEY` (defaults to `OPENAI_API_KEY`)
 
@@ -111,5 +111,5 @@ Watch SSE for memory events:
 
 ## Scale Path (Future)
 
-- Postgres adapter and remote coordinator transport are planned but not enabled in v1.
+- The Postgres adapter is implemented (`internal/observationalmemory/store_postgres.go`, wired at `cmd/harnessd/main.go:1573-1574` via `HARNESS_MEMORY_DB_DRIVER=postgres`, see the Environment Variables section above). Remote coordinator transport is still planned and not enabled in v1.
 - Keep operation ordering semantics stable by scope key when moving off local coordinator mode.

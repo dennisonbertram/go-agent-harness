@@ -77,7 +77,7 @@ Config-driven lifecycle hooks (shell/HTTP, epic #737) are listed via:
 `/v1/runs`, run-control, and SSE event routes; do not add dashboard server routes.
 
 Wiring: `ServerOptions.ScriptWorkflows` accepts a `scriptWorkflowManager` interface.
-15 POC tests in `internal/server/http_script_workflows_test.go` and `*_advanced_test.go`
+20 POC tests in `internal/server/http_script_workflows_test.go` and `*_advanced_test.go`
 cover CRUD, SSE streaming, resume, adversarial verify, loop-until-dry, concurrent fan-out,
 and error recovery chains.
 

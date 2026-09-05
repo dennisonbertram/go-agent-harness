@@ -23,8 +23,10 @@ server's startup defaults (typically the `full` profile).
 
 ## Profile TOML Schema
 
-A profile file has four top-level sections: `[meta]`, `[runner]`, `[tools]`,
-and `[permissions]`. The `[mcp_servers]` section is optional.
+A profile file has an optional top-level `extends` key (declares a parent
+profile name for inheritance; the child inherits unresolved fields from the
+base) plus four sections: `[meta]`, `[runner]`, `[tools]`, and `[permissions]`.
+The `[mcp_servers]` section is optional (`internal/profiles/profile.go:19-35`).
 
 ### `[meta]` — Identity and metadata
 
@@ -48,6 +50,7 @@ and `[permissions]`. The `[mcp_servers]` section is optional.
 | `max_cost_usd` | float | `0.0` | Per-run cost ceiling in USD. `0.0` means no profile-level ceiling. |
 | `system_prompt` | string | `""` | System prompt injected at the start of every run using this profile. Empty means no profile-level system prompt. |
 | `reasoning_effort` | string | `""` | Reasoning effort hint forwarded to the provider. Valid values: `"low"`, `"medium"`, `"high"`. Empty means provider default. |
+| `max_turns` | int | `0` | Maximum assistant LLM turns per run. `0` means no limit. |
 
 ### `[tools]` — Tool allowlist
 
@@ -317,9 +320,11 @@ result_mode = "structured"
 
 - Profile names must be valid kebab-case identifiers. The validator rejects names
   with path separators or characters that could escape the profiles directory.
-- The `[permissions]` section zero value means "no override". Setting a field to
-  `true` grants that capability; there is no `false` override — fields that are
-  not set inherit from the request or server defaults.
+- The `[permissions]` section zero value means "no override". An explicit `false`
+  is tracked separately from an absent field (`BashSpecified`/`FileWriteSpecified`/
+  `NetAccessSpecified`, `internal/profiles/profile.go:93-108`) and denies that
+  capability; an omitted field inherits from the request or server defaults. See
+  the `[permissions]` table above.
 - Efficiency scores and review counts in `[meta]` are managed by the efficiency
   analysis system. Do not set them manually in authored profiles.
 - Built-in profile TOML files live at `internal/profiles/builtins/` in the

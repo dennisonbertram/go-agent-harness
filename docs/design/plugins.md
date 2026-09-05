@@ -159,8 +159,12 @@ func (p *MyPlugin) Register(cfg *harness.RunnerConfig)
 ## Step-by-step: writing a plugin
 
 Below is a minimal compilable plugin that logs every tool call to standard error.
+This `tool-logger` example is a **hypothetical worked example for this
+tutorial** — it does not exist in the repository. The only compile-time plugin
+that actually exists under `plugins/` is `plugins/conclusion-watcher/`; use it
+as the real reference implementation.
 
-**`plugins/tool-logger/plugin.go`**
+**`plugins/tool-logger/plugin.go`** (illustrative — not a real file in this repo)
 
 ```go
 package toollogger

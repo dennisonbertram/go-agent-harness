@@ -58,15 +58,20 @@ curl -X POST http://localhost:8080/v1/runs \
   }'
 ```
 
-Per-run server names must not collide with globally registered server names — the request is rejected with 400 if they do.
+Per-run server names must not collide with globally registered server names.
+`POST /v1/runs` still accepts the request and returns `202` — the collision is
+only detected once the run starts executing (`internal/harness/runner.go`
+`runPreflight` calling `buildPerRunMCPRegistry` →
+`internal/harness/scoped_mcp.go:286-289`), and the run then ends as
+`run.failed` with the collision error, not as a rejected `POST`.
 
 ---
 
 ### How the agent sees MCP tools
 
-MCP tools appear alongside native harness tools in the agent's tool list. The tool name visible to the agent is `{server_name}__{tool_name}` (double underscore). For example, a `read_file` tool on the `filesystem` server appears as `filesystem__read_file`.
+MCP tools appear alongside native harness tools in the agent's tool list. The tool name visible to the agent is `mcp_{server_name}_{tool_name}` (single underscore separators; `internal/harness/tools/deferred/mcp.go:109`). For example, a `read_file` tool on the `filesystem` server appears as `mcp_filesystem_read_file`.
 
-This naming is handled by `internal/harness/tools/mcp.go` and the `MCPRegistry` interface.
+This naming is handled by `internal/harness/tools/deferred/mcp.go` (`DynamicMCPTools`) and the `MCPRegistry` interface (`internal/harness/tools/types.go:208`).
 
 ---
 
@@ -83,29 +88,60 @@ The HTTP transport (`internal/mcp/http_conn.go`) validates that the URL scheme i
 
 ## Harness as MCP Server
 
-### HTTP MCP server package (`internal/mcpserver`)
+There are two distinct ways the harness exposes itself as an MCP server, plus
+client-management endpoints for the client role above:
 
-`internal/mcpserver` provides an HTTP MCP server handler for `POST /mcp` and `GET /mcp` (SSE). The `/mcp` endpoint is mounted by `harnessd` by default alongside the main HTTP API.
+| Surface | Transport | Tool set | Who talks to it |
+|---|---|---|---|
+| `/mcp` (mounted inside `harnessd`) | HTTP, POST-only JSON-RPC | 25 run-delegation tools (`start_run`, `get_run_status`, ...) | The `cmd/harness-mcp` stdio binary, or any MCP host that can reach `harnessd` over HTTP |
+| `harnessd --mcp` | stdio JSON-RPC | The full harness tool catalog (`bash`, `read`, `write`, etc.) | An editor/MCP host that wants direct, unrestricted tool access without going through the run API |
+| `GET /v1/mcp/servers`, `POST /v1/mcp/servers` | REST | N/A — client-management, not an MCP server itself | Operators inspecting/connecting the harness's own MCP *client* registry |
 
-`harnessd` also exposes MCP **client management** endpoints at:
+### `/mcp` — run-delegation HTTP server (`internal/harnessmcp`)
 
-- `GET /v1/mcp/servers`
-- `POST /v1/mcp/servers`
+`/mcp` is served by `harnessmcp.NewHTTPHandler` (`cmd/harnessd/runtime_container.go:348-352`),
+mounted by default alongside the main HTTP API and behind the same auth
+middleware as `/v1` (issue #1328). It is **POST-only**: `internal/harnessmcp/httptransport.go:29-31`
+returns `405 Method Not Allowed` (with an `Allow: POST` header) for `GET` or
+any other method, so there is no `GET /mcp` SSE stream.
 
-**Tools exposed** (10 total):
+It exposes the same 25 tools as the stdio `harness-mcp` binary described
+below — see that section for the full tool list. `harnessd` also exposes MCP
+**client management** endpoints (for the client role, not this server role) at:
 
-| Tool | Description |
-|------|-------------|
-| `start_run` | Submit a new agent run, returns `run_id` |
-| `get_run_status` | Poll status and output of a run |
-| `list_runs` | List recent runs |
-| `steer_run` | Inject a guidance message into an active run |
-| `submit_user_input` | Respond to a run paused at `waiting_for_user` |
-| `list_conversations` | List recent conversations |
-| `get_conversation` | Retrieve full message history for a conversation |
-| `search_conversations` | Full-text search across conversations |
-| `compact_conversation` | Trigger context compaction for a conversation |
-| `subscribe_run` | Register for SSE notifications on a run (`GET /mcp`) |
+- `GET /v1/mcp/servers` — list connected MCP client servers
+- `POST /v1/mcp/servers` — connect a new MCP client server
+
+Both require auth scopes (`runs:read` for GET, `admin` for POST); any other
+method on `/v1/mcp/servers` returns 405.
+
+`internal/mcpserver/` (a different, unmounted package) previously served this
+role and is now only used for `harnessd --mcp` stdio mode below — it has no
+external callers for HTTP. Do not confuse the two: `internal/harnessmcp` is
+what `/mcp` runs today.
+
+### `harnessd --mcp` — stdio tool-catalog server (`internal/mcpserver`)
+
+```bash
+harnessd --mcp --mcp-workspace /path/to/project
+```
+
+This starts `harnessd` in **stdio MCP mode instead of HTTP server mode**
+(`cmd/harnessd/main.go:259-265,284-289`). It builds the same tool catalog the
+HTTP runner uses (`harness.NewDefaultRegistryWithOptions`,
+`cmd/harnessd/runtime_container.go:67-74`) and serves it over
+`internal/mcpserver.NewStdioServer` on stdin/stdout — there is no run
+lifecycle here, no `start_run`/`get_run_status`; the agent's own tools (bash,
+read, write, edit, grep, etc.) are exposed directly to the connecting MCP
+host.
+
+`--mcp-workspace` sets the workspace root (default: current directory) — but
+the tool catalog's sandbox scope is deliberately **unrestricted**
+(`cmd/harnessd/runtime_container.go:57-66`): bash and write are not
+workspace-confined. Anything that can speak to this stdio server has the
+process's own filesystem and network authority, the same way an editor
+extension would. This mode shuts down on `SIGINT`/`SIGTERM` but deliberately
+does not register `SIGHUP`, so a terminal hangup cannot kill it.
 
 ---
 
@@ -149,7 +185,7 @@ The stdio binary exposes 25 tools: `start_run`, `get_run_status`, `wait_for_run`
 `list_models`, `list_providers`, `list_profiles`, `list_tools`, `list_skills`, `list_conversations`, `get_conversation`,
 `search_conversations`, `compact_conversation`, `tail_run_events`, `get_run_input`,
 `submit_user_input`, `get_run_todos`, `get_run_summary`, `get_run_context`, and
-`compact_run`.
+`compact_run`. `/mcp` (above) serves this same set.
 
 **Watching a run.** An MCP tool call is request/response, so a tool cannot stream
 into an in-flight call. Poll `tail_run_events` instead: it returns the events since
@@ -185,20 +221,8 @@ drifted (issue #1317).
 the caller's own bearer token, so an authenticated daemon stays authenticated end
 to end. It is mounted behind the same auth middleware as `/v1` (issue #1328).
 
-### SSE streaming (`GET /mcp`)
-
-Subscribe to live run events:
-
-1. Call `subscribe_run` via `POST /mcp` with `{"run_id": "<id>"}`.
-2. Open a persistent `GET /mcp` connection — server sends SSE events.
-
-These steps work out of the box with `harnessd` — the `/mcp` endpoint is mounted by default.
-
-Event format:
-```
-data: {"jsonrpc":"2.0","method":"run/event","params":{"run_id":"...","event_type":"status_changed","status":"running"}}\n\n
-data: {"jsonrpc":"2.0","method":"run/completed","params":{"run_id":"...","status":"completed","cost_usd":0.004}}\n\n
-```
+`harnessd --mcp` stdio mode (above) is unrelated to this shared implementation —
+it is a third surface that skips the run API entirely.
 
 ---
 
@@ -207,8 +231,8 @@ data: {"jsonrpc":"2.0","method":"run/completed","params":{"run_id":"...","status
 | Package | Role |
 |---------|------|
 | `internal/mcp/` | MCP client: `ClientManager`, stdio+HTTP transports, env config parser |
-| `internal/harness/tools/mcp.go` | Tool layer: wraps `MCPRegistry` into agent-callable tools |
+| `internal/harness/tools/deferred/mcp.go` | Tool layer: wraps `MCPRegistry` into agent-callable tools, `mcp_{server}_{tool}` naming |
 | `internal/harness/scoped_mcp.go` | Per-run scoped registry with global shadowing |
-| `internal/mcpserver/` | MCP HTTP server (broker, poller, SSE, 10 tools) |
-| `cmd/harness-mcp/` | Thin stdio binary proxying to `harnessd` |
-| `internal/harnessmcp/` | Library used by the stdio binary |
+| `internal/harnessmcp/` | Run-delegation MCP library (25 tools) shared by `/mcp` and `cmd/harness-mcp` |
+| `internal/mcpserver/` | Stdio-only tool-catalog MCP server, used by `harnessd --mcp` |
+| `cmd/harness-mcp/` | Thin stdio binary proxying to `harnessd` over HTTP, using `internal/harnessmcp` |

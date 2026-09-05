@@ -73,13 +73,16 @@ and override the profile at startup.
 If `--profile` is omitted, `harnessd` starts with compiled-in defaults and no
 profile-level system prompt.
 
-### Environment variable layering order (highest to lowest priority)
+### Configuration layering order (highest to lowest priority)
 
-1. `HARNESS_*` environment variables
-2. Project-level `.harness/config.toml`
-3. User-global `~/.harness/config.toml`
-4. `--profile` startup profile
+1. `HARNESS_*` environment variables (CLI/env overrides)
+2. `--profile` named profile (`~/.harness/profiles/<name>.toml`)
+3. Project-level `.harness/config.toml`
+4. User-global `~/.harness/config.toml`
 5. Compiled-in defaults
+
+(`internal/config/config.go:3-8`; there is also an unapplied "cloud/team
+constraints" layer stubbed above env for future use.)
 
 ---
 

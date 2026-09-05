@@ -215,7 +215,7 @@ source. Treat these as operational guides, not verified recipes.
 
 **What it is:** A `GoAgentHarnessAgent` class implementing the `terminal_bench.BaseAgent` interface.
 It cross-compiles `harnessd` and `harnesscli` into the task container and drives tasks via the harness
-HTTP API. 7 custom Go coding tasks are included under `benchmarks/terminal_bench/tasks/`.
+HTTP API. 21 custom coding tasks are included under `benchmarks/terminal_bench/tasks/`.
 
 **Python dependency (not installed here):**
 
