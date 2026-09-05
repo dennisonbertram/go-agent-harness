@@ -470,6 +470,17 @@ type RunRequest struct {
 	// named in ProfileName. Explicit WorkspaceType always takes precedence over
 	// the profile's IsolationMode setting.
 	WorkspaceType string `json:"workspace_type,omitempty"`
+	// WorkspacePath explicitly roots this run's file/shell tools and sandbox
+	// confinement at the given directory, without provisioning or isolating
+	// anything (issue #1372). It must be an absolute path to an existing
+	// directory; violations are rejected synchronously at StartRun time,
+	// mirroring ExtraDirs validation. When WorkspaceType (explicitly or via
+	// profile) resolves to a non-empty provisioning mode, that provisioned
+	// workspace takes precedence and WorkspacePath is ignored. Harnesscli and
+	// the TUI send this field with the caller's cwd by default; before this
+	// field existed on RunRequest it was silently dropped by the decoder and
+	// every run used the daemon's own HARNESS_WORKSPACE instead.
+	WorkspacePath string `json:"workspace_path,omitempty"`
 	// ExtraDirs grants the run read/work access to additional directory roots
 	// beyond the workspace root (TUI /add-dir). Each entry must be an absolute
 	// path to an existing directory; violations are rejected synchronously at

@@ -28,8 +28,16 @@ The CLI currently accepts:
 - `-prompt-custom`
 - `-list-profiles`
 - `-tui`
+- `-workspace` (defaults to the CLI's current working directory)
 
 The prompt-extension flags are forwarded into the run request and are the current way to exercise prompt customization from the CLI.
+
+`-workspace` sends `workspace_path` on the run request and is honored server-side
+(issue #1372): the server validates it (absolute path to an existing directory,
+otherwise a synchronous 400) and roots that run's file/shell tools and sandbox
+confinement there via the per-run tool registry, instead of the daemon's own
+`HARNESS_WORKSPACE`. Before this fix the field was silently dropped and every
+run operated under the daemon's startup directory regardless of `-workspace`.
 
 The CLI also supports:
 
