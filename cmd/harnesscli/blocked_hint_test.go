@@ -268,3 +268,80 @@ func TestRunContinue_ConflictHintsWaitingForUserCommand(t *testing.T) {
 		t.Errorf("expected the 409 to hint the working 'input' command, got:\n%s", got)
 	}
 }
+
+// --- Regression: the printed hint is not just correctly worded — the exact
+// command it names actually resolves the run.waiting_for_user block end to
+// end. This is the original bug report (#1374): the CLI told operators to
+// run "harnesscli continue <id> <prompt>", which returned 409 and left the
+// run stuck. Unlike the unit tests above (which check the hint text and the
+// input command in isolation), this drives the real headless run() path
+// into the blocked state and then literally invokes the command the hint
+// names, so a future change that lets the hint and the input-command wiring
+// drift apart again — e.g. the hint text changes but runInput's path does
+// not, or vice versa — fails here even if each half still passes on its own.
+func TestBlockedRunHint_InputCommandActuallyResolvesTheRun(t *testing.T) {
+	stubStdinTerminal(t, false)
+
+	var submittedAnswers map[string]map[string]string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/runs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"run_id":"run_abc","status":"queued"}`)
+	})
+	mux.HandleFunc("/v1/runs/run_abc/events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		_, _ = io.WriteString(w, "event: run.waiting_for_user\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"e1\",\"run_id\":\"run_abc\",\"type\":\"run.waiting_for_user\"}\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+	})
+	mux.HandleFunc("/v1/runs/run_abc/input", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("unexpected method for /input: %s", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&submittedAnswers); err != nil {
+			t.Fatalf("decode submitted answers: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"status":"accepted"}`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	outBuf, errBuf, restore := captureOutput(t)
+	defer restore()
+
+	origRequestClient := requestHTTPClient
+	origStreamClient := streamHTTPClient
+	requestHTTPClient = ts.Client()
+	streamHTTPClient = ts.Client()
+	defer func() {
+		requestHTTPClient = origRequestClient
+		streamHTTPClient = origStreamClient
+	}()
+
+	// Step 1: the headless run blocks on run.waiting_for_user and prints the hint.
+	code := run([]string{"-base-url=" + ts.URL, "-prompt=test prompt"})
+	if code != exitBlocked {
+		t.Fatalf("run() exit code = %d, want exitBlocked (%d) (stderr=%s)", code, exitBlocked, errBuf.String())
+	}
+	hint := errBuf.String()
+	if !strings.Contains(hint, "harnesscli input run_abc") {
+		t.Fatalf("hint does not name the input command, got:\n%s", hint)
+	}
+	_ = outBuf
+
+	// Step 2: literally follow the printed hint — invoke "harnesscli input"
+	// for the same run ID, exactly as a headless operator would.
+	inputCode := runInput([]string{"-base-url=" + ts.URL, "run_abc", "Proceed?=yes"})
+	if inputCode != 0 {
+		t.Fatalf("runInput() following the printed hint failed with exit %d (stderr=%s); the hint names a command that does not resolve the block", inputCode, errBuf.String())
+	}
+	if submittedAnswers["answers"]["Proceed?"] != "yes" {
+		t.Fatalf("server never received the answer via the hinted command; got %v", submittedAnswers)
+	}
+}
