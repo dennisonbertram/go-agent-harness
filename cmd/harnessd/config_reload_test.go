@@ -310,3 +310,27 @@ func TestConfigReloadFunc_Wiring(t *testing.T) {
 		t.Error("buildServerOptions without reloader: ConfigReload is non-nil, want nil (501 path)")
 	}
 }
+
+// TestLoadHarnessConfig_NoDefaultStepCap is the regression test for issue
+// #1376: this is a general-purpose coding harness that must be able to work
+// for any length of time, so there must be no implicit run-length cap. With
+// no config file, no profile, and no HARNESS_MAX_STEPS set, loadHarnessConfig
+// must leave MaxSteps at 0 (unlimited) rather than silently substituting a
+// fixed step count that later fails real runs with "max steps (N) reached".
+func TestLoadHarnessConfig_NoDefaultStepCap(t *testing.T) {
+	tmp := t.TempDir()
+	loadOpts := config.LoadOptions{
+		UserConfigPath:    filepath.Join(tmp, "missing-user-config.toml"),
+		ProjectConfigPath: filepath.Join(tmp, "missing-project-config.toml"),
+		ProfilesDir:       filepath.Join(tmp, "profiles"),
+	}
+	getenv := func(string) string { return "" }
+
+	got, err := loadHarnessConfig(loadOpts, nil, getenv)
+	if err != nil {
+		t.Fatalf("loadHarnessConfig: %v", err)
+	}
+	if got.MaxSteps != 0 {
+		t.Fatalf("MaxSteps: got %d, want 0 (unlimited default; no implicit run-length cap)", got.MaxSteps)
+	}
+}
