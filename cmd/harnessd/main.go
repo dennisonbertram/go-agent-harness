@@ -467,7 +467,9 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	// Use the resolved config values. HARNESS_MODEL, HARNESS_ADDR,
 	// HARNESS_MAX_STEPS, and HARNESS_MAX_COST_PER_RUN_USD env vars are
 	// already applied by the config stack at layer 5 — backward-compatible.
-	// The MaxSteps 0→8 daemon default was applied inside loadHarnessConfig.
+	// MaxSteps has no implicit daemon default: 0 (unset) means unlimited
+	// (issue #1376). An explicit cap comes only from config, env, profile,
+	// or a per-run request field.
 	model := harnessCfg.Model
 	addr := harnessCfg.Addr
 

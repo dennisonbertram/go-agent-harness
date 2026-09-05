@@ -8,7 +8,9 @@ type TUIConfig struct {
 	Model string
 	// Workspace is the workspace root path.
 	Workspace string
-	// MaxSteps limits the number of agent steps.
+	// MaxSteps limits the number of agent steps. 0 means unlimited — this
+	// is a general-purpose coding harness that must be able to work for
+	// any length of time unless an operator sets an explicit cap.
 	MaxSteps int
 	// Theme selects the color theme.
 	Theme string
@@ -44,7 +46,7 @@ type TUIConfig struct {
 func DefaultTUIConfig() TUIConfig {
 	return TUIConfig{
 		BaseURL:      "http://localhost:8080",
-		MaxSteps:     8,
+		MaxSteps:     0,
 		EnableTUI:    false,
 		ColorProfile: "auto",
 		AltScreen:    true,
