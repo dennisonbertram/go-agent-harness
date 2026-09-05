@@ -382,6 +382,11 @@ func runContinue(args []string) int {
 		fmt.Fprintf(stderr, "harnesscli continue: read response: %v\n", err)
 		return 1
 	}
+	if resp.StatusCode == http.StatusConflict {
+		fmt.Fprintf(stderr, "harnesscli continue: %v\n", formatAPIError(resp.StatusCode, responseBody))
+		fmt.Fprintf(stderr, "harnesscli continue: %s\n", continueConflictHint(*baseURL, runID))
+		return 1
+	}
 	if resp.StatusCode >= 300 {
 		fmt.Fprintf(stderr, "harnesscli continue: %v\n", formatAPIError(resp.StatusCode, responseBody))
 		return 1
@@ -617,20 +622,181 @@ func printWorkflowRecap(recap *workflowRecap) {
 	}
 }
 
-// TODO(#1374 red): runInput, runApprove, runDeny are stubbed to make the
-// failing-test commit compile; the real implementation lands in the green
-// commit.
+// runInput implements "harnesscli input <run-id> <question>=<answer> [...]".
+// Sends POST /v1/runs/{id}/input with the parsed answers, resuming a run
+// blocked on run.waiting_for_user. Use "harnesscli status <run-id>" or
+// GET /v1/runs/{id}/input to see the pending question text before answering.
 func runInput(args []string) int {
-	fmt.Fprintln(stderr, "harnesscli input: not implemented")
-	return 1
+	fs := flag.NewFlagSet("input", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	baseURL := fs.String("base-url", "http://localhost:8080", "harness API base URL")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(stderr, "harnesscli input: %v\n", err)
+		return 1
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprintln(stderr, "harnesscli input: run ID is required")
+		return 1
+	}
+	if fs.NArg() < 2 {
+		fmt.Fprintln(stderr, `harnesscli input: at least one "<question>=<answer>" pair is required`)
+		return 1
+	}
+	runID := fs.Arg(0)
+
+	answers := make(map[string]string, fs.NArg()-1)
+	for _, pair := range fs.Args()[1:] {
+		question, answer, ok := strings.Cut(pair, "=")
+		question = strings.TrimSpace(question)
+		if !ok || question == "" {
+			fmt.Fprintf(stderr, `harnesscli input: invalid pair %q; expected "<question>=<answer>"`+"\n", pair)
+			return 1
+		}
+		answers[question] = strings.TrimSpace(answer)
+	}
+
+	body, err := json.Marshal(map[string]map[string]string{"answers": answers})
+	if err != nil {
+		fmt.Fprintf(stderr, "harnesscli input: encode request: %v\n", err)
+		return 1
+	}
+	endpoint := strings.TrimRight(*baseURL, "/") + "/v1/runs/" + url.PathEscape(runID) + "/input"
+	req, err := newAuthedRequest(context.Background(), http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		fmt.Fprintf(stderr, "harnesscli input: build request: %v\n", err)
+		return 1
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := requestHTTPClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(stderr, "harnesscli input: request failed: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
+	if err != nil {
+		fmt.Fprintf(stderr, "harnesscli input: read response: %v\n", err)
+		return 1
+	}
+
+	switch resp.StatusCode {
+	case http.StatusNotFound:
+		fmt.Fprintf(stderr, "harnesscli input: run %q not found\n", runID)
+		return 1
+	case http.StatusConflict:
+		fmt.Fprintf(stderr, "harnesscli input: run %q is not waiting for user input\n", runID)
+		return 1
+	}
+	if resp.StatusCode >= 300 {
+		fmt.Fprintf(stderr, "harnesscli input: %v\n", formatAPIError(resp.StatusCode, respBody))
+		return 1
+	}
+
+	fmt.Fprintf(stdout, "Run %s answers submitted\n", runID)
+	return 0
 }
 
+// runApprove implements "harnesscli approve <run-id>".
+// Sends POST /v1/runs/{id}/approve, resuming a run blocked on
+// tool.approval_required or plan.approval_required.
 func runApprove(args []string) int {
-	fmt.Fprintln(stderr, "harnesscli approve: not implemented")
-	return 1
+	return runApprovalDecision("approve", args)
 }
 
+// runDeny implements "harnesscli deny <run-id>".
+// Sends POST /v1/runs/{id}/deny; the pending tool call returns a
+// permission_denied error to the LLM and the run continues.
 func runDeny(args []string) int {
-	fmt.Fprintln(stderr, "harnesscli deny: not implemented")
-	return 1
+	return runApprovalDecision("deny", args)
+}
+
+// runApprovalDecision is the shared implementation behind runApprove and
+// runDeny: both POST an empty body to /v1/runs/{id}/<action> and differ only
+// in the action name, the resulting verb in the confirmation message, and
+// the 404 message (no pending approval for that run).
+func runApprovalDecision(action string, args []string) int {
+	fs := flag.NewFlagSet(action, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	baseURL := fs.String("base-url", "http://localhost:8080", "harness API base URL")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(stderr, "harnesscli %s: %v\n", action, err)
+		return 1
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprintf(stderr, "harnesscli %s: run ID is required\n", action)
+		return 1
+	}
+	if fs.NArg() > 1 {
+		fmt.Fprintf(stderr, "harnesscli %s: too many arguments; accepts exactly one run ID\n", action)
+		return 1
+	}
+	runID := fs.Arg(0)
+
+	endpoint := strings.TrimRight(*baseURL, "/") + "/v1/runs/" + url.PathEscape(runID) + "/" + action
+	req, err := newAuthedRequest(context.Background(), http.MethodPost, endpoint, nil)
+	if err != nil {
+		fmt.Fprintf(stderr, "harnesscli %s: build request: %v\n", action, err)
+		return 1
+	}
+
+	resp, err := requestHTTPClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(stderr, "harnesscli %s: request failed: %v\n", action, err)
+		return 1
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
+	if err != nil {
+		fmt.Fprintf(stderr, "harnesscli %s: read response: %v\n", action, err)
+		return 1
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		fmt.Fprintf(stderr, "harnesscli %s: no pending approval for run %q\n", action, runID)
+		return 1
+	}
+	if resp.StatusCode >= 300 {
+		fmt.Fprintf(stderr, "harnesscli %s: %v\n", action, formatAPIError(resp.StatusCode, respBody))
+		return 1
+	}
+
+	verb := action + "d"
+	if action == "deny" {
+		verb = "denied"
+	}
+	fmt.Fprintf(stdout, "Run %s %s\n", runID, verb)
+	return 0
+}
+
+// continueConflictHint reports the correct resume command when
+// "harnesscli continue" is rejected with 409 run_not_completed. A run in
+// that state is usually waiting_for_user or waiting_for_approval, not just
+// still running, so this looks up the current status and names the exact
+// next command instead of repeating the "continue" invocation that just
+// failed (issue #1374). Falls back to a generic "check status" hint if the
+// status lookup itself fails.
+func continueConflictHint(baseURL, runID string) string {
+	endpoint := strings.TrimRight(baseURL, "/") + "/v1/runs/" + url.PathEscape(runID)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err == nil {
+		if resp, doErr := requestHTTPClient.Do(req); doErr == nil {
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
+			var r runRecord
+			if resp.StatusCode == http.StatusOK && json.Unmarshal(body, &r) == nil {
+				switch harness.RunStatus(r.Status) {
+				case harness.RunStatusWaitingForUser:
+					return fmt.Sprintf("run %q is waiting for user input; resume with: harnesscli input %s \"<question>=<answer>\" (see: harnesscli status %s for the pending question text)", runID, runID, runID)
+				case harness.RunStatusWaitingForApproval:
+					return fmt.Sprintf("run %q is waiting for approval; resume with: harnesscli approve %s (or: harnesscli deny %s)", runID, runID, runID)
+				}
+			}
+		}
+	}
+	return fmt.Sprintf("run %q has not completed; check its status with: harnesscli status %s", runID, runID)
 }

@@ -244,7 +244,7 @@ func (e *runBlockedError) Error() string {
 // it interactively.
 func reportRunBlocked(runID string, eventType harness.EventType) {
 	fmt.Fprintf(stderr, "harnesscli: run %s blocked: %s (%s); stdin is non-interactive, exiting; server-side run left intact\n", runID, blockedEventReason(eventType), eventType)
-	fmt.Fprintf(stderr, "harnesscli: resume with: harnesscli continue %s <prompt>\n", runID)
+	fmt.Fprintf(stderr, "harnesscli: %s\n", blockedResumeHint(runID, eventType))
 }
 
 // handleStreamError decides how to report a streamRunEvents failure. If ctx

@@ -1,6 +1,10 @@
 package main
 
-import "go-agent-harness/internal/harness"
+import (
+	"fmt"
+
+	"go-agent-harness/internal/harness"
+)
 
 // Exit codes for headless (streaming) harnesscli usage. These constants are
 // the single source of truth for the contract documented in
@@ -69,5 +73,22 @@ func blockedEventReason(et harness.EventType) string {
 		return "waiting for approval"
 	default:
 		return "blocked"
+	}
+}
+
+// blockedResumeHint names the CLI command that actually resolves a blocked
+// signal, for the stderr message printed on the exitBlocked path. It must
+// stay in sync with blockedEventReason: "harnesscli continue" only works
+// once a run is already completed and returns 409 run_not_completed for a
+// run still waiting_for_user or waiting_for_approval (issue #1374), so each
+// blocked reason gets its own working command.
+func blockedResumeHint(runID string, et harness.EventType) string {
+	switch et {
+	case harness.EventRunWaitingForUser:
+		return fmt.Sprintf("resume with: harnesscli input %s \"<question>=<answer>\" (see: harnesscli status %s, or GET /v1/runs/%s/input, for the pending question text)", runID, runID, runID)
+	case harness.EventToolApprovalRequired, harness.EventPlanApprovalRequired:
+		return fmt.Sprintf("resume with: harnesscli approve %s (or: harnesscli deny %s)", runID, runID)
+	default:
+		return fmt.Sprintf("resume with: harnesscli continue %s <prompt>", runID)
 	}
 }
