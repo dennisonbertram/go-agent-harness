@@ -5919,16 +5919,16 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   served by `ConversationMessagesSnapshot`/`GET /messages`) was never
   invalidated by rewind, so the live daemon kept serving pre-rewind history
   and the next run re-persisted it over the truncated DB.
-- Fix: `RewindPoint` gained `MessageBoundary`, the conversation-wide message
-  count recorded at capture time (`len(messages)` in the step engine, which
-  already holds every prior run's persisted history plus this run's user
-  prompt and the assistant tool-call message about to execute).
-  `RestoreRewindPoint` truncates by `step >= MessageBoundary` when it is
-  recorded; points captured before this field existed (`MessageBoundary ==
-  0`) fall back to the legacy step comparison with a logged warning instead
-  of silently over-deleting. `Runner.InvalidateConversationHistory` drops the
-  in-memory mirror entry for a conversation; the rewind HTTP handler calls it
-  immediately after a successful restore.
+- Fix: `RewindPoint` gained `MessageBoundary`, the conversation-wide index of
+  the assistant message carrying the rewound tool call, recorded at capture
+  time in the step engine (see the followup entry below for a correction to
+  this value). `RestoreRewindPoint` truncates by `step >= MessageBoundary`
+  when it is recorded; points captured before this field existed
+  (`MessageBoundary == 0`) fall back to the legacy step comparison with a
+  logged warning instead of silently over-deleting.
+  `Runner.InvalidateConversationHistory` drops the in-memory mirror entry
+  for a conversation; the rewind HTTP handler calls it immediately after a
+  successful restore.
 - Regression: a store-level test proves a two-run conversation's rewind keeps
   run 1's messages plus run 2's user prompt and tool-call message,
   truncating only what follows; an HTTP-level test drives two real runs
@@ -5938,3 +5938,25 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   final answer in its LLM request. Related: #1303 describes the same
   resurrection symptom from a different angle (workspace population, TUI
   JSON tags) and remains open.
+
+# 2026-09-05 (Issue #1370 followup: dangling assistant tool_calls after restore)
+
+- Cause: the boundary above (`len(messages)` at capture time) pointed just
+  past the assistant message carrying the rewound tool call, so a restore
+  kept that assistant message while deleting only its tool result. Real
+  providers (OpenAI et al.) reject an assistant message with `tool_calls`
+  that isn't immediately followed by matching tool messages; the fake/stub
+  providers this repo's tests use do not enforce that, so the bug shipped
+  with green tests. Caught in review before merge stabilized.
+- Fix: `MessageBoundary` is now the conversation-wide index of the assistant
+  message itself (`assistantToolCallIndex`, captured immediately after that
+  message is appended in `runner_step_engine.go`), so restore deletes that
+  message and everything after it. Parallel tool calls issued in one
+  assistant turn all capture the same index, since they share one assistant
+  message. `RestoreRewindPoint`'s truncation query and its
+  unset-boundary fallback are unchanged; only the captured value changed.
+- Regression: a new test drives a real single-turn run with two parallel
+  tool calls through the actual capture path and restores using either
+  call's point, asserting both points share one boundary, the last
+  persisted message is never an assistant message with tool_calls, and no
+  tool message lacks a preceding assistant tool_calls entry for its ID.
