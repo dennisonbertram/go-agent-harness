@@ -34,6 +34,14 @@ The prompt-extension flags are forwarded into the run request and are the curren
 The CLI also supports:
 
 - `harnesscli auth login` (flags: `-server`, `-tenant`, `-name`)
+- `harnesscli list` / `harnesscli status <run-id>` / `harnesscli cancel <run-id>`
+- `harnesscli steer <run-id> <prompt>`
+- `harnesscli continue <run-id> <prompt>` — only valid once the named run has
+  reached a terminal state (`run.completed`/`run.failed`/`run.cancelled`)
+- `harnesscli input <run-id> "<question>=<answer>" [...]` — answers a run
+  blocked on `run.waiting_for_user`
+- `harnesscli approve <run-id>` / `harnesscli deny <run-id>` — resolves a run
+  blocked on `tool.approval_required` or `plan.approval_required`
 
 ## Typical Commands
 
@@ -60,6 +68,27 @@ go run ./cmd/harnesscli \
 - The CLI should print or render run progress from the event stream.
 - Terminal events should stop the session cleanly.
 - If a live run fails, inspect the server event stream first, then the run summary and conversation endpoints.
+
+## Blocked runs (waiting for input or approval)
+
+A headless (non-`-tui`) run exits with code 3 when it hits a signal it
+cannot answer without a human: `run.waiting_for_user` (the agent called
+`AskUserQuestion`) or `tool.approval_required` / `plan.approval_required`
+(a gated tool call or plan exit is pending). The server-side run is left
+intact — only the CLI process exits. The printed stderr hint names the
+command that actually resolves that specific block:
+
+- `run.waiting_for_user` → `harnesscli input <run-id> "<question>=<answer>" [...]`.
+  Use `harnesscli status <run-id>` or `GET /v1/runs/{id}/input` first to see
+  the pending question text and valid option labels.
+- `tool.approval_required` / `plan.approval_required` → `harnesscli approve
+  <run-id>` or `harnesscli deny <run-id>`.
+
+`harnesscli continue <run-id> <prompt>` is a different operation — it starts
+a new run continuing a **completed** conversation. Calling it on a run that
+is still `waiting_for_user` or `waiting_for_approval` returns
+`409 run_not_completed`; the CLI now catches that and reprints the correct
+command for the run's actual state instead of repeating `continue`.
 
 ## Dashboard smoke
 

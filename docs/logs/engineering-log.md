@@ -5672,3 +5672,28 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   `TestFinalizeRewindPoint_DoesNotCrossContaminateOtherPaths` prove external
   edits are still refused and that the hash refresh stays scoped to the edited
   path, not the whole conversation.
+
+# 2026-09-05 (Issue #1374 blocked-run hint pointed at a dead-end command)
+
+- Cause: `reportRunBlocked` (cmd/harnesscli/main.go) printed the same
+  "resume with: harnesscli continue <id> <prompt>" hint for every blocked
+  event type. `continue` only works on a completed run; for
+  `run.waiting_for_user` the server's `POST /v1/runs/{id}/continue` returns
+  409 `run_not_completed` (`internal/server/http_runs.go`
+  `handleRunContinue`), so an operator following the CLI's own advice hit a
+  dead end and the run stayed blocked until the ask-user deadline expired.
+- Fix: `blockedResumeHint` (cmd/harnesscli/exitcodes.go) now depends on the
+  blocked event type: `run.waiting_for_user` hints the new
+  `harnesscli input <run-id> "<question>=<answer>" [...]` subcommand (POSTs
+  to `/v1/runs/{id}/input`); `tool.approval_required` /
+  `plan.approval_required` hint the new `harnesscli approve|deny <run-id>`
+  subcommands (POST to `/v1/runs/{id}/approve|deny`; these server routes
+  already existed, only the CLI commands were missing). `harnesscli continue`
+  itself now catches its 409 and looks up the run's live status
+  (`continueConflictHint`) to print the correct next command instead of
+  repeating the "continue" invocation that just failed.
+- Regression: `TestBlockedRunHint_InputCommandActuallyResolvesTheRun` drives
+  a real headless `run()` into `run.waiting_for_user`, reads the printed
+  hint, and then literally invokes the command it names against the same
+  run — proving the hint and the `input` command stay wired together, not
+  just that the hint text looks right in isolation.
