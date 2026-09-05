@@ -1295,6 +1295,14 @@ func (r *Runner) startRun(ctx context.Context, req RunRequest, reservedRunID str
 		return Run{}, err
 	}
 
+	// Validate workspace_path early for the same reason: an explicit per-run
+	// root (issue #1372) must be an absolute, existing directory so the caller
+	// gets a synchronous 400 instead of a queued run whose tools silently
+	// operate under the daemon's own workspace.
+	if err := validateWorkspacePath(req.WorkspacePath); err != nil {
+		return Run{}, err
+	}
+
 	// Subagents (runs with a recorded parent) default to the "subagent" agent
 	// intent — a headless-worker framing (no human present, execute the
 	// parent's instructions literally, call tools directly rather than
@@ -1850,6 +1858,43 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 				"message": fmt.Sprintf("VM workspace detected: tool execution runs on host, not inside the guest VM. Filesystem tools (write, edit, bash) operate on the host workspace. Full VM tool routing is tracked in issue #564."),
 			})
 		}
+	} else if req.WorkspacePath != "" {
+		// Explicit workspace_path (issue #1372): route file/shell tools and
+		// sandbox confinement at the requested root through the SAME per-run
+		// registry seam used for provisioned workspaces above, but without
+		// provisioning or destroying anything — the directory already exists
+		// (validated in StartRun) and is left exactly as the caller left it.
+		wsPath := req.WorkspacePath
+		r.emit(runID, EventWorkspaceProvisioned, map[string]any{
+			"workspace_type": "",
+			"workspace_path": wsPath,
+		})
+
+		wsModel := req.Model
+		if wsModel == "" {
+			wsModel = rc.DefaultModel
+		}
+		if rc.PromptEngine != nil {
+			if wsSP, wsRP, wsErr := r.resolveSystemPrompt(req, wsModel, wsPath); wsErr == nil {
+				r.mu.Lock()
+				if st, ok := r.runs[runID]; ok {
+					st.staticSystemPrompt = wsSP
+					st.promptResolved = wsRP
+				}
+				r.mu.Unlock()
+			} else if rc.Logger != nil {
+				rc.Logger.Error("failed to re-resolve system prompt with workspace path",
+					"run_id", runID, "workspace_path", wsPath, "error", wsErr)
+			}
+		}
+
+		perRun := NewDefaultRegistryWithOptions(wsPath, rc.BaseRegistryOptions)
+		r.mu.Lock()
+		if st, ok := r.runs[runID]; ok {
+			st.perRunTools = perRun
+			st.permissionWorkspaceRoot = wsPath
+		}
+		r.mu.Unlock()
 	}
 
 	model := req.Model
@@ -4134,6 +4179,7 @@ func (r *Runner) completeRun(runID, output string) {
 		tenantID := state.run.TenantID
 		agentID := state.run.AgentID
 		msgs := copyMessages(state.messages)
+		effectiveWorkspaceRoot := state.permissionWorkspaceRoot
 		r.mu.RUnlock()
 
 		// Publish the message snapshot and its replay watermark at the same
@@ -4173,7 +4219,11 @@ func (r *Runner) completeRun(runID, output string) {
 				if storeTenantID == "default" {
 					storeTenantID = ""
 				}
-				workspace := rc.WorkspaceBaseOptions.RepoPath
+				// permissionWorkspaceRoot is rc.WorkspaceBaseOptions.RepoPath by
+				// default (defaultPermissionWorkspaceRoot), but an explicit
+				// workspace_path or a provisioned workspace_type overrides it to
+				// the EFFECTIVE root the run actually operated under (issue #1372).
+				workspace := effectiveWorkspaceRoot
 				if metaStore, ok := rc.ConversationStore.(interface {
 					PreserveConversationMeta(context.Context, string, string, string) error
 				}); ok {
@@ -7245,6 +7295,30 @@ func validateExtraDirs(dirs []string) error {
 		if !fi.IsDir() {
 			return fmt.Errorf("invalid extra_dirs: entry %d (%q) is not a directory", i, dir)
 		}
+	}
+	return nil
+}
+
+// validateWorkspacePath validates RunRequest.WorkspacePath: when non-empty it
+// must be an absolute path to an existing directory, mirroring
+// validateExtraDirs. An empty path is valid and means "no explicit root".
+func validateWorkspacePath(path string) error {
+	if path == "" {
+		return nil
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("invalid workspace_path: %q must be an absolute path", path)
+	}
+	clean := filepath.Clean(path)
+	fi, err := os.Stat(clean)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("invalid workspace_path: %q does not exist", path)
+		}
+		return fmt.Errorf("invalid workspace_path: %q is not accessible: %w", path, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("invalid workspace_path: %q is not a directory", path)
 	}
 	return nil
 }
