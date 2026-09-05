@@ -5960,3 +5960,23 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   call's point, asserting both points share one boundary, the last
   persisted message is never an assistant message with tool_calls, and no
   tool message lacks a preceding assistant tool_calls entry for its ID.
+
+# 2026-09-05 (Issue #1370 followup: rewind_points prune deleted unrelated older points)
+
+- Cause: found by live verification on main after #1378 merged.
+  `RestoreRewindPoint`'s future-point pruning query also compared
+  `point.Step`, the same run-local tool-call counter whose misuse in message
+  truncation this issue already fixed. Step restarts every run, so run 2's
+  edit point (step 1 within run 2) and run 1's write point (also step 1
+  within run 1, an unrelated run) collided: restoring the edit point deleted
+  the write point too, and a later restore to that still-valid older point
+  returned "not found".
+- Fix: pruning now uses `MessageBoundary` when recorded -- a point is
+  superseded only by a strictly greater boundary, or an equal boundary
+  (parallel tool calls sharing one assistant message) captured later
+  (`created_at`); the target is always excluded. Falls back to the legacy
+  step predicate only when the target has no recorded boundary, matching
+  the existing message-truncation fallback.
+- Regression: `TestRestoreRewindPoint_PruneKeepsOlderPointsFromEarlierRuns`
+  drives two real runs, restores to run 2's edit point, then restores to
+  run 1's write point and asserts it still succeeds.
