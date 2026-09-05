@@ -616,3 +616,21 @@ func printWorkflowRecap(recap *workflowRecap) {
 		fmt.Fprintf(stdout, "  Next: %s\n", recap.NextContinuationPrompt)
 	}
 }
+
+// TODO(#1374 red): runInput, runApprove, runDeny are stubbed to make the
+// failing-test commit compile; the real implementation lands in the green
+// commit.
+func runInput(args []string) int {
+	fmt.Fprintln(stderr, "harnesscli input: not implemented")
+	return 1
+}
+
+func runApprove(args []string) int {
+	fmt.Fprintln(stderr, "harnesscli approve: not implemented")
+	return 1
+}
+
+func runDeny(args []string) int {
+	fmt.Fprintln(stderr, "harnesscli deny: not implemented")
+	return 1
+}
