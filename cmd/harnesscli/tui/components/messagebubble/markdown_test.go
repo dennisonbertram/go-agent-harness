@@ -308,3 +308,20 @@ func TestResolveGlamourStyleMapsBackground(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveStylePublicWrapperMatchesInternalResolution exercises the
+// exported ResolveStyle entry point directly. Callers outside this package
+// (e.g. the TUI's startup path) can only reach resolveGlamourStyle through
+// this wrapper, so it needs its own coverage rather than inheriting it from
+// resolveGlamourStyle's tests.
+func TestResolveStylePublicWrapperMatchesInternalResolution(t *testing.T) {
+	restore := setStyleProbesForTest(
+		func() bool { return true },
+		func() bool { return true },
+	)
+	defer restore()
+
+	if got := ResolveStyle(); got != "dark" {
+		t.Errorf("ResolveStyle() = %q, want %q", got, "dark")
+	}
+}
