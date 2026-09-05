@@ -194,6 +194,118 @@ func TestRestoreRewindPoint_StillRefusesExternalEdit(t *testing.T) {
 	}
 }
 
+// TestRestoreRewindPoint_OldestPointAfterEditChainNotRefused is a regression
+// test for issue #1371: it chains three agent edits to the same file and
+// restores all the way back to the oldest point. If FinalizeRewindPoint
+// regresses to updating only the point tied to the current tool call (the
+// bug's root cause), the oldest point's expected_hash goes stale on the very
+// first later edit and this restore is refused.
+func TestRestoreRewindPoint_OldestPointAfterEditChainNotRefused(t *testing.T) {
+	ctx := context.Background()
+	store := newTestConversationStore(t)
+	root := t.TempDir()
+	path := filepath.Join(root, "a.txt")
+	convID := "edit-chain-conv"
+
+	versions := []string{"v1", "v2", "v3"}
+	pointIDs := []string{"p0", "p1", "p2"}
+	if err := os.WriteFile(path, []byte(versions[0]), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range pointIDs {
+		point := RewindPoint{ID: id, ConversationID: convID, Step: i, Tool: "edit"}
+		if err := CaptureRewindPreImage(ctx, store, point, root, []byte(`{"path":"a.txt"}`)); err != nil {
+			t.Fatalf("capture %s: %v", id, err)
+		}
+		if i+1 < len(versions) {
+			if err := os.WriteFile(path, []byte(versions[i+1]), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := FinalizeRewindPoint(ctx, store, id, root); err != nil {
+			t.Fatalf("finalize %s: %v", id, err)
+		}
+	}
+
+	// The file is now at v3, written by three chained agent edits with
+	// nothing external in between. Restoring to the oldest point (p0, whose
+	// pre-image is v1) must succeed without force.
+	result, err := store.RestoreRewindPoint(ctx, convID, "p0", root, false)
+	if err != nil {
+		t.Fatalf("RestoreRewindPoint refused the oldest point after an agent-only edit chain: %v", err)
+	}
+	if result.FilesRestored != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "v1" {
+		t.Fatalf("file=%q err=%v, want v1", got, err)
+	}
+}
+
+// TestFinalizeRewindPoint_DoesNotCrossContaminateOtherPaths guards the fix's
+// path scoping: refreshing expected_hash across a conversation's earlier
+// points must stay confined to the path the current tool call touched. If a
+// future change widened the UPDATE to every path in the conversation, this
+// test would catch it: b.txt's expected_hash would then reflect a.txt's
+// unrelated edit and either falsely refuse or falsely accept a real external
+// edit to b.txt.
+func TestFinalizeRewindPoint_DoesNotCrossContaminateOtherPaths(t *testing.T) {
+	ctx := context.Background()
+	store := newTestConversationStore(t)
+	root := t.TempDir()
+	convID := "multi-path-conv"
+	aPath := filepath.Join(root, "a.txt")
+	bPath := filepath.Join(root, "b.txt")
+
+	if err := os.WriteFile(aPath, []byte("a1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bPath, []byte("b1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	firstPoint := RewindPoint{ID: "first", ConversationID: convID, Step: 0, Tool: "write"}
+	if err := CaptureRewindPreImage(ctx, store, firstPoint, root, []byte(`{"path":"a.txt"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := CaptureRewindPreImage(ctx, store, RewindPoint{ID: "first-b", ConversationID: convID, Step: 0, Tool: "write"}, root, []byte(`{"path":"b.txt"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := FinalizeRewindPoint(ctx, store, "first", root); err != nil {
+		t.Fatal(err)
+	}
+	if err := FinalizeRewindPoint(ctx, store, "first-b", root); err != nil {
+		t.Fatal(err)
+	}
+
+	// A later agent edit touches only a.txt.
+	editPoint := RewindPoint{ID: "second", ConversationID: convID, Step: 1, Tool: "edit"}
+	if err := CaptureRewindPreImage(ctx, store, editPoint, root, []byte(`{"path":"a.txt"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(aPath, []byte("a2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := FinalizeRewindPoint(ctx, store, "second", root); err != nil {
+		t.Fatal(err)
+	}
+
+	// Something external now edits b.txt, which no agent tool call touched.
+	if err := os.WriteFile(bPath, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Restoring the a.txt point must still succeed (agent-only edit chain).
+	if _, err := store.RestoreRewindPoint(ctx, convID, "first", root, false); err != nil {
+		t.Fatalf("RestoreRewindPoint refused the a.txt point: %v", err)
+	}
+	// Restoring the b.txt point must still be refused: b.txt's expected_hash
+	// must not have been overwritten by the unrelated a.txt finalize.
+	if _, err := store.RestoreRewindPoint(ctx, convID, "first-b", root, false); err == nil {
+		t.Fatal("RestoreRewindPoint accepted an externally modified b.txt after an unrelated a.txt finalize")
+	}
+}
+
 func TestConversationSnapshotCapSkipsAdditionalContent(t *testing.T) {
 	ctx := context.Background()
 	store := newTestConversationStore(t)

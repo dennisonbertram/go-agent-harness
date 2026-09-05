@@ -33,4 +33,4 @@ The confirmation token is required. Before confirming, ensure uncommitted work m
 
 Snapshots are captured before addressable `write`, `edit`, and `apply_patch` targets. Files over the per-file cap and points exceeding the per-conversation cap are listed as skipped and cannot be restored. Snapshot records are deleted automatically when their conversation is deleted or removed by retention.
 
-If restore returns an external-modification refusal, inspect or commit the current file first; use `force` only when losing that current content is intentional.
+If restore returns an external-modification refusal, inspect or commit the current file first; use `force` only when losing that current content is intentional. Restoring an older point after a *later agent* edit to the same file needs no `force`: the expected hash for every earlier point sharing that path is kept current as the agent writes it, so `force` is only needed when the on-disk content actually diverges from the last agent-written state (issue #1371).
