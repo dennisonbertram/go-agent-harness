@@ -4872,6 +4872,43 @@ func (r *Runner) CancelRun(runID string) error {
 	return nil
 }
 
+// CancelAllActiveRuns requests cancellation, via the same path as CancelRun,
+// of every run that has not yet reached a terminal status, then waits up to
+// ctx's deadline for each of them to actually reach one.
+//
+// This is the runner-level primitive the daemon shutdown path calls (issue
+// #1373): SIGTERM previously only drained the HTTP server, so a run blocked
+// in a long tool call (e.g. `bash` running `sleep 30`) was left "running" in
+// the store forever and its tool child was orphaned. CancelRun's context
+// cancellation already kills a bash child's whole process group in about
+// 20ms (see internal/harness/tools/exec_group_unix.go), so the bound here
+// exists only to give slower cleanup (workspace/MCP teardown, store writes)
+// a fair window, not because cancellation itself is expected to be slow.
+//
+// Returns the number of runs cancellation was requested for, regardless of
+// whether they all reached a terminal status before ctx expired — the caller
+// (daemon shutdown) logs this count and moves on either way, since it must
+// not block process exit indefinitely on a run that ignores cancellation.
+func (r *Runner) CancelAllActiveRuns(ctx context.Context) int {
+	r.mu.RLock()
+	ids := make([]string, 0, len(r.runs))
+	for id, state := range r.runs {
+		if state == nil || isTerminalRunStatus(state.run.Status) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	r.mu.RUnlock()
+
+	for _, id := range ids {
+		_ = r.CancelRun(id)
+	}
+	for _, id := range ids {
+		r.WaitForRunStatus(ctx, id, RunStatusCancelled)
+	}
+	return len(ids)
+}
+
 // killBackgroundJobsForRun terminates background jobs started by a run across
 // every registry that might own them: the main one, and the per-run registry
 // built when a workspace is provisioned.

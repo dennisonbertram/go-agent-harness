@@ -5724,3 +5724,34 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   hint, and then literally invokes the command it names against the same
   run — proving the hint and the `input` command stay wired together, not
   just that the hint text looks right in isolation.
+# 2026-09-05 (Issue #1373 shutdown never cancelled in-flight runs)
+
+- Cause: `cmd/harnessd/main.go`'s shutdown path only ever called
+  `httpServer.Shutdown(ctx)` with a 10s drain timeout. Nothing invoked the
+  runner's own cancellation machinery, so a run blocked in a long tool call
+  (e.g. bash `sleep 30`) stayed `running` in the store after the process
+  exited, and the bash child was orphaned — reparented, not killed, since
+  process exit does not touch children it spawned. The bash tool's own
+  process-group kill-on-cancel (`internal/harness/tools/exec_group_unix.go`'s
+  `cmd.Cancel`) already worked correctly; the gap was that shutdown never
+  triggered cancellation at all.
+- Fix: added `Runner.CancelAllActiveRuns(ctx)`, which cancels every
+  non-terminal run via the same path `POST /v1/runs/{id}/cancel` already uses
+  (`CancelRun`), then waits up to `ctx`'s deadline for each to reach
+  `RunStatusCancelled`. Wired into `cmd/harnessd/main.go`'s shutdown sequence
+  with a bounded 3s context, placed before `httpServer.Shutdown` and before
+  the run store closes, logging the count of runs cancelled.
+- Regression: a runner-level test starts a run blocked in a real bash tool
+  call, calls `CancelAllActiveRuns`, and asserts the run reaches
+  `RunStatusCancelled` and the bash child's process is actually dead
+  (`internal/harness/runner_shutdown_cancel_test.go`). A daemon-level test
+  drives the real binary path end to end — POST a run, confirm the bash
+  child is running via a pid file, send the shutdown signal, assert the
+  child is dead, then restart against the same SQLite run store and confirm
+  the run persisted as `cancelled` rather than stuck `running`
+  (`cmd/harnessd/shutdown_cancel_regression_test.go`). Verified the daemon
+  test fails for the right reason (orphaned child, `still alive after daemon
+  shutdown`) when the main.go integration is reverted.
+- Out of scope (tracked separately, issue #1356): store-close ordering under
+  a live SSE subscription, and handler-context cancellation for requests held
+  open past shutdown.

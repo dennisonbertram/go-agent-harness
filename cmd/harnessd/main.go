@@ -1179,6 +1179,23 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		cronStore.Close()
 	}
 
+	// Cancel every still-active run before the HTTP server drains and the run
+	// store is closed (issue #1373). Without this, a SIGTERM arriving during a
+	// long-running tool call (e.g. bash `sleep 30`) only ever drained the HTTP
+	// server: the tool's process group was left running as an orphan and the
+	// run stayed "running" in the store forever, because nothing invoked the
+	// runner's own cancellation path — the same path POST
+	// /v1/runs/{id}/cancel already uses successfully. CancelAllActiveRuns
+	// reuses that path and is bounded so a run that ignores cancellation
+	// cannot delay process exit indefinitely.
+	if runtime.runner != nil {
+		cancelCtx, cancelCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if n := runtime.runner.CancelAllActiveRuns(cancelCtx); n > 0 {
+			log.Printf("harnessd: cancelled %d in-flight run(s) at shutdown", n)
+		}
+		cancelCancel()
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(ctx); err != nil {
