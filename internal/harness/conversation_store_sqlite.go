@@ -594,6 +594,10 @@ func (s *SQLiteConversationStore) SaveRewindPoint(ctx context.Context, point Rew
 
 // FinalizeRewindPoint persists post-tool hashes used to guard against external edits.
 func (s *SQLiteConversationStore) FinalizeRewindPoint(ctx context.Context, pointID, workspace string) error {
+	var convID string
+	if err := s.db.QueryRowContext(ctx, `SELECT conversation_id FROM rewind_points WHERE id=?`, pointID).Scan(&convID); err != nil {
+		return fmt.Errorf("finalize rewind point conversation: %w", err)
+	}
 	points, err := s.db.QueryContext(ctx, `SELECT path, skipped FROM rewind_file_snapshots WHERE point_id=?`, pointID)
 	if err != nil {
 		return err
@@ -635,7 +639,14 @@ func (s *SQLiteConversationStore) FinalizeRewindPoint(ctx context.Context, point
 		} else if !os.IsNotExist(err) {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE rewind_file_snapshots SET expected_hash=? WHERE point_id=? AND path=?`, hash, pointID, snapshot.path); err != nil {
+		// An earlier point that also snapshots this path is only "as the
+		// agent left it" once this later tool call completes, so its guard
+		// must expect the file's current agent-written content too — not
+		// the stale hash captured before this tool ran. Refresh every
+		// snapshot row for this path across the whole conversation, not
+		// just this point, so an older rewind point is not refused after a
+		// later agent-only edit to the same file (issue #1371).
+		if _, err := tx.ExecContext(ctx, `UPDATE rewind_file_snapshots SET expected_hash=? WHERE path=? AND point_id IN (SELECT id FROM rewind_points WHERE conversation_id=?)`, hash, snapshot.path, convID); err != nil {
 			return err
 		}
 	}
@@ -716,11 +727,17 @@ func (s *SQLiteConversationStore) RestoreRewindPoint(ctx context.Context, convID
 		}
 	}
 	result := RewindRestoreResult{}
+	type restoredPath struct {
+		path string
+		hash string
+	}
+	restored := make([]restoredPath, 0, len(point.Files))
 	for _, file := range point.Files {
 		if file.Skipped {
 			continue
 		}
 		path := filepath.Join(workspace, file.Path)
+		hash := rewindAbsentHash
 		if file.Exists {
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				return result, err
@@ -728,9 +745,11 @@ func (s *SQLiteConversationStore) RestoreRewindPoint(ctx context.Context, convID
 			if err := os.WriteFile(path, file.Content, 0o644); err != nil {
 				return result, err
 			}
+			hash = RewindContentHash(file.Content)
 		} else if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return result, err
 		}
+		restored = append(restored, restoredPath{path: file.Path, hash: hash})
 		result.FilesRestored++
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -746,6 +765,16 @@ func (s *SQLiteConversationStore) RestoreRewindPoint(ctx context.Context, convID
 	result.MessagesTruncated = int(n)
 	if _, err := tx.ExecContext(ctx, `DELETE FROM rewind_points WHERE conversation_id=? AND (step>? OR (step=? AND id<>?))`, convID, point.Step, point.Step, point.ID); err != nil {
 		return result, fmt.Errorf("rewind delete future points: %w", err)
+	}
+	// The files just restored now hold this content on disk, so every
+	// surviving snapshot row (the target point and any older ones) that
+	// shares a restored path must expect that same content — otherwise a
+	// later restore to an even older point sees this restore itself as an
+	// "external" modification.
+	for _, rp := range restored {
+		if _, err := tx.ExecContext(ctx, `UPDATE rewind_file_snapshots SET expected_hash=? WHERE path=? AND point_id IN (SELECT id FROM rewind_points WHERE conversation_id=?)`, rp.hash, rp.path, convID); err != nil {
+			return result, fmt.Errorf("rewind refresh expected hash: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE conversations SET msg_count=(SELECT COUNT(*) FROM conversation_messages WHERE conversation_id=?), updated_at=? WHERE id=?`, convID, time.Now().UTC().Format(time.RFC3339Nano), convID); err != nil {
 		return result, err

@@ -5650,3 +5650,25 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   channel and inspects wait state/closes the log only after confirmed reaping.
 - Regression: a pre-reaped child records zero post-exit signals; a TERM-ignoring
   helper requires SIGKILL and proves Close returns only after `done` is closed.
+
+# 2026-09-05 (Issue #1371 stale rewind expected_hash repair)
+
+- Cause: `FinalizeRewindPoint` in `internal/harness/conversation_store_sqlite.go`
+  set `expected_hash` only on the rewind point tied to the tool call that just
+  ran. Any earlier point in the same conversation snapshotting the same path
+  kept its stale hash from before a later agent edit, so `RestoreRewindPoint`
+  compared the current (agent-written) content against that stale value and
+  refused the older point as "modified outside the agent" even though nothing
+  external had touched the file.
+- Fix: `FinalizeRewindPoint` now looks up the point's `conversation_id` and
+  refreshes `expected_hash` for every `rewind_file_snapshots` row with the same
+  path across the whole conversation, not just the current point. A real
+  external edit still fails the guard: no finalize runs after it, so the last
+  agent-written hash is left in place and diverges from the on-disk content.
+- Regression: `TestRestoreRewindPoint_OlderPointAfterAgentEditNotRefused` and
+  `TestRestoreRewindPoint_OldestPointAfterEditChainNotRefused` prove an older
+  point restores without `force` after one or several agent-only later edits;
+  `TestRestoreRewindPoint_StillRefusesExternalEdit` and
+  `TestFinalizeRewindPoint_DoesNotCrossContaminateOtherPaths` prove external
+  edits are still refused and that the hash refresh stays scoped to the edited
+  path, not the whole conversation.
