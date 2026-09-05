@@ -73,6 +73,14 @@ type RewindPoint struct {
 	Tool           string               `json:"tool"`
 	CreatedAt      time.Time            `json:"created_at"`
 	Files          []RewindFileSnapshot `json:"files"`
+	// MessageBoundary is the conversation-wide message count captured at the
+	// moment this point was recorded (the number of conversation_messages
+	// rows that must survive a restore). Step is a run-local tool-call
+	// counter and is NOT comparable to conversation_messages.step across
+	// runs (issue #1370); MessageBoundary is. Zero means "not recorded"
+	// (points captured before this field existed), in which case restore
+	// falls back to the legacy step-based comparison.
+	MessageBoundary int `json:"message_boundary,omitempty"`
 }
 
 // RewindStore is deliberately optional so existing ConversationStore adapters

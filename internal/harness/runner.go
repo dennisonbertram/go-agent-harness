@@ -5686,6 +5686,28 @@ func (r *Runner) conversationID(runID string) string {
 	return state.run.ConversationID
 }
 
+// InvalidateConversationHistory drops the in-memory conversation mirror for
+// conversationID so the next read (ConversationMessages,
+// ConversationMessagesSnapshot, or the next run's loadConversationHistory)
+// falls through to the durable store instead of the write-behind cache
+// populated at each run's completion. The mirror is never itself truncated
+// by a rewind's DB-level restore, so without this call a rewound
+// conversation kept serving (and the next run kept re-persisting) messages
+// the store had already deleted (issue #1370). Callers making an external
+// mutation to conversation_messages outside the normal run lifecycle (only
+// rewind today) must call this after the mutation succeeds.
+func (r *Runner) InvalidateConversationHistory(conversationID string) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.conversations, conversationID)
+	delete(r.conversationTouched, conversationID)
+	delete(r.conversationMessageWatermarks, conversationID)
+	r.mu.Unlock()
+}
+
 func (r *Runner) ConversationMessages(conversationID string) ([]Message, bool) {
 	rc := r.snapshotConfig()
 	r.mu.RLock()

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -201,6 +202,15 @@ func (s *SQLiteConversationStore) Migrate(ctx context.Context) error {
 	if !s.columnExists(ctx, "conversations", "tenant_id") {
 		if _, err := s.db.ExecContext(ctx, `ALTER TABLE conversations ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("migrate add tenant_id column: %w", err)
+		}
+	}
+
+	// Idempotent migration: add message_boundary column to rewind_points if it
+	// doesn't exist (issue #1370). Existing rows default to 0, which restore
+	// treats as "not recorded" and falls back to the legacy step comparison.
+	if !s.columnExists(ctx, "rewind_points", "message_boundary") {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE rewind_points ADD COLUMN message_boundary INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("migrate add message_boundary column: %w", err)
 		}
 	}
 
@@ -559,7 +569,7 @@ func (s *SQLiteConversationStore) SaveRewindPoint(ctx context.Context, point Rew
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO conversations (id, created_at, updated_at) VALUES (?, ?, ?)`, point.ConversationID, created.Format(time.RFC3339Nano), created.Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("create rewind conversation: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO rewind_points (id, conversation_id, step, tool, created_at) VALUES (?, ?, ?, ?, ?)`, point.ID, point.ConversationID, point.Step, point.Tool, created.Format(time.RFC3339Nano)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO rewind_points (id, conversation_id, step, tool, created_at, message_boundary) VALUES (?, ?, ?, ?, ?, ?)`, point.ID, point.ConversationID, point.Step, point.Tool, created.Format(time.RFC3339Nano), point.MessageBoundary); err != nil {
 		return fmt.Errorf("insert rewind point: %w", err)
 	}
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO rewind_file_snapshots (point_id, path, content, existed, skipped, skip_reason, expected_hash) VALUES (?, ?, ?, ?, ?, ?, ?)`)
@@ -655,7 +665,7 @@ func (s *SQLiteConversationStore) FinalizeRewindPoint(ctx context.Context, point
 
 // ListRewindPoints returns newest rewind points first with their captured files.
 func (s *SQLiteConversationStore) ListRewindPoints(ctx context.Context, convID string) ([]RewindPoint, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT p.id, p.step, p.tool, p.created_at, f.path, f.content, COALESCE(f.existed,0), COALESCE(f.skipped,0), COALESCE(f.skip_reason,''), COALESCE(f.expected_hash,'') FROM rewind_points p LEFT JOIN rewind_file_snapshots f ON f.point_id=p.id WHERE p.conversation_id=? ORDER BY p.step DESC, p.created_at DESC, f.id ASC`, convID)
+	rows, err := s.db.QueryContext(ctx, `SELECT p.id, p.step, p.tool, p.created_at, COALESCE(p.message_boundary,0), f.path, f.content, COALESCE(f.existed,0), COALESCE(f.skipped,0), COALESCE(f.skip_reason,''), COALESCE(f.expected_hash,'') FROM rewind_points p LEFT JOIN rewind_file_snapshots f ON f.point_id=p.id WHERE p.conversation_id=? ORDER BY p.step DESC, p.created_at DESC, f.id ASC`, convID)
 	if err != nil {
 		return nil, fmt.Errorf("list rewind points: %w", err)
 	}
@@ -665,9 +675,9 @@ func (s *SQLiteConversationStore) ListRewindPoints(ctx context.Context, convID s
 	for rows.Next() {
 		var id, tool, created, reason, expected string
 		var path sql.NullString
-		var step, existed, skipped int
+		var step, messageBoundary, existed, skipped int
 		var content []byte
-		if err := rows.Scan(&id, &step, &tool, &created, &path, &content, &existed, &skipped, &reason, &expected); err != nil {
+		if err := rows.Scan(&id, &step, &tool, &created, &messageBoundary, &path, &content, &existed, &skipped, &reason, &expected); err != nil {
 			return nil, fmt.Errorf("scan rewind point: %w", err)
 		}
 		i, ok := byID[id]
@@ -675,7 +685,7 @@ func (s *SQLiteConversationStore) ListRewindPoints(ctx context.Context, convID s
 			t, _ := time.Parse(time.RFC3339Nano, created)
 			i = len(points)
 			byID[id] = i
-			points = append(points, RewindPoint{ID: id, ConversationID: convID, Step: step, Tool: tool, CreatedAt: t})
+			points = append(points, RewindPoint{ID: id, ConversationID: convID, Step: step, Tool: tool, CreatedAt: t, MessageBoundary: messageBoundary})
 		}
 		if path.Valid && path.String != "" {
 			points[i].Files = append(points[i].Files, RewindFileSnapshot{Path: path.String, Content: content, Exists: existed == 1, Skipped: skipped == 1, SkipReason: reason, ExpectedHash: expected})
@@ -757,13 +767,43 @@ func (s *SQLiteConversationStore) RestoreRewindPoint(ctx context.Context, convID
 		return result, fmt.Errorf("rewind begin tx: %w", err)
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `DELETE FROM conversation_messages WHERE conversation_id=? AND step>?`, convID, point.Step)
+	// point.Step is a run-local tool-call counter (see runner_step_engine.go),
+	// not comparable to conversation_messages.step, which is a
+	// conversation-wide message index shared across every run on this
+	// conversation (issue #1370). point.MessageBoundary records that
+	// conversation-wide index at capture time and is the only field safe to
+	// truncate against. Points captured before this field existed have
+	// MessageBoundary==0 ("not recorded"); rather than silently deleting
+	// everything, fall back to the legacy (imperfect, multi-run-unsafe)
+	// step comparison and log a warning so operators can see it happened.
+	var res sql.Result
+	if point.MessageBoundary > 0 {
+		res, err = tx.ExecContext(ctx, `DELETE FROM conversation_messages WHERE conversation_id=? AND step>=?`, convID, point.MessageBoundary)
+	} else {
+		log.Printf("rewind: point %q (conversation %q) has no recorded message boundary; falling back to step-based truncation, which can delete unrelated messages in a multi-run conversation", point.ID, convID)
+		res, err = tx.ExecContext(ctx, `DELETE FROM conversation_messages WHERE conversation_id=? AND step>?`, convID, point.Step)
+	}
 	if err != nil {
 		return result, fmt.Errorf("rewind truncate messages: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	result.MessagesTruncated = int(n)
-	if _, err := tx.ExecContext(ctx, `DELETE FROM rewind_points WHERE conversation_id=? AND (step>? OR (step=? AND id<>?))`, convID, point.Step, point.Step, point.ID); err != nil {
+	// point.Step is run-local and restarts every run, so it collides across
+	// runs (run 2's first mutating call and run 1's first mutating call are
+	// both step 0/1 within their own run but capture entirely unrelated
+	// points): pruning by it deleted an older, still-valid point from an
+	// earlier run whenever a later run's point happened to share a step
+	// number. Prune by MessageBoundary instead when it is recorded: a point
+	// is superseded only if it comes after the target in conversation order
+	// (a strictly greater boundary), or shares the same boundary (parallel
+	// tool calls in one assistant turn) but was captured later. The target
+	// itself is always excluded. Fall back to the legacy step predicate only
+	// when the target has no recorded boundary.
+	if point.MessageBoundary > 0 {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM rewind_points WHERE conversation_id=? AND id<>? AND (message_boundary>? OR (message_boundary=? AND created_at>?))`, convID, point.ID, point.MessageBoundary, point.MessageBoundary, point.CreatedAt.Format(time.RFC3339Nano)); err != nil {
+			return result, fmt.Errorf("rewind delete future points: %w", err)
+		}
+	} else if _, err := tx.ExecContext(ctx, `DELETE FROM rewind_points WHERE conversation_id=? AND (step>? OR (step=? AND id<>?))`, convID, point.Step, point.Step, point.ID); err != nil {
 		return result, fmt.Errorf("rewind delete future points: %w", err)
 	}
 	// The files just restored now hold this content on disk, so every

@@ -5906,3 +5906,77 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   the touched `INDEX.md` files, the three corrected investigation files, and
   this log against `test -e` (758 links, 0 dead). This is documentation only:
   no runtime, API, or test behavior changed.
+
+# 2026-09-05 (Issue #1370 rewind message truncation and live mirror repair)
+
+- Cause: `RestoreRewindPoint` truncated `conversation_messages` by comparing
+  the rewind point's run-local tool-call step (`RewindPoint.Step`, set in
+  `runner_step_engine.go`) against `conversation_messages.step`, a
+  conversation-wide message index shared across every run on that
+  conversation. Rewinding to a point in a conversation's second (or later)
+  run deleted the first run's later messages too. Separately, the runner's
+  in-memory conversation mirror (populated at each run's completion and
+  served by `ConversationMessagesSnapshot`/`GET /messages`) was never
+  invalidated by rewind, so the live daemon kept serving pre-rewind history
+  and the next run re-persisted it over the truncated DB.
+- Fix: `RewindPoint` gained `MessageBoundary`, the conversation-wide index of
+  the assistant message carrying the rewound tool call, recorded at capture
+  time in the step engine (see the followup entry below for a correction to
+  this value). `RestoreRewindPoint` truncates by `step >= MessageBoundary`
+  when it is recorded; points captured before this field existed
+  (`MessageBoundary == 0`) fall back to the legacy step comparison with a
+  logged warning instead of silently over-deleting.
+  `Runner.InvalidateConversationHistory` drops the in-memory mirror entry
+  for a conversation; the rewind HTTP handler calls it immediately after a
+  successful restore.
+- Regression: a store-level test proves a two-run conversation's rewind keeps
+  run 1's messages plus run 2's user prompt and tool-call message,
+  truncating only what follows; an HTTP-level test drives two real runs
+  through the handler and proves `GET /messages` reflects the truncation
+  immediately; a third test drives a real three-run `Runner` flow and proves
+  the run following a rewind does not resurrect the truncated tool result or
+  final answer in its LLM request. Related: #1303 describes the same
+  resurrection symptom from a different angle (workspace population, TUI
+  JSON tags) and remains open.
+
+# 2026-09-05 (Issue #1370 followup: dangling assistant tool_calls after restore)
+
+- Cause: the boundary above (`len(messages)` at capture time) pointed just
+  past the assistant message carrying the rewound tool call, so a restore
+  kept that assistant message while deleting only its tool result. Real
+  providers (OpenAI et al.) reject an assistant message with `tool_calls`
+  that isn't immediately followed by matching tool messages; the fake/stub
+  providers this repo's tests use do not enforce that, so the bug shipped
+  with green tests. Caught in review before merge stabilized.
+- Fix: `MessageBoundary` is now the conversation-wide index of the assistant
+  message itself (`assistantToolCallIndex`, captured immediately after that
+  message is appended in `runner_step_engine.go`), so restore deletes that
+  message and everything after it. Parallel tool calls issued in one
+  assistant turn all capture the same index, since they share one assistant
+  message. `RestoreRewindPoint`'s truncation query and its
+  unset-boundary fallback are unchanged; only the captured value changed.
+- Regression: a new test drives a real single-turn run with two parallel
+  tool calls through the actual capture path and restores using either
+  call's point, asserting both points share one boundary, the last
+  persisted message is never an assistant message with tool_calls, and no
+  tool message lacks a preceding assistant tool_calls entry for its ID.
+
+# 2026-09-05 (Issue #1370 followup: rewind_points prune deleted unrelated older points)
+
+- Cause: found by live verification on main after #1378 merged.
+  `RestoreRewindPoint`'s future-point pruning query also compared
+  `point.Step`, the same run-local tool-call counter whose misuse in message
+  truncation this issue already fixed. Step restarts every run, so run 2's
+  edit point (step 1 within run 2) and run 1's write point (also step 1
+  within run 1, an unrelated run) collided: restoring the edit point deleted
+  the write point too, and a later restore to that still-valid older point
+  returned "not found".
+- Fix: pruning now uses `MessageBoundary` when recorded -- a point is
+  superseded only by a strictly greater boundary, or an equal boundary
+  (parallel tool calls sharing one assistant message) captured later
+  (`created_at`); the target is always excluded. Falls back to the legacy
+  step predicate only when the target has no recorded boundary, matching
+  the existing message-truncation fallback.
+- Regression: `TestRestoreRewindPoint_PruneKeepsOlderPointsFromEarlierRuns`
+  drives two real runs, restores to run 2's edit point, then restores to
+  run 1's write point and asserts it still succeeds.

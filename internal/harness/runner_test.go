@@ -308,6 +308,296 @@ func TestIssue1256_PersistsTrustedWorkspaceBeforeMutatingRewindCapture(t *testin
 	}
 }
 
+// TestRewindThenNextRunDoesNotResurrectTruncatedMessages is a regression test
+// for the third symptom in issue #1370's live reproduction: after a rewind,
+// the *next* run's LLM context must not contain the messages that were just
+// truncated. Before the fix, the runner's in-memory conversation mirror
+// (populated at each run's completion) was never invalidated by rewind, so
+// the next run's loadConversationHistory kept reading the stale mirror and
+// resurrected the truncated messages into a fresh CompletionRequest -- which
+// then got re-persisted over the store's truncation. This test exercises a
+// different observation point than the store-level and HTTP-level tests: the
+// actual provider request payload for the run that follows a rewind.
+func TestRewindThenNextRunDoesNotResurrectTruncatedMessages(t *testing.T) {
+	workspace := t.TempDir()
+	registry := NewRegistry()
+	writeFile := func(_ context.Context, raw json.RawMessage) (string, error) {
+		var args struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return "", err
+		}
+		return "ok", os.WriteFile(filepath.Join(workspace, args.Path), []byte(args.Content), 0o600)
+	}
+	for _, name := range []string{"write", "edit"} {
+		if err := registry.Register(ToolDefinition{Name: name, Mutating: true, Parameters: map[string]any{"type": "object"}}, writeFile); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+
+	store := newTestConversationStore(t)
+	provider := &capturingProvider{turns: []CompletionResult{
+		{ToolCalls: []ToolCall{{ID: "c1", Name: "write", Arguments: `{"path":"a.txt","content":"v1"}`}}},
+		{Content: "run1 done"},
+		{ToolCalls: []ToolCall{{ID: "c2", Name: "edit", Arguments: `{"path":"a.txt","content":"v2"}`}}},
+		{Content: "run2 done"},
+		{Content: "run3 done"},
+	}}
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel:         "test",
+		MaxSteps:             20,
+		ConversationStore:    store,
+		WorkspaceBaseOptions: WorkspaceProvisionOptions{RepoPath: workspace},
+	})
+	convID := "rewind-resurrect-conv"
+
+	run1, err := runner.StartRun(RunRequest{Prompt: "write a.txt", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun run1: %v", err)
+	}
+	waitForRunCompletion(t, runner, run1.ID)
+
+	run2, err := runner.StartRun(RunRequest{Prompt: "edit a.txt", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun run2: %v", err)
+	}
+	waitForRunCompletion(t, runner, run2.ID)
+
+	points, err := store.ListRewindPoints(context.Background(), convID)
+	if err != nil {
+		t.Fatalf("ListRewindPoints: %v", err)
+	}
+	var editPointID string
+	for _, p := range points {
+		if p.Tool == "edit" {
+			editPointID = p.ID
+		}
+	}
+	if editPointID == "" {
+		t.Fatalf("no rewind point captured for the edit tool call: %#v", points)
+	}
+
+	restoreResult, err := store.RestoreRewindPoint(context.Background(), convID, editPointID, workspace, true)
+	if err != nil {
+		t.Fatalf("RestoreRewindPoint: %v", err)
+	}
+	if restoreResult.MessagesTruncated != 3 {
+		t.Fatalf("MessagesTruncated = %d, want 3 (run2's tool-call message, tool result, and final answer)", restoreResult.MessagesTruncated)
+	}
+	// This is the seam the HTTP handler calls after a successful restore.
+	// Omitting it reproduces the resurrection bug even though the store is
+	// correctly truncated.
+	runner.InvalidateConversationHistory(convID)
+
+	run3, err := runner.StartRun(RunRequest{Prompt: "what happened?", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun run3: %v", err)
+	}
+	waitForRunCompletion(t, runner, run3.ID)
+
+	provider.mu.Lock()
+	lastReq := provider.calls[len(provider.calls)-1]
+	provider.mu.Unlock()
+	for _, m := range lastReq.Messages {
+		if strings.Contains(m.Content, "run2 done") {
+			t.Fatalf("run3's context resurrected run2's truncated final answer: %#v", lastReq.Messages)
+		}
+		if m.ToolCallID == "c2" {
+			t.Fatalf("run3's context resurrected run2's truncated tool result: %#v", lastReq.Messages)
+		}
+	}
+}
+
+// TestRestoreRewindPoint_NeverLeavesDanglingToolCall is a follow-up
+// regression on PR #1389: the original boundary kept the assistant message
+// that carries the rewound tool call, so a restore could leave persisted
+// history ending in an assistant message whose tool_calls have no
+// corresponding tool-result messages. Real providers reject that shape
+// (OpenAI: "An assistant message with 'tool_calls' must be followed by tool
+// messages responding to each tool_call_id"); the fake/stub providers used
+// elsewhere in this suite do not enforce it, which is why that bug shipped
+// with green tests. MessageBoundary must be the index of the assistant
+// message carrying the rewound tool call itself, so restoring deletes that
+// message and everything after it. For two tool calls issued in one
+// assistant turn (parallel, non-parallel-safe mutating tools execute
+// sequentially but originate from one assistant message), both calls' points
+// must share that same boundary.
+func TestRestoreRewindPoint_NeverLeavesDanglingToolCall(t *testing.T) {
+	workspace := t.TempDir()
+	registry := NewRegistry()
+	writeFile := func(_ context.Context, raw json.RawMessage) (string, error) {
+		var args struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return "", err
+		}
+		return "ok", os.WriteFile(filepath.Join(workspace, args.Path), []byte(args.Content), 0o600)
+	}
+	for _, name := range []string{"write", "edit"} {
+		if err := registry.Register(ToolDefinition{Name: name, Mutating: true, Parameters: map[string]any{"type": "object"}}, writeFile); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+
+	store := newTestConversationStore(t)
+	// One assistant turn issues two tool calls (neither tool is registered
+	// parallel-safe, so the step engine executes them sequentially but they
+	// still originate from a single assistant message).
+	provider := &stubProvider{turns: []CompletionResult{
+		{ToolCalls: []ToolCall{
+			{ID: "pa1", Name: "write", Arguments: `{"path":"a.txt","content":"v1"}`},
+			{ID: "pa2", Name: "edit", Arguments: `{"path":"b.txt","content":"v2"}`},
+		}},
+		{Content: "done"},
+	}}
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel:         "test",
+		MaxSteps:             20,
+		ConversationStore:    store,
+		WorkspaceBaseOptions: WorkspaceProvisionOptions{RepoPath: workspace},
+	})
+	convID := "parallel-rewind-conv"
+	run, err := runner.StartRun(RunRequest{Prompt: "write and edit", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForRunCompletion(t, runner, run.ID)
+
+	points, err := store.ListRewindPoints(context.Background(), convID)
+	if err != nil {
+		t.Fatalf("ListRewindPoints: %v", err)
+	}
+	if len(points) != 2 {
+		t.Fatalf("points = %#v, want 2 (one per parallel tool call)", points)
+	}
+	if points[0].MessageBoundary != points[1].MessageBoundary {
+		t.Fatalf("parallel tool calls in one assistant turn have different boundaries: %+v vs %+v", points[0], points[1])
+	}
+
+	// Restore using either point should truncate at the assistant message
+	// itself, not just the tool call that point happens to name.
+	if _, err := store.RestoreRewindPoint(context.Background(), convID, points[0].ID, workspace, true); err != nil {
+		t.Fatalf("RestoreRewindPoint: %v", err)
+	}
+
+	got, err := store.LoadMessages(context.Background(), convID)
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatalf("LoadMessages returned no messages; want at least the user prompt")
+	}
+	last := got[len(got)-1]
+	if last.Role == "assistant" && len(last.ToolCalls) > 0 {
+		t.Fatalf("restore left a dangling assistant message with tool_calls as the last persisted message: %+v", last)
+	}
+	assistantCallIDs := map[string]bool{}
+	for _, m := range got {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				assistantCallIDs[tc.ID] = true
+			}
+		}
+	}
+	for _, m := range got {
+		if m.Role == "tool" && !assistantCallIDs[m.ToolCallID] {
+			t.Fatalf("tool message %+v has no preceding assistant tool_calls entry for its ID; a real provider would reject this history", m)
+		}
+	}
+}
+
+// TestRestoreRewindPoint_PruneKeepsOlderPointsFromEarlierRuns is a regression
+// found by live verification on main after #1378 merged: RestoreRewindPoint's
+// future-point pruning query (`DELETE FROM rewind_points WHERE ... step>? OR
+// (step=? AND id<>?)`) compared point.Step, the same run-local tool-call
+// counter whose message-truncation misuse issue #1370 already fixed. Step is
+// reused per run (run 2's edit point is step 1 within run 2, run 1's write
+// point is also step 1 within run 1 -- an entirely unrelated run), so
+// restoring the edit point deleted the write point too, and a later restore
+// to that still-valid older point returned "not found" even though it was
+// never superseded.
+func TestRestoreRewindPoint_PruneKeepsOlderPointsFromEarlierRuns(t *testing.T) {
+	workspace := t.TempDir()
+	registry := NewRegistry()
+	writeFile := func(_ context.Context, raw json.RawMessage) (string, error) {
+		var args struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return "", err
+		}
+		return "ok", os.WriteFile(filepath.Join(workspace, args.Path), []byte(args.Content), 0o600)
+	}
+	for _, name := range []string{"write", "edit"} {
+		if err := registry.Register(ToolDefinition{Name: name, Mutating: true, Parameters: map[string]any{"type": "object"}}, writeFile); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+
+	store := newTestConversationStore(t)
+	provider := &stubProvider{turns: []CompletionResult{
+		{ToolCalls: []ToolCall{{ID: "c1", Name: "write", Arguments: `{"path":"a.txt","content":"v1"}`}}},
+		{Content: "run1 done"},
+		{ToolCalls: []ToolCall{{ID: "c2", Name: "edit", Arguments: `{"path":"a.txt","content":"v2"}`}}},
+		{Content: "run2 done"},
+	}}
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel:         "test",
+		MaxSteps:             20,
+		ConversationStore:    store,
+		WorkspaceBaseOptions: WorkspaceProvisionOptions{RepoPath: workspace},
+	})
+	convID := "prune-older-point-conv"
+
+	run1, err := runner.StartRun(RunRequest{Prompt: "write a.txt", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun run1: %v", err)
+	}
+	waitForRunCompletion(t, runner, run1.ID)
+
+	run2, err := runner.StartRun(RunRequest{Prompt: "edit a.txt", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun run2: %v", err)
+	}
+	waitForRunCompletion(t, runner, run2.ID)
+
+	points, err := store.ListRewindPoints(context.Background(), convID)
+	if err != nil {
+		t.Fatalf("ListRewindPoints: %v", err)
+	}
+	var writePointID, editPointID string
+	for _, p := range points {
+		switch p.Tool {
+		case "write":
+			writePointID = p.ID
+		case "edit":
+			editPointID = p.ID
+		}
+	}
+	if writePointID == "" || editPointID == "" {
+		t.Fatalf("expected one rewind point per tool call: %#v", points)
+	}
+
+	if _, err := store.RestoreRewindPoint(context.Background(), convID, editPointID, workspace, true); err != nil {
+		t.Fatalf("RestoreRewindPoint(edit): %v", err)
+	}
+
+	// The older write-point, captured in an earlier and entirely unrelated
+	// run, must survive the edit-point restore's pruning: it was never
+	// superseded by anything, and this restore must still be possible.
+	if _, err := store.RestoreRewindPoint(context.Background(), convID, writePointID, workspace, true); err != nil {
+		t.Fatalf("RestoreRewindPoint(write) after an unrelated later-run restore: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(workspace, "a.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("a.txt still exists after restoring to the write point (its pre-image was absent): stat err=%v", statErr)
+	}
+}
+
 func TestRunnerInjectsMemorySnippetAndEmitsMemoryEvents(t *testing.T) {
 	t.Parallel()
 
