@@ -308,6 +308,108 @@ func TestIssue1256_PersistsTrustedWorkspaceBeforeMutatingRewindCapture(t *testin
 	}
 }
 
+// TestRewindThenNextRunDoesNotResurrectTruncatedMessages is a regression test
+// for the third symptom in issue #1370's live reproduction: after a rewind,
+// the *next* run's LLM context must not contain the messages that were just
+// truncated. Before the fix, the runner's in-memory conversation mirror
+// (populated at each run's completion) was never invalidated by rewind, so
+// the next run's loadConversationHistory kept reading the stale mirror and
+// resurrected the truncated messages into a fresh CompletionRequest -- which
+// then got re-persisted over the store's truncation. This test exercises a
+// different observation point than the store-level and HTTP-level tests: the
+// actual provider request payload for the run that follows a rewind.
+func TestRewindThenNextRunDoesNotResurrectTruncatedMessages(t *testing.T) {
+	workspace := t.TempDir()
+	registry := NewRegistry()
+	writeFile := func(_ context.Context, raw json.RawMessage) (string, error) {
+		var args struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return "", err
+		}
+		return "ok", os.WriteFile(filepath.Join(workspace, args.Path), []byte(args.Content), 0o600)
+	}
+	for _, name := range []string{"write", "edit"} {
+		if err := registry.Register(ToolDefinition{Name: name, Mutating: true, Parameters: map[string]any{"type": "object"}}, writeFile); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+
+	store := newTestConversationStore(t)
+	provider := &capturingProvider{turns: []CompletionResult{
+		{ToolCalls: []ToolCall{{ID: "c1", Name: "write", Arguments: `{"path":"a.txt","content":"v1"}`}}},
+		{Content: "run1 done"},
+		{ToolCalls: []ToolCall{{ID: "c2", Name: "edit", Arguments: `{"path":"a.txt","content":"v2"}`}}},
+		{Content: "run2 done"},
+		{Content: "run3 done"},
+	}}
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel:         "test",
+		MaxSteps:             20,
+		ConversationStore:    store,
+		WorkspaceBaseOptions: WorkspaceProvisionOptions{RepoPath: workspace},
+	})
+	convID := "rewind-resurrect-conv"
+
+	run1, err := runner.StartRun(RunRequest{Prompt: "write a.txt", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun run1: %v", err)
+	}
+	waitForRunCompletion(t, runner, run1.ID)
+
+	run2, err := runner.StartRun(RunRequest{Prompt: "edit a.txt", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun run2: %v", err)
+	}
+	waitForRunCompletion(t, runner, run2.ID)
+
+	points, err := store.ListRewindPoints(context.Background(), convID)
+	if err != nil {
+		t.Fatalf("ListRewindPoints: %v", err)
+	}
+	var editPointID string
+	for _, p := range points {
+		if p.Tool == "edit" {
+			editPointID = p.ID
+		}
+	}
+	if editPointID == "" {
+		t.Fatalf("no rewind point captured for the edit tool call: %#v", points)
+	}
+
+	restoreResult, err := store.RestoreRewindPoint(context.Background(), convID, editPointID, workspace, true)
+	if err != nil {
+		t.Fatalf("RestoreRewindPoint: %v", err)
+	}
+	if restoreResult.MessagesTruncated != 2 {
+		t.Fatalf("MessagesTruncated = %d, want 2", restoreResult.MessagesTruncated)
+	}
+	// This is the seam the HTTP handler calls after a successful restore.
+	// Omitting it reproduces the resurrection bug even though the store is
+	// correctly truncated.
+	runner.InvalidateConversationHistory(convID)
+
+	run3, err := runner.StartRun(RunRequest{Prompt: "what happened?", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun run3: %v", err)
+	}
+	waitForRunCompletion(t, runner, run3.ID)
+
+	provider.mu.Lock()
+	lastReq := provider.calls[len(provider.calls)-1]
+	provider.mu.Unlock()
+	for _, m := range lastReq.Messages {
+		if strings.Contains(m.Content, "run2 done") {
+			t.Fatalf("run3's context resurrected run2's truncated final answer: %#v", lastReq.Messages)
+		}
+		if m.ToolCallID == "c2" {
+			t.Fatalf("run3's context resurrected run2's truncated tool result: %#v", lastReq.Messages)
+		}
+	}
+}
+
 func TestRunnerInjectsMemorySnippetAndEmitsMemoryEvents(t *testing.T) {
 	t.Parallel()
 
