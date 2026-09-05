@@ -154,3 +154,51 @@ func TestStartRun_WorkspacePathRecordedOnConversation(t *testing.T) {
 		t.Fatalf("conversation workspace = %q, want the effective workspace_path %q", owner.Workspace, wsRoot)
 	}
 }
+
+// TestStartRun_WorkspaceTypeProvisioningTakesPrecedenceOverWorkspacePath is a
+// regression test for the precedence rule documented on
+// RunRequest.WorkspacePath: when WorkspaceType (explicitly or via profile)
+// resolves to a provisioning mode, that provisioned workspace wins and the
+// explicit WorkspacePath must be ignored, not merged or raced against it. This
+// covers a different angle than the routing/sandbox and conversation-recording
+// tests above — the INTERACTION between the two fields — and would fail if a
+// future change made the workspace_path branch unconditional or reordered the
+// precedence.
+func TestStartRun_WorkspaceTypeProvisioningTakesPrecedenceOverWorkspacePath(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	explicitPath := t.TempDir()
+
+	runner := NewRunner(
+		&stubProvider{turns: []CompletionResult{{Content: "done"}}},
+		NewRegistry(),
+		RunnerConfig{
+			DefaultModel:         "test-model",
+			MaxSteps:             1,
+			WorkspaceBaseOptions: WorkspaceProvisionOptions{BaseDir: baseDir},
+		},
+	)
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:        "hello",
+		WorkspaceType: "local",
+		WorkspacePath: explicitPath,
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForRunCompletion(t, runner, run.ID)
+	events := getRunEvents(t, runner, run.ID)
+
+	provisioned := findEventByType(events, EventWorkspaceProvisioned)
+	if provisioned == nil {
+		t.Fatal("expected a workspace.provisioned event")
+	}
+	if got := provisioned.Payload["workspace_type"]; got != "local" {
+		t.Fatalf("workspace.provisioned workspace_type = %v, want %q — explicit WorkspaceType provisioning must take precedence over workspace_path", got, "local")
+	}
+	if got := provisioned.Payload["workspace_path"]; got == explicitPath {
+		t.Fatalf("workspace.provisioned workspace_path leaked the explicit WorkspacePath %q instead of the provisioned local workspace root", explicitPath)
+	}
+}
