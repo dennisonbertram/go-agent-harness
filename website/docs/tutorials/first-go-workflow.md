@@ -74,7 +74,7 @@ HARNESS_AUTH_DISABLED=true \
 harnessd
 ```
 
-The server listens on `:8080` by default. Leave it running in this terminal.
+The server listens on `127.0.0.1:8080` by default. Leave it running in this terminal.
 
 </Step>
 <Step title="Confirm the health check">

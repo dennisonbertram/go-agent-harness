@@ -197,8 +197,8 @@ Two additional deferred tools let the agent work with MCP _resources_ (data obje
 | `list_mcp_resources` | `mcp_name` | List all resources exposed by the named server |
 | `read_mcp_resource` | `mcp_name`, `uri` | Read a resource by its URI |
 
-<Callout type="warning">
-In the current production implementation, `list_mcp_resources` returns an empty list and `read_mcp_resource` returns an error. MCP resource support is defined in the interface but not yet implemented in the production `clientManagerRegistry`. Do not rely on these tools returning meaningful data in the current release.
+<Callout type="info">
+`list_mcp_resources` and `read_mcp_resource` are implemented: they call through `tools.MCPRegistry` (`internal/harness/tools/deferred/mcp.go:51,89`) to the production `clientManagerRegistry` (`cmd/harnessd/mcp_setup.go:68-90`), which delegates to `internal/mcp.ClientManager.ListResources`/`ReadResource` (`internal/mcp/mcp.go:231,246`) against the real connected server.
 </Callout>
 
 ### `connect_mcp` — connecting mid-session

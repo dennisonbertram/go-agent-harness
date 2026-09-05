@@ -17,7 +17,7 @@ This page covers the second direction — `harnessd` as an MCP server. There are
 | **`harness-mcp` proxy** | stdio → HTTP proxy | Connecting Claude Desktop to an _already-running_ `harnessd` instance |
 
 <Callout variant="warning">
-These are three separate surfaces with different tool sets and use cases. Connecting Claude Desktop to `harnessd --mcp` (stdio mode) exposes the full harness tool catalog. Connecting via `harness-mcp` exposes five task-management tools that drive the harnessd REST API. Choose based on whether you need the full catalog or a curated run-management interface.
+The HTTP MCP server (`/mcp`) and the `harness-mcp` proxy binary share the **same 25-tool, REST-backed dispatcher** (`internal/harnessmcp`) — the only difference is transport (HTTP POST vs. stdio) and which `harnessd` instance they call (`/mcp` calls back into its own daemon; `harness-mcp` calls whatever `HARNESS_ADDR` names). `harnessd --mcp` (stdio mode) is the one surface with a different tool set: it exposes the full in-process harness tool catalog (core + deferred tools an agent run would use), not the run-management API.
 </Callout>
 
 ---
@@ -31,48 +31,63 @@ When `harnessd` starts in normal HTTP mode, it mounts an MCP server on the same 
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST /mcp` | JSON-RPC 2.0 | Tool calls, `initialize`, `tools/list` |
-| `GET /mcp` | SSE stream | JSON-RPC 2.0 notifications for subscribed runs |
 
-The MCP server advertises protocol version `"2025-11-25"` and identifies itself as `name = "go-agent-harness"`, `version = "1.0"`.
+<Callout variant="warning">
+`GET /mcp` is **not** an SSE stream — the handler only accepts `POST` and returns `405 Method Not Allowed` for anything else (`internal/harnessmcp/httptransport.go:29-31`). There is no `subscribe_run` tool or push-notification mechanism on this surface; poll `tail_run_events` instead (see the tool table below).
+</Callout>
 
-### The 10 tools
+The MCP server advertises protocol version `"2025-11-25"` and identifies itself as `name = "harness-mcp"`, `version = "1.0.0"` (`internal/harnessmcp/dispatcher.go:98-99`) — the same identity the `harness-mcp` stdio proxy advertises, because both share the same dispatcher.
+
+<Callout variant="info">
+`/mcp` is mounted via `harnessmcp.NewHTTPHandler` (`cmd/harnessd/runtime_container.go:348-352`), which calls back into the daemon's own REST API over HTTP using a self-referential base URL. It is **not** built on `internal/mcpserver.NewServer` — that constructor has no production caller today; `harnessd` only uses `mcpserver.NewStdioServer` for the `--mcp` stdio surface described below. (`internal/mcpserver` is a separate, unmounted package that advertises `name = "go-agent-harness"`, `version = "0.1.0"` — do not confuse the two if you read its source.)
+</Callout>
+
+### The 25 tools
+
+Both `/mcp` and the `harness-mcp` proxy (below) expose the same 25 REST-backed tools (`internal/harnessmcp/tools.go`):
 
 <Card>
 <CardHeader>
-<CardTitle>Tools exposed by the HTTP MCP server</CardTitle>
+<CardTitle>Tools exposed by the HTTP MCP server and the harness-mcp proxy</CardTitle>
 </CardHeader>
 <CardContent>
 
-| Tool | Required arguments | Description |
-|------|--------------------|-------------|
-| `start_run` | `prompt` | Submit a new agent run; returns `run_id` |
-| `get_run_status` | `run_id` | Current status and output |
-| `list_runs` | — | List all known runs |
-| `steer_run` | `run_id`, `message` | Inject a guidance message into an active run |
-| `submit_user_input` | `run_id`, `input` | Respond when a run is paused at `waiting_for_user` |
-| `subscribe_run` | `run_id` | Register for SSE notifications; returns `stream_id` |
-| `list_conversations` | — | Paginated conversation list (default limit 20) |
-| `get_conversation` | `conversation_id` | Full message history for a conversation |
+| Tool | Key arguments | Description |
+|------|---------------|-------------|
+| `start_run` | `prompt`, `model`, `conversation_id`, `max_steps`, `max_cost_usd`, `workspace_type`, `extra_dirs`, `allowed_tools`, `denied_tools`, `profile`, `system_prompt`, `provider_name`, `reasoning_effort`, `max_turns`, `plan_mode`, `plan_file`, `agent_intent`, `task_context` | Start a new agent run; returns `run_id` |
+| `get_run_status` | `run_id` | Status, messages, cost, and any error |
+| `wait_for_run` | `run_id`, `timeout_seconds` (default 300) | Polls until the run reaches a terminal state |
+| `continue_run` | `run_id`, `prompt` | Continue an existing conversation with a follow-up prompt |
+| `cancel_run` | `run_id` | Cancel an in-flight run |
+| `approve_run` | `run_id` | Approve a run paused awaiting tool/plan approval |
+| `deny_run` | `run_id` | Deny a run paused awaiting approval |
+| `steer_run` | `run_id`, `prompt` | Inject guidance into an in-flight run |
+| `tail_run_events` | `run_id`, `after_event_id`, `max_events` (default 100), `wait_seconds` (default 2) | Poll a run's event stream for progress |
+| `get_run_input` | `run_id` | Read the pending question when status is `waiting_for_user` |
+| `submit_user_input` | `run_id`, `answers` | Answer a run waiting on a question |
+| `get_run_todos` | `run_id` | Read a run's todo list |
+| `get_run_summary` | `run_id` | Read a run's summary |
+| `get_run_context` | `run_id` | Read a run's context-window usage |
+| `compact_run` | `run_id` | Compact a run's context |
+| `list_runs` | `conversation_id`, `limit` (default 20) | List recent runs |
+| `list_profiles` | — | List profiles usable as `start_run`'s `profile` argument |
+| `list_tools` | — | List tool names for `allowed_tools` / `denied_tools` |
+| `list_conversations` | — | List recent conversations |
+| `get_conversation` | `conversation_id` | Full message history |
 | `search_conversations` | `query` | Full-text search across conversations |
-| `compact_conversation` | `conversation_id` | Trigger context compaction on a conversation |
+| `compact_conversation` | `conversation_id` | Compact a conversation's history |
+| `list_skills` | — | List skills available to a delegated run |
+| `list_models` | — | List models this daemon can route to |
+| `list_providers` | — | List providers with configuration/health status |
 
 </CardContent>
 </Card>
 
-<Callout variant="warning">
-The harnessd HTTP MCP server is always constructed via `mcpserver.NewServer` (see `runtime_container.go:188`), which never sets a `ConversationInterface`. `NewServerWithConversations` is not wired into any production code path. As a result, `list_conversations`, `search_conversations`, and `compact_conversation` **always** return `"conversations not available"` through the `/mcp` endpoint — there is no deployment configuration that enables them. The exception is `get_conversation`, which is backed by `runner.ConversationMessages` (via `mcpRunnerAdapter`) and does work.
+Every tool is a thin proxy to the corresponding `harnessd` REST route (e.g. `start_run` → `POST /v1/runs`, `get_conversation` → `GET /v1/conversations/{id}`) — there is no separate conversation backend, and no tool is hardcoded to return an unavailable-feature error.
 
-None of the harnessd MCP server surfaces expose MCP resources (`resources/list` / `resources/read`). The `clientManagerRegistry` used for outbound MCP client calls also returns an empty list for `ListResources` and an error for `ReadResource` (`mcp_setup.go:49-57`).
+<Callout variant="info">
+Neither `/mcp` nor `harness-mcp` expose MCP resources (`resources/list` / `resources/read`) — the dispatcher has no handler for them. This is a separate matter from harnessd's own **outbound** MCP client support: `list_mcp_resources` / `read_mcp_resource` (the in-run tools an agent calls to read resources from an *external* connected MCP server) are implemented (`cmd/harnessd/mcp_setup.go:68-90`, `internal/mcp/mcp.go:231`).
 </Callout>
-
-### SSE notifications
-
-When a client calls `subscribe_run`, the SSE stream from `GET /mcp` delivers JSON-RPC 2.0 notifications as events arrive. Two notification methods are published:
-
-- `run/event` — emitted on non-terminal status changes; includes `run_id`, `event_type: "status_changed"`, and `status`.
-- `run/completed` — emitted when a run reaches a terminal state (`"completed"` or `"failed"`); includes `run_id`, `status`, `cost_usd`, and `error`. Note: `cost_usd` is currently hardcoded to `0` in the poller (`poller.go:119`) and does not reflect the run's actual cost — fetch real cost via `get_run_status` or the REST run object instead.
-
-The SSE keepalive ping interval is controlled by `HARNESS_SSE_KEEPALIVE_SECONDS` (default: 15 seconds).
 
 ---
 
@@ -125,31 +140,11 @@ harness-mcp (StdioTransport → Dispatcher → HarnessClient)
 harnessd (running at HARNESS_ADDR)
 ```
 
-The proxy advertises `name = "harness-mcp"`, `version = "1.0.0"` and protocol version `"2025-11-25"`.
+The proxy advertises `name = "harness-mcp"`, `version = "1.0.0"` and protocol version `"2025-11-25"` — identical to `/mcp` above, since both run the same `internal/harnessmcp` dispatcher.
 
-### The 5 tools
+### Tools
 
-<Card>
-<CardHeader>
-<CardTitle>Tools exposed by harness-mcp</CardTitle>
-</CardHeader>
-<CardContent>
-
-| Tool | Required arguments | Optional arguments | Description |
-|------|--------------------|--------------------|-------------|
-| `start_run` | `prompt` | `model`, `conversation_id`, `max_steps`, `max_cost_usd` | Start a new agent run |
-| `get_run_status` | `run_id` | — | Returns status, messages, `cost_usd`, and error |
-| `wait_for_run` | `run_id` | `timeout_seconds` (default 300) | Polls every 2 seconds until the run reaches `completed`, `failed`, or `waiting_for_user` |
-| `continue_run` | `run_id`, `prompt` | — | Fetches the previous run's `conversation_id` and starts a new run in that conversation |
-| `list_runs` | — | `conversation_id`, `limit` (default 20) | List runs, optionally filtered by conversation |
-
-</CardContent>
-</Card>
-
-The proxy makes direct REST calls to `harnessd`:
-- `POST /v1/runs` for `start_run`
-- `GET /v1/runs/{runID}` for `get_run_status` and `wait_for_run`
-- `GET /v1/runs?conversation_id=&limit=` for `list_runs`
+`harness-mcp` exposes the same 25 tools as `/mcp` — see [The 25 tools](#the-25-tools) above. Each tool proxies to the matching `harnessd` REST route (`GET`/`POST /v1/runs...`, `/v1/conversations/...`, `/v1/profiles`, `/v1/tools`, `/v1/skills`, `/v1/models`, `/v1/providers`), the only difference from `/mcp` being that requests go to `HARNESS_ADDR` over the network instead of looping back into the same process.
 
 ### Build the proxy
 
@@ -207,7 +202,7 @@ Quit and reopen Claude Desktop. The "harness" MCP server will appear in the tool
 </Steps>
 
 <Callout variant="info">
-You can also use `harnessd --mcp` (stdio mode) directly as the Claude Desktop command without the proxy. The difference is that `--mcp` mode exposes the full harness tool catalog, while `harness-mcp` exposes only the five curated run-management tools. The proxy also lets you share one persistent `harnessd` daemon across multiple clients simultaneously.
+You can also use `harnessd --mcp` (stdio mode) directly as the Claude Desktop command without the proxy. The difference is that `--mcp` mode exposes the full harness tool catalog (core + deferred tools), while `harness-mcp` exposes the 25 run-management tools described above. The proxy also lets you share one persistent `harnessd` daemon across multiple clients simultaneously.
 </Callout>
 
 ---
@@ -224,10 +219,10 @@ You can also use `harnessd --mcp` (stdio mode) directly as the Claude Desktop co
 
 **Use the HTTP MCP endpoint when:**
 - You are integrating from another service or agent over a network connection.
-- You need live SSE notifications via `subscribe_run`.
 - You want a single `harnessd` process to serve many concurrent MCP clients.
+- Polling `tail_run_events` is an acceptable substitute for push notifications — there is no SSE or subscription mechanism on this surface.
 
-The endpoint lives at `POST /mcp` (tool calls) and `GET /mcp` (SSE) on the same port as the REST API (default 8080). No extra build step is required.
+The endpoint lives at `POST /mcp` on the same port as the REST API (default `127.0.0.1:8080`). No extra build step is required.
 
 </TabsContent>
 <TabsContent value="stdio">
@@ -241,8 +236,8 @@ The endpoint lives at `POST /mcp` (tool calls) and `GET /mcp` (SSE) on the same 
 <TabsContent value="proxy">
 
 **Use `harness-mcp` when:**
-- You want Claude Desktop (or any stdio MCP host) to drive a persistent, separately-managed `harnessd` daemon.
-- You want a minimal, curated interface (5 run-management tools) rather than the full catalog.
+- You want Claude Desktop (or any stdio MCP host) to drive a persistent, separately-managed `harnessd` daemon over stdio rather than HTTP.
+- You want the same 25 run-management tools as `/mcp`, without the client needing to speak HTTP.
 - Multiple clients or processes share one `harnessd` instance.
 
 </TabsContent>

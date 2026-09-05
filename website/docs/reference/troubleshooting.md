@@ -181,7 +181,7 @@ The Slack webhook integration only supports steering existing runs — all Slack
 You can verify the full list of available MCP tools by calling `GET /v1/mcp/servers`, which returns each connected server's tool list.
 
 <Callout type="warning">
-The runbook `docs/runbooks/mcp.md` documents the double-underscore format. This is incorrect. The source code at `internal/harness/tools/mcp.go` and `internal/harness/tools/deferred/mcp.go` both use `mcp_{server}_{tool}` (single underscore, `mcp_` prefix).
+The runbook `docs/runbooks/mcp.md` documents the double-underscore format. This is incorrect. The source code at `internal/harness/tools/deferred/mcp.go:109` uses `mcp_{server}_{tool}` (single underscore, `mcp_` prefix). (There is no `internal/harness/tools/mcp.go` file — shared MCP registry types live in `internal/harness/tools/types.go`.)
 </Callout>
 
 ---

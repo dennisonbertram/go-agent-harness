@@ -157,7 +157,7 @@ Regardless of which method you use, a complete install puts these three things i
 |------|------------|
 | `go-code` | Shell wrapper (`scripts/go-code.sh`). Auto-starts `harnessd` when no server is running, then launches the TUI or streams a prompt. This is the command you will use day-to-day. |
 | `harnesscli` | Terminal client and BubbleTea TUI (`cmd/harnesscli`). `go-code` delegates to it under the hood. |
-| `harnessd` | Local HTTP daemon and runtime bootstrap (`cmd/harnessd`). Listens on `:8080` by default. Handles runs, events, tools, providers, workflows, and more. |
+| `harnessd` | Local HTTP daemon and runtime bootstrap (`cmd/harnessd`). Listens on `127.0.0.1:8080` by default. Handles runs, events, tools, providers, workflows, and more. |
 | `prompts/` + `catalog/` | Runtime assets — bundled prompt templates and the model/provider catalog. `harnessd` reads these at startup. |
 
 ---

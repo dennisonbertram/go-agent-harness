@@ -7,7 +7,7 @@ sidebar_position: 3
 import { Callout, Steps, Step, Tabs, TabsList, TabsTrigger, TabsContent, Card, CardHeader, CardTitle, CardContent } from '@site/src/components/ui';
 import RunRequestBuilder from '@site/src/components/RunRequestBuilder';
 
-`harnessd` is the HTTP daemon that backs every go-code agent run. It exposes a REST + Server-Sent Events (SSE) API on a single port (default `:8080`). Any process that can make HTTP requests — a shell script, a CI job, another service — can start agent runs, stream their output in real time, and control them mid-flight.
+`harnessd` is the HTTP daemon that backs every go-code agent run. It exposes a REST + Server-Sent Events (SSE) API on a single port (default `127.0.0.1:8080`). Any process that can make HTTP requests — a shell script, a CI job, another service — can start agent runs, stream their output in real time, and control them mid-flight.
 
 This guide walks you through the two execution models, the full `RunRequest` body, the run-control endpoints, and how to handle errors and limits. The streamed-run examples use the built-in fake provider for key-free local testing, which requires a turns JSON file and `allow_fallback:true` in the request body — see the startup step for details. The `POST /v1/agents` synchronous endpoint requires a real configured provider (it does not support `allow_fallback` in the request body and cannot use the fake provider via the fallback path).
 
@@ -62,7 +62,7 @@ HARNESS_AUTH_DISABLED=true \
 go run ./cmd/harnessd
 ```
 
-The server prints `harness server listening on :8080` when ready. `HARNESS_PROVIDER=fake` selects the built-in scripted provider (no API key, no network calls), `HARNESS_FAKE_TURNS` tells it which turns file to load, and `HARNESS_AUTH_DISABLED=true` skips Bearer token validation.
+The server prints `harness server listening on 127.0.0.1:8080` when ready. `HARNESS_PROVIDER=fake` selects the built-in scripted provider (no API key, no network calls), `HARNESS_FAKE_TURNS` tells it which turns file to load, and `HARNESS_AUTH_DISABLED=true` skips Bearer token validation.
 
 </Step>
 <Step>
@@ -371,6 +371,10 @@ A `steering.received` event will appear on the event stream.
 #### POST `/v1/runs/{id}/continue`
 Start a **new run** in the same conversation. The conversation history from the referenced run is carried forward as context.
 
+<Callout variant="warning">
+**Only works when the referenced run's status is `completed`.** Any other status — `running`, `queued`, `failed`, `cancelled`, `waiting_for_user`, or `waiting_for_approval` — returns HTTP 409 `run_not_completed` (`internal/harness/runner.go:2217`, `internal/server/http_runs.go:817`). A cancelled run cannot be continued at all; a run blocked on a question or approval must be unblocked first via `POST /v1/runs/{id}/input` or `/approve`/`/deny`.
+</Callout>
+
 ```bash
 curl -s -X POST http://localhost:8080/v1/runs/run_abc123/continue \
   -H "Content-Type: application/json" \
@@ -433,7 +437,7 @@ Approval gates are enabled by setting `permissions.approval` to `"destructive"` 
 <TabsContent value="input">
 
 #### GET and POST `/v1/runs/{id}/input`
-When the agent calls the `ask_user_question` tool the run enters `waiting_for_user` status and emits a `run.waiting_for_user` event. Poll `GET /v1/runs/{id}/input` to retrieve the pending question, then `POST` your answers.
+When the agent calls the `AskUserQuestion` tool the run enters `waiting_for_user` status and emits a `run.waiting_for_user` event. Poll `GET /v1/runs/{id}/input` to retrieve the pending question, then `POST` your answers (or use `harnesscli input <run-id> "<question>=<answer>"`).
 
 ```bash
 # Get the pending question
@@ -538,7 +542,7 @@ A run emits dozens of event types. Here are the most commonly consumed ones. For
 | `run.completed` | Terminal: run finished successfully |
 | `run.failed` | Terminal: run failed |
 | `run.cancelled` | Terminal: run was cancelled |
-| `run.waiting_for_user` | Agent called `ask_user_question`; run paused |
+| `run.waiting_for_user` | Agent called `AskUserQuestion`; run paused |
 | `run.cost_limit_reached` | `max_cost_usd` ceiling hit; run continues to completion |
 | `assistant.message.delta` | Streaming text token from the assistant |
 | `assistant.message` | Full assistant message (no tool calls in this turn) |

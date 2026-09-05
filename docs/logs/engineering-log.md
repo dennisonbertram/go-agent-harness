@@ -63,6 +63,90 @@
 - Verification: `go test ./cmd/harnessd ./cmd/harnesscli/... ./internal/config
   -race` and `go vet` on the same packages, all green.
 
+## 2026-09-05 — Issue #1380 website/docs staleness correction
+
+- Scope: `website/docs/**` reference/concept/tutorial/server pages plus the one-line
+  `harnesscli service install --addr` help-text default at `cmd/harnesscli/service.go:410`.
+  A prior read-only audit (attached to epic #1369) flagged 19 website pages with
+  verified-wrong claims; every claim was re-verified against the current tree with `rg`
+  before being corrected (the audit was treated as a lead, not gospel).
+- Bind default: `HARNESS_ADDR` changed to `127.0.0.1:8080` in issue #1328
+  (`internal/config/config.go:254`) with a non-loopback-bind refusal
+  (`cmd/harnessd/bind_guard.go:29-42`); ~15 stray `:8080` claims across
+  reference/getting-started/concepts/server/tutorials pages were corrected to match,
+  and the refusal behavior is now documented next to each default.
+- Resume story: `harnesscli continue` / `POST /v1/runs/{id}/continue` requires the
+  source run's status to be `completed` and returns 409 `run_not_completed`
+  otherwise (`internal/harness/runner.go:2217`, `internal/server/http_runs.go:817`);
+  a cancelled run cannot be resumed. Corrected in `reference/exit-codes.md`,
+  `cli/harnesscli.md`, `cli/go-code-wrapper.md`, `server/http-api-guide.md`, and
+  `concepts/runs-and-conversations.md`, which previously told operators to
+  `harnesscli continue` a blocked or cancelled run.
+- Route inventory (`reference/http-routes.md`) was rebuilt from the actual
+  `mux.Handle`/`mux.HandleFunc` registrations in `internal/server/http*.go`: added
+  `/v1/tools`, `/v1/hooks`, `/v1/config/reload`, `/v1/model-settings*`, `/v1/tasks`,
+  `/v1/jobs/{id}/kill|output`, `/v1/callbacks/{id}/cancel`, `/v1/cron/runs`,
+  `/v1/cron/jobs/{id}/executions`, `/v1/conversations/{id}/events|rewind-points|rewind|undo`,
+  `/v1/runs/{id}/replay`, `/v1/providers/{name}/import-subscription`, the 6
+  `/v1/relay/*` control-plane routes, and `/viz`. The `RunRequest` schema block gained
+  `attachments`, `plan_mode`, `plan_file`, `extra_dirs`, `denied_tools`, `rules`, and
+  `workspace_path` (documented as the post-#1372 state — the field does not exist in
+  `RunRequest` yet on this branch).
+- Events catalog (`reference/events-catalog.md`): `AllEventTypes()` returns 79 of the
+  86 event constants actually declared and emitted; the 7 gap events
+  (`callback.dispatching|failed|retry_wait|started`, `plan.approval_required|granted|denied`)
+  are genuinely emitted via a separate string-keyed bridge
+  (`internal/harness/tools/delayed_callback.go`, `internal/harness/plan_mode.go:75-107`) and
+  are now documented alongside a corrected 86-event total. Also added `todos.updated` and
+  `job.completed` (`EventBackgroundJobCompleted`, delivered to the conversation stream, not
+  the originating run), and fixed a stale `"tool": "ask_user_question"` payload example to
+  the real `"AskUserQuestion"` value.
+- Tools catalog (`reference/tools-catalog.md`): added `list_models`, `deploy`, `goals`,
+  `cron_update`, `cron_history`, `message_subagent`, `notify_parent`, and `agent_swarm` —
+  all verified as real `Definition{Name: ...}` registrations in
+  `internal/harness/tools_default.go`. Rejected the audit's `compact_summary` entry after
+  verification: it is an internal message-tagging label used by the `compact_history` tool,
+  not a callable tool.
+- Providers: `catalog/models.json` has 15 providers, not 10 — added `cerebras`,
+  `codex-subscription`, `kimi-subscription`, `lmstudio`, `ollama` to
+  `reference/providers-and-models-reference.md`, `reference/environment-variables.md`,
+  `concepts/providers-and-models.md`, and `getting-started/what-is-go-code.md`. Live model
+  discovery is provider-agnostic (OpenRouter, OpenAI, Anthropic, DeepSeek all refresh on a
+  5-minute TTL via `internal/provider/openai/discovery.go:24` and
+  `internal/provider/anthropic/discovery.go:24`), not OpenRouter-only as previously stated.
+- `max_steps`: `0` means unlimited with no daemon-level fallback to a non-zero cap
+  (documented as the post-#1376 state — `cmd/harnessd/config_reload.go:44-47` on this
+  branch still resets a resolved `0` to `8`).
+- `server/expose-as-mcp-server.md` needed a substantial rewrite beyond the audit's
+  findings: `/mcp` is mounted via `harnessmcp.NewHTTPHandler`
+  (`cmd/harnessd/runtime_container.go:348-352`), not `internal/mcpserver.NewServer` (which
+  has no production caller). `/mcp` and the `harness-mcp` stdio proxy share the same
+  25-tool, REST-backed dispatcher (`internal/harnessmcp`) — the page previously described
+  them as two different tool sets (10 vs. 5) and claimed `/mcp` supports `GET` SSE
+  notifications via `subscribe_run`; the handler is POST-only and 405s on GET
+  (`internal/harnessmcp/httptransport.go:29-31`). Same "five tools" and unmounted-SSE
+  staleness also existed in `tutorials/claude-desktop-mcp.md`, corrected there too.
+  `list_mcp_resources`/`read_mcp_resource` are implemented (`cmd/harnessd/mcp_setup.go:68-90`,
+  `internal/mcp/mcp.go:231,246`), contradicting the "not yet implemented" claim in
+  `integrations/mcp-consume.md`.
+- Added missing `harnesscli` subcommand documentation (dispatch table in
+  `cmd/harnesscli/auth.go`): `steer`, `viz`, `acp`, `plugin`, `mcp`, `hooks`, `service`,
+  `auth kimi`, `auth codex`, and `input` (documented as the post-#1374 CLI addition; the
+  route `POST /v1/runs/{id}/input` it calls already exists today).
+- One-line code fix: `cmd/harnesscli/service.go:410`'s `--addr` flag help text said the
+  resolved default was `:8080`; corrected to `127.0.0.1:8080` to match
+  `internal/config/config.go:254`. No test asserted the old string;
+  `go test ./cmd/harnesscli -run Service -race` passes unchanged.
+- Verification: `rg` re-check of every corrected route/flag/env/tool/event against the
+  current tree; `npm run build` in `website/` (Docusaurus) completed with no broken
+  internal links or MDX errors.
+- New finding, not fixed here (outside `website/docs` + the one help string): the VM
+  workspace cloud-init template (`internal/workspace/bootstrap.go:36`) sets
+  `HARNESS_ADDR=:8080` (a non-loopback bind) with no `HARNESS_AUTH_DISABLED` and no
+  configured auth, so `bind_guard.go`'s #1328 protection likely now rejects `harnessd`
+  startup on provisioned VM workspaces; `systemctl start harnessd || true` would swallow
+  the failure silently. Filed as a follow-up rather than fixed in this docs-only PR.
+
 ## 2026-08-08 — Issue #1285 attached lifecycle PTY (in implementation)
 
 - Planned boundary: ptyrunner will accept only the typed identity returned by

@@ -309,7 +309,7 @@ Common error codes for this API:
 | HTTP status | Code | When |
 |-------------|------|------|
 | 400 | `invalid_request` | `POST .../runs` — workflow name not registered; or `POST .../resume` — run is not in `"failed"` status |
-| 404 | `not_found` | `GET /v1/script-workflows/{name}` — workflow name not registered; or `GET/POST /v1/script-workflow-runs/{id}` — run ID does not exist |
+| 404 | `not_found` | `GET /v1/script-workflows/{name}` — workflow name not registered; or `GET /v1/script-workflow-runs/{id}` (or its `/events`, `/resume` sub-paths) — run ID does not exist |
 | 501 | `not_implemented` | `ScriptWorkflows` not configured in `ServerOptions` |
 
 ---

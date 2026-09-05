@@ -64,7 +64,7 @@ Three events signal the end of the stream. Clients MUST stop reading after recei
 | `EventRunFailed` | `run.failed` | Run ended with an error |
 | `EventRunCancelled` | `run.cancelled` | Run cancelled via `POST /v1/runs/{id}/cancel` |
 
-`IsTerminalEvent(et EventType) bool` returns `true` for exactly these three types (source: `internal/harness/events.go:466–468`).
+`IsTerminalEvent(et EventType) bool` returns `true` for exactly these three types (source: `internal/harness/events.go:477–479`).
 
 In headless mode (`harnesscli -prompt ...` or streaming `harnesscli continue`) the terminal event also determines the process exit code — see [Exit Codes](/docs/reference/exit-codes) for the mapping.
 
@@ -84,7 +84,7 @@ Source: `internal/harness/events.go:18–41`
 | `run.queued` | Run accepted but the worker pool is at capacity (bounded pool mode only) |
 | `run.step.started` | Each step loop iteration begins |
 | `run.step.completed` | Step loop iteration finishes |
-| `run.waiting_for_user` | `ask_user_question` tool invoked; run paused |
+| `run.waiting_for_user` | `AskUserQuestion` tool invoked; run paused |
 | `run.resumed` | User answered; run continuing |
 | `run.cost_limit_reached` | Cumulative cost hit `max_cost_usd`; immediately followed by `run.step.completed` then `run.completed` (always ends with `run.completed`, never `run.failed`) |
 | `run.completed` | Run finished successfully **(terminal)** |
@@ -172,7 +172,7 @@ When the run hit `max_steps`, the payload also includes `"reason": "max_steps_re
 ```json
 {
   "call_id": "string",
-  "tool": "ask_user_question",
+  "tool": "AskUserQuestion",
   "questions": ["string", "..."],
   "deadline_at": "2026-01-01T00:00:00Z"
 }
@@ -301,6 +301,12 @@ Source: `internal/harness/events.go:55–81`
 | `tool.approval_granted` | Operator approved the pending tool call |
 | `tool.approval_denied` | Operator denied; run continues with a `permission_denied` result |
 | `tool.call.blocked` | A skill constraint blocked the tool call before execution |
+| `todos.updated` | The run's todo list changed (the `todos` tool ran) |
+| `plan.approval_required` | Plan mode requires operator approval before the run can act; run status moves to `waiting_for_approval` |
+| `plan.approval_granted` | Operator approved the pending plan |
+| `plan.approval_denied` | Operator denied the pending plan |
+
+`plan.approval_required` / `plan.approval_granted` / `plan.approval_denied` share the same approval mechanism as `tool.approval_*` (`internal/harness/plan_mode.go:75-107`), but gate the plan-mode read-only-to-mutating transition rather than a single tool call. `plan.approval_denied` payload: `{"plan": "<plan file content>"}`.
 
 <Callout type="warning">
 `tool.activated` is defined in the event catalog (constant `EventToolActivated`, string `"tool.activated"`) but no production emission site was found in the codebase. It appears to be reserved for future use when a deferred tool is activated via `find_tool`. Do not rely on it being emitted today.
@@ -525,6 +531,10 @@ Source: `internal/harness/events.go:142–146`
 | Event | When emitted |
 |---|---|
 | `callback.scheduled` | `set_delayed_callback` tool ran |
+| `callback.dispatching` | The callback manager begins admitting the callback as a new run (`internal/harness/tools/delayed_callback.go:672`) |
+| `callback.started` | The dispatched callback's run has started (`:878`) |
+| `callback.retry_wait` | Admission failed with a retryable error; the callback is scheduled to try again (`:645,817,850`) |
+| `callback.failed` | Admission failed with a non-retryable error, or retries were exhausted (`:798,864`) |
 | `callback.fired` | Timer fires |
 | `callback.canceled` | Callback was cancelled |
 
@@ -781,6 +791,26 @@ All events in this section require a flag set on `RunnerConfig`. They are never 
 
 ## Other system events
 
+### Background job completion
+
+Source: `internal/harness/job_bridge.go:16`
+
+`job.completed` (constant `EventBackgroundJobCompleted`) — emitted when a `bash` tool call started with `run_in_background: true` finishes. Delivered to the **conversation** stream (`GET /v1/conversations/{id}/events`), not the originating run, because a background job routinely outlives the run that started it:
+
+```json
+{
+  "shell_id": "string",
+  "command": "string",
+  "exit_code": 0,
+  "timed_out": false,
+  "output": "string (truncated to ~2000 bytes)",
+  "truncated": false,
+  "working_dir": "string"
+}
+```
+
+The same completion is also queued and replayed to the model as a notice on its next turn (`JobEventBridge.TakeNotices`), independent of whether any client is subscribed to the event stream.
+
 ### Empty-response retry
 
 Source: `internal/harness/events.go:288–295`
@@ -857,12 +887,12 @@ These events appear reserved for multi-agent and skill-fork features not yet plu
 |---|---|---|
 | Run lifecycle | 10 | No |
 | LLM turn | 6 | No |
-| Tool execution | 8 | No (+ 1 unconfirmed) |
+| Tool execution | 12 | No (+ 1 unconfirmed) |
 | Accounting / cost | 2 | `cost.anomaly` only |
 | Workspace | 3 | When `workspace_type` is set |
 | Memory | 4 | When memory is enabled |
 | Hooks (message + tool) | 6 | No |
-| Callbacks | 3 | No |
+| Callbacks | 7 | No |
 | Skill constraints | 3 | No |
 | Steering / conversation / prompt / provider | 5 | No |
 | Context management | 4 | No |
@@ -874,11 +904,11 @@ These events appear reserved for multi-agent and skill-fork features not yet plu
 | Audit trail | 1 | `AuditTrailEnabled` |
 | Causal graph | 1 | `CausalGraphEnabled` |
 | Error chain | 1 | `ErrorChainEnabled` |
-| Other system events | 4 | No |
+| Other system events | 5 | No |
 | Reserved / unconfirmed | 7 | — |
-| **Total** | **77** | |
+| **Total** | **86** | |
 
-> **Note:** The Count column sums to more than 77 because a few events (`tool.call.blocked`, `spawn_agent.started`, `spawn_agent.completed`, `task.completed`) are cross-listed in multiple categories. The true distinct total is 77, as returned by `AllEventTypes()`.
+> **Note:** The Count column sums to more than 86 because a few events (`tool.call.blocked`, `spawn_agent.started`, `spawn_agent.completed`, `task.completed`) are cross-listed in multiple categories. The true distinct total is 86: 79 returned by `AllEventTypes()` (`internal/harness/events.go:392`) plus 7 declared event constants that exist but are not included in that function's return list — `EventCallbackDispatching`, `EventCallbackFailed`, `EventCallbackRetryWait`, `EventCallbackStarted`, `EventPlanApprovalRequired`, `EventPlanApprovalGranted`, and `EventPlanApprovalDenied` — all of which are genuinely emitted in production (see the Callback and Tool execution sections above).
 
 ---
 

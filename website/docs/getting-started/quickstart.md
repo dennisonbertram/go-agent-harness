@@ -159,7 +159,7 @@ go-code "Summarize the repository"
 ### What happens under the hood
 
 1. `go-code` traverses parent directories looking for `.git/` or `.harness/config.toml`. If neither is found it falls back to `$PWD`. The resolved directory becomes the workspace root.
-2. If no healthy server is already running on the configured port (default `:8080`), `go-code` starts `harnessd` in the background. **It only stops the server on exit if it started it** — a pre-existing server is always left alone.
+2. If no healthy server is already running on the configured port (default `127.0.0.1:8080`), `go-code` starts `harnessd` in the background. **It only stops the server on exit if it started it** — a pre-existing server is always left alone.
 3. The `go-code` wrapper invokes `harnesscli`, which POSTs the run to harnessd via `POST /v1/runs`; harnessd's runner invokes the LLM, and `harnesscli` streams events over SSE from `GET /v1/runs/{id}/events`.
 
 <Callout variant="info">
