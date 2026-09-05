@@ -5755,3 +5755,29 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Out of scope (tracked separately, issue #1356): store-close ordering under
   a live SSE subscription, and handler-context cancellation for requests held
   open past shutdown.
+# 2026-09-05 (Issue #1375 durable /events and /summary fallback)
+
+- Cause: `GET /v1/runs/{id}/events` and `GET /v1/runs/{id}/summary` only ever
+  asked the in-memory `Runner`, so a daemon restart with the same
+  `HARNESS_RUN_DB`/`HARNESS_CONVERSATION_DB` made both 404 "run not found" for
+  any historical run, even though `GET /v1/runs/{id}` already fell back to the
+  run store (`handleGetRun`) and `GET /v1/conversations/{cid}/events` replayed
+  the same run's durable events.
+- Fix: both routes now fall back to the persistent store when the runner has
+  no live state. `/events` replays the run's durable event log via the
+  existing per-run `store.Store.GetEvents(runID, afterSeq)` query (honoring
+  `Last-Event-ID` the same way the live path does) and closes the stream after
+  replay, since a store-only run is necessarily terminal. `/summary` applies
+  the same completed/failed status gate and steps/tool-call scan as
+  `Runner.GetRunSummary`, reading usage/cost totals from the run's last
+  `usage.delta` event payload (`cumulative_usage`/`cumulative_cost_usd`/
+  `cost_status`) rather than `store.Run`'s `UsageTotalsJSON`/`CostTotalsJSON`
+  columns, which the writer never actually populates today. Event IDs and wire
+  shapes are unchanged.
+- Regression: a run completed against one `Runner`+store, then served by a
+  second, unrelated `Runner` sharing the same store (simulating a restart),
+  proves `/events` replays to `run.completed` and `/summary` matches the live
+  totals (steps, prompt/completion tokens, cost, tool calls, cache hit rate).
+  Further regressions cover `Last-Event-ID` resumption against the durable
+  replay (no repeated events) and the still-running status gate returning 409
+  instead of a misleading 200 for a store-only run that has not finished.

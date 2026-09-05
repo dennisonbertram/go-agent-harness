@@ -165,6 +165,8 @@ POST /v1/subagents
 
 Run requests support prompt, model, provider, workspace, sandbox, approval, tool, profile, reasoning, and budget fields. Canonical event names live in `internal/harness/events.go`.
 
+`GET /v1/runs/{id}`, `GET /v1/runs/{id}/events`, and `GET /v1/runs/{id}/summary` all fall back to the persistent run store when the in-memory runner has no live state for a run — for example, a historical run served after a daemon restart with the same `HARNESS_RUN_DB`/`HARNESS_CONVERSATION_DB`. The store-backed `/events` replays the run's durable event history and closes the stream (the run is necessarily terminal); `/summary` is computed from that same durable event log. Event IDs and wire shapes are unchanged either way.
+
 ## Testing
 
 Focused checks for the install and TUI path:
