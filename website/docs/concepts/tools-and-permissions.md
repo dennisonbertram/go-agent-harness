@@ -122,6 +122,8 @@ The sandbox scope controls what the agent's `bash` tool can access.
 
 **`"workspace"`** — Bash commands that reference absolute paths outside the workspace or attempt `cd ..` escapes are rejected. This is a defence-in-depth heuristic, not a kernel-level filesystem jail — it tokenizes the command for out-of-workspace absolute paths and matches `cd ..` patterns. This is the default when `permissions` is omitted.
 
+Writes are also permitted to a small set of per-user temp and cache directories (issue #1399): the process temp dir (`os.TempDir()`, i.e. `TMPDIR`), the OS per-user cache dir (`os.UserCacheDir()`), `~/.cache`, the Go build/module caches (`GOCACHE`, `GOMODCACHE`, or `GOPATH/pkg`/`~/go/pkg` as a fallback), `~/.npm`, and `~/.cargo/registry`/`~/.cargo/git`. Without this, `go build`/`go test`, `npm install`, and `cargo build` all fail under workspace scope with an "operation not permitted" error the moment they try to write their build cache or a scratch directory — none of those roots is the workspace itself. `$HOME` itself is never opened up wholesale, only these specific subdirectories, and only when they already exist (the Go module cache and `~/.cache` are created if missing).
+
 This scope is recommended for untrusted prompts operating on a bounded codebase.
 
   </TabsContent>
@@ -139,7 +141,7 @@ The agent can read and write any path on the host filesystem and run arbitrary s
   </TabsContent>
 </Tabs>
 
-Source: `internal/harness/types.go`.
+Source: `internal/harness/types.go`, `internal/harness/tools/toolchain_dirs.go`, `internal/harness/tools/sandbox_darwin.go`, `internal/harness/tools/sandbox_linux.go`.
 
 ### Network policy
 

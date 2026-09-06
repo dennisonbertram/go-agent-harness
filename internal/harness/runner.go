@@ -7460,16 +7460,28 @@ func buildContinuationPolicyNotice(srcAllowed, currentAllowed []string, srcPerms
 
 // permissionsNoticeLines renders the permissions statement injected into the
 // model's context: one line reporting the current sandbox/approval/network
-// axes, plus (when network is denied) a warning that dependency installs
-// will fail rather than letting the model silently substitute a different
-// design (issue #1397). Used both for the first-turn notice (always present)
-// and the continuation notice (present only when permissions changed).
+// axes, plus (when sandbox is "workspace") a note that temp and per-user
+// cache directories are writable, plus (when network is denied) a warning
+// that dependency installs will fail rather than letting the model silently
+// substitute a different design (issue #1397). Used both for the
+// first-turn notice (always present) and the continuation notice (present
+// only when permissions changed).
 func permissionsNoticeLines(perms PermissionConfig) []string {
 	network := perms.Network
 	if network == "" {
 		network = NetworkPolicyAllow
 	}
 	lines := []string{fmt.Sprintf("Permissions for this run: sandbox=%s, approval=%s, network=%s.", perms.Sandbox, perms.Approval, network)}
+	if perms.Sandbox == SandboxScopeWorkspace {
+		// Issue #1399: workspace scope confines writes to the workspace
+		// plus a handful of per-user temp/cache directories a language
+		// toolchain needs (go build/test, npm, cargo). Told explicitly so
+		// the model does not misdiagnose a legitimate cache-dir write as a
+		// permissions problem it must route around. "local"/"unrestricted"
+		// already permit unrestricted filesystem writes, so this line
+		// would be noise there and is omitted.
+		lines = append(lines, "For this run, temp and per-user cache directories are writable.")
+	}
 	if network == NetworkPolicyDeny {
 		lines = append(lines, "Outbound network is blocked for this run: dependency installs will fail; report the blocker instead of substituting a different design.")
 	}

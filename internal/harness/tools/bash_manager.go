@@ -289,6 +289,9 @@ func (m *JobManager) runForeground(ctx context.Context, command string, timeoutS
 	if sbResult.NetworkPolicy != "" {
 		result["sandbox_network"] = string(sbResult.NetworkPolicy)
 	}
+	if len(sbResult.WritableDirs) > 0 {
+		result["sandbox_writable_dirs"] = sbResult.WritableDirs
+	}
 	return result, nil
 }
 
@@ -447,6 +450,9 @@ func (m *JobManager) runBackground(ctx context.Context, command string, timeoutS
 	}
 	if sbResult.NetworkPolicy != "" {
 		result["sandbox_network"] = string(sbResult.NetworkPolicy)
+	}
+	if len(sbResult.WritableDirs) > 0 {
+		result["sandbox_writable_dirs"] = sbResult.WritableDirs
 	}
 	return result, nil
 }

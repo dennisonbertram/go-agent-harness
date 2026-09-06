@@ -107,9 +107,15 @@ func TestCheckSandboxCommandWorkspaceScope(t *testing.T) {
 	absWorkspace, _ := filepath.Abs(workspace)
 
 	// Commands with absolute paths outside the workspace should be blocked.
+	// "ls /tmp" is deliberately NOT included here: on hosts where TMPDIR is
+	// unset, os.TempDir() (and so toolchainWritableDirs(), issue #1399)
+	// resolves to exactly "/tmp", which would make this assertion
+	// host-dependent; TestCheckWorkspaceScopeCommandToolchainWritableDirs
+	// covers that acceptance case directly via os.TempDir() instead of a
+	// hardcoded path.
 	outsideAbsPaths := []string{
 		"cat /etc/passwd",
-		"ls /tmp",
+		"ls /usr/local/bin/x",
 		"rm /var/log/messages",
 	}
 	for _, cmd := range outsideAbsPaths {
@@ -158,8 +164,12 @@ func TestSandboxWorkspaceScopeEnforcesFilePaths(t *testing.T) {
 	workspace := t.TempDir()
 	absWorkspace, _ := filepath.Abs(workspace)
 
-	// Writing to a path outside the workspace via absolute path should be blocked.
-	outsideFile := filepath.Join(filepath.Dir(absWorkspace), "outside.txt")
+	// Writing to a path outside the workspace via absolute path should be
+	// blocked. /var/tmp (not a sibling directory under os.TempDir()) is
+	// used deliberately: issue #1399 opens up os.TempDir() itself for
+	// writes under workspace scope, so a sibling of the workspace's t.TempDir()
+	// parent would no longer prove an escape.
+	outsideFile := filepath.Join("/var/tmp", "harness-sandbox-outside-test.txt")
 	cmd := "echo secret > " + outsideFile
 	if err := CheckSandboxCommand(SandboxScopeWorkspace, NetworkPolicyAllow, absWorkspace, cmd); err == nil {
 		t.Errorf("workspace scope: expected error for write to %q, got nil", outsideFile)
@@ -355,7 +365,12 @@ func TestSandboxWorkspaceScopeBlocksWriteOutsideWorkspaceAtOSLevel(t *testing.T)
 	mgr := NewJobManager(absWorkspace, nil)
 	mgr.SetSandboxScope(SandboxScopeWorkspace)
 
-	target := filepath.Join(os.TempDir(), fmt.Sprintf("harness-sandbox-proof-%d", time.Now().UnixNano()))
+	// /var/tmp, not os.TempDir(), is the "outside" location here: issue
+	// #1399 deliberately opens up os.TempDir() (and a handful of per-user
+	// cache dirs) for writes under workspace scope, so a proof of
+	// OS-level confinement needs a destination outside every one of those
+	// toolchain-writable roots to still demonstrate a real boundary.
+	target := filepath.Join("/var/tmp", fmt.Sprintf("harness-sandbox-proof-%d", time.Now().UnixNano()))
 	_ = os.Remove(target)
 	defer os.Remove(target)
 

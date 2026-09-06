@@ -6160,3 +6160,77 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   (`TestSandboxWorkspaceScopeNetworkPolicyLiveCurl`) curls
   `https://proxy.golang.org` through the actual seatbelt sandbox and asserts
   success under allow, failure under deny.
+
+# 2026-09-06 (Issue #1399 sandbox toolchain cache dirs)
+
+- Prior behavior: `SandboxScopeWorkspace` confined writes to the workspace
+  root alone (plus a handful of device nodes on darwin). Any language
+  toolchain invoked via `bash` under workspace scope — `go build`/`go test`,
+  `npm install`, `cargo build` — writes to its build cache and a scratch
+  directory under the process temp dir or a per-user cache dir, neither of
+  which is the workspace, so every such command failed with
+  `failed to initialize build cache ... operation not permitted` (darwin
+  seatbelt) or the equivalent bwrap "Operation not permitted" (Linux,
+  since `/tmp` was only ever read-only bound there).
+- Change: `toolchainWritableDirs()` (`internal/harness/tools/toolchain_dirs.go`)
+  computes, fresh on every call, the set of per-user temp/cache roots a
+  toolchain needs: `os.TempDir()`, `os.UserCacheDir()`, `~/.cache` (created
+  if missing), `$GOCACHE` (if set and existing), the Go module cache
+  (`$GOMODCACHE`, else `$GOPATH/pkg`, else `~/go/pkg`, created if missing),
+  `~/.npm`, `~/.cargo/registry`, `~/.cargo/git`. Every entry is
+  symlink-canonicalized (`filepath.EvalSymlinks`) the same way the workspace
+  root already is, so it lines up with the kernel-resolved paths darwin's
+  seatbelt `(subpath ...)` predicate and Linux's bwrap binds actually match
+  against. `$HOME` itself is never opened up — only these specific narrow
+  subdirectories, and only the two noted above are created rather than
+  merely detected.
+- `seatbeltProfile` (darwin) now emits an additional
+  `(allow file-write* (subpath ...))` line per directory for
+  `SandboxScopeWorkspace` only (`SandboxScopeLocal` already has a blanket
+  `(allow file-write*)`, so it does not need these). `buildSandboxedCommand`
+  (Linux) now `--bind`s each directory read-write, after the read-only root
+  bind and before the workspace bind; `/tmp` is deliberately no longer
+  explicitly `--ro-bind`ed there, since `os.TempDir()` is frequently exactly
+  `/tmp` (TMPDIR unset) and a read-only bind of the same path would shadow
+  the later read-write bind for that directory. `/var/tmp` stays read-only
+  unless it happens to be one of the toolchain writable dirs.
+- `checkWorkspaceScopeCommand`'s string heuristic (defense-in-depth, not the
+  primary OS-level enforcement) now treats an absolute-path token as
+  in-scope if it falls under the workspace OR any `toolchainWritableDirs()`
+  entry, reusing `canonicalizePathAllowingMissing`/`pathWithinRoot` from
+  `common_paths.go` rather than re-deriving symlink-safe containment
+  checking. It also now expands a leading `~/` token against the home
+  directory before the containment check, so `~/.ssh/id_rsa` is still
+  correctly rejected (previously `~`-prefixed tokens were silently skipped
+  entirely, since `filepath.IsAbs` does not recognize `~` as absolute).
+- `SandboxExecResult` gains a `WritableDirs []string` field so the bash tool
+  result map carries a `sandbox_writable_dirs` key (populated only for
+  workspace scope, where it's meaningful); the "Permissions for this run:
+  ..." notice injected into the model's context (issue #1397's line) now
+  appends "For this run, temp and per-user cache directories are writable."
+  when `sandbox=workspace`, so the model does not misdiagnose a legitimate
+  cache-dir write as a permissions problem it must route around.
+- Existing test fallout, both expected consequences of legitimately widening
+  what workspace scope permits: `TestSandboxWorkspaceScopeBlocksWriteOutsideWorkspaceAtOSLevel`
+  and `TestSandboxWorkspaceScopeEnforcesFilePaths` both used to prove an
+  "outside the workspace" write was rejected by writing under `os.TempDir()`
+  or a sibling of the workspace's `t.TempDir()` parent (itself under
+  `os.TempDir()`) — both are now legitimately writable, so both tests were
+  repointed at `/var/tmp` (never a toolchain writable dir) to keep proving a
+  real boundary exists. `TestCheckSandboxCommandWorkspaceScope`'s
+  cross-platform-ambiguous `"ls /tmp"` case (would flip from rejected to
+  accepted on any host where `TMPDIR` is unset, since `os.TempDir()` then
+  equals literal `/tmp`) was replaced with `"ls /usr/local/bin/x"`, one of
+  the contract's explicit still-rejected examples.
+- Regression/integration: `TestSandboxWorkspaceScopeToolchainCanBuildAndTest`
+  creates a throwaway Go module inside the workspace and runs
+  `go env GOCACHE && go build ./... && go test ./...` through the real
+  darwin seatbelt sandbox with no env var overrides — confirmed to fail with
+  the pre-fix code (`operation not permitted` creating the build work dir)
+  and pass after; `TestSandboxWorkspaceScopeAllowsMktempDir` does the same
+  for `mktemp -d`. Both are skipped when no OS-level sandbox mechanism is
+  available; the Linux bwrap bind-flag test
+  (`TestBuildSandboxedCommandLinuxIncludesToolchainWritableDirs`) cannot
+  execute on this darwin worktree and is verified by
+  `GOOS=linux go vet ./internal/harness/tools/` for syntax/type correctness
+  only — it needs a real Linux CI run to prove behavior.

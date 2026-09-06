@@ -65,6 +65,7 @@ func buildSandboxedCommand(ctx context.Context, scope SandboxScope, workspaceRoo
 		if network == NetworkPolicyDeny {
 			args = append(args, "--unshare-net")
 		}
+		var writableDirs []string
 		if scope == SandboxScopeWorkspace {
 			// Bind the whole root filesystem read-only, then punch a
 			// read-write hole for the workspace only. Separate mounts
@@ -72,10 +73,19 @@ func buildSandboxedCommand(ctx context.Context, scope SandboxScope, workspaceRoo
 			// picked up by a "/" bind and must be bound explicitly so
 			// writes there are also confined.
 			args = append(args, "--ro-bind", "/", "/")
-			for _, extra := range []string{"/tmp", "/var/tmp"} {
-				if _, statErr := os.Stat(extra); statErr == nil {
-					args = append(args, "--ro-bind", extra, extra)
-				}
+			// /var/tmp stays read-only unless it is itself one of the
+			// toolchain writable dirs (rare, but handled below); /tmp is
+			// deliberately NOT ro-bound here — os.TempDir() (bound
+			// read-write below) is frequently exactly "/tmp" (TMPDIR
+			// unset), and a ro-bind of the same path would shadow the
+			// later read-write bind and leave the process temp dir
+			// unwritable (issue #1399).
+			if _, statErr := os.Stat("/var/tmp"); statErr == nil {
+				args = append(args, "--ro-bind", "/var/tmp", "/var/tmp")
+			}
+			writableDirs = toolchainWritableDirs()
+			for _, dir := range writableDirs {
+				args = append(args, "--bind", dir, dir)
 			}
 			args = append(args, "--bind", absRoot, absRoot)
 		} else {
@@ -84,7 +94,7 @@ func buildSandboxedCommand(ctx context.Context, scope SandboxScope, workspaceRoo
 		args = append(args, "--", "/bin/bash", "-lc", command)
 
 		cmd := exec.CommandContext(ctx, bwrapPath, args...)
-		return cmd, noop, SandboxExecResult{Applied: true, Mechanism: "bubblewrap", NetworkPolicy: network}, nil
+		return cmd, noop, SandboxExecResult{Applied: true, Mechanism: "bubblewrap", NetworkPolicy: network, WritableDirs: writableDirs}, nil
 	default:
 		return nil, nil, SandboxExecResult{}, fmt.Errorf("unknown sandbox scope %q", scope)
 	}
