@@ -203,9 +203,13 @@ func TestDropdown_UpWrapsToBottom(t *testing.T) {
 func TestDropdown_EnterAcceptsSelection(t *testing.T) {
 	m := initModel(t, 120, 40)
 	m = typeIntoModel(m, "/")
+	// #1401: a bare "/" is not a choice; move the highlight first so Enter
+	// accepts a command the user actually picked.
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = m2.(tui.Model)
 
 	// Press Enter to accept the currently highlighted suggestion.
-	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = m2.(tui.Model)
 	view := m.View()
 

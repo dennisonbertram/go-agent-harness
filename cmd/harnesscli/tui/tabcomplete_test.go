@@ -32,35 +32,23 @@ func TestTabCompletion_SlashCommand(t *testing.T) {
 	}
 }
 
-// TestTabCompletion_MultiMatch verifies that typing "/" + Tab leaves the input
-// unchanged (or completes to a common prefix if one exists) since all commands
-// share the "/" prefix already.
+// TestTabCompletion_MultiMatch verifies that with the slash menu open, Tab
+// completes the highlighted item (the top match for a bare "/") into the
+// input without running it (#1401). The input box's common-prefix completer
+// only applies when the menu is closed.
 func TestTabCompletion_MultiMatch(t *testing.T) {
 	m := initModel(t, 80, 24)
 	m = typeIntoModel(m, "/")
-	before := m.Input()
 	m = typeTab(m)
 	after := m.Input()
-
-	// All commands start with "/" so the common prefix is "/" itself — the input
-	// must not get longer or shorter after Tab when already at the common prefix.
-	if after != before {
-		// Accept either no change or a valid common-prefix extension.
-		// The only valid extension would be a string that is a prefix of every
-		// registered command. Validate that the result is a prefix of at least
-		// one known command.
-		knownCmds := []string{"/clear", "/help", "/context", "/stats", "/quit", "/export", "/subagents", "/model", "/history"}
-		for _, cmd := range knownCmds {
-			if strings.HasPrefix(cmd, after) {
-				// A valid partial completion — acceptable.
-				return
-			}
-		}
-		t.Errorf("Tab on /: unexpected result %q (was %q)", after, before)
+	if !strings.HasPrefix(after, "/") || !strings.HasSuffix(after, " ") || len(after) < 3 {
+		t.Errorf("Tab on / must complete the highlighted command, got %q", after)
+	}
+	if m.OverlayActive() {
+		t.Errorf("Tab must not run the completed command")
 	}
 }
 
-// TestTabCompletion_NoMatchIsNoop verifies that Tab on a non-matching prefix is a no-op.
 func TestTabCompletion_NoMatchIsNoop(t *testing.T) {
 	m := initModel(t, 80, 24)
 	m = typeIntoModel(m, "/zzz")
