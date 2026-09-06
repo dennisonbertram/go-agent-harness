@@ -6064,3 +6064,41 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Regression: `TestRestoreRewindPoint_PruneKeepsOlderPointsFromEarlierRuns`
   drives two real runs, restores to run 2's edit point, then restores to
   run 1's write point and asserts it still succeeds.
+
+# 2026-09-06 (Issue #1395 trailing system-role message empties DeepSeek responses)
+
+- Cause: the harness appends the per-turn `<runtime_context>` block as a
+  second, trailing `system`-role message after the user/tool history
+  (`buildTurnMessages` in `internal/harness/clone.go`, content from
+  `internal/systemprompt/runtime_context.go`), so the cacheable
+  system+tools+history prefix stays stable across turns. `mapMessages` in
+  `internal/provider/openai/client.go` forwarded every role verbatim onto
+  the OpenAI-compatible chat-completions wire. DeepSeek models reached
+  through OpenRouter return an empty assistant message (1-3 completion
+  tokens, `finish_reason: stop`) whenever the *last* message in the request
+  has role `system`, so every run died within three turns with
+  `max_empty_responses`. A logging-proxy replay of the captured request
+  confirmed the same body succeeds 3/3 when only the trailing message's
+  role is changed to `user`; `gpt-4.1-mini` tolerates either role, which is
+  why the fake/OpenAI paths never surfaced this (issue #1395 has the full
+  replay table).
+- Fix: `mapMessages` now sends any `system`-role message that is not the
+  first message (index 0) as role `user` instead, leaving content and
+  position unchanged. The leading system message is untouched. This keeps
+  the fix scoped to the OpenAI-compatible wire mapper; `buildTurnMessages`
+  and the harness's internal message model are unchanged, and the
+  Anthropic client (`extractSystem`, which already hoists every system
+  message into the top-level `system` parameter regardless of position) is
+  unaffected. `prompts/compiled/system_prompt.txt` comments updated to
+  describe the wire role split between providers.
+- Regression: `TestMapMessagesNonLeadingSystemSentAsUser` and
+  `TestCompleteWireBodyTrailingSystemAsUser` cover the mapper contract
+  directly (leading system stays `system`, trailing system becomes `user`,
+  content unchanged); `TestMapMessagesLeadingOnlySystemUnchanged` guards the
+  single-leading-system case already worked. `TestRunnerRuntimeContextReachesOpenAIWireAsUser`
+  drives a real `harness.Runner` through the real `openai.Client` end to
+  end and asserts the wire body's trailing message is `user` -- confirmed to
+  fail with the pre-fix mapper by re-running it against the reverted
+  client.go. Live verification against DeepSeek via OpenRouter is a
+  follow-up for whoever holds the API key; this PR only proves the
+  fake/unit/integration paths.

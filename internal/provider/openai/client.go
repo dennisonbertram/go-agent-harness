@@ -1127,11 +1127,25 @@ func valueOrZero(v *int) int {
 // Providers that require this passback (DeepSeek, OpenRouter/DeepSeek models)
 // will reject second-turn tool-result messages if the prior assistant turn's
 // reasoning is not present.
+//
+// Issue #1395: the harness appends the per-turn <runtime_context> block as a
+// second system-role message at the end of the turn (runner_step_engine.go
+// buildTurnMessages), to keep the cacheable system+tools+history prefix
+// stable. DeepSeek (and other OpenAI-compatible backends reached through
+// OpenRouter) return an empty assistant message whenever the LAST message in
+// the request has role "system". A trailing "user" message is accepted by
+// every OpenAI-compatible chat API, so any system message that is not the
+// first message is sent as role "user" instead; content and position are
+// unchanged. The leading system message (index 0) is left alone.
 func mapMessages(messages []harness.Message, replayReasoning bool) []chatMessage {
 	mapped := make([]chatMessage, 0, len(messages))
-	for _, msg := range messages {
+	for i, msg := range messages {
+		role := msg.Role
+		if role == "system" && i != 0 {
+			role = "user"
+		}
 		chatMsg := chatMessage{
-			Role:       msg.Role,
+			Role:       role,
 			ToolCallID: msg.ToolCallID,
 			Name:       msg.Name,
 		}
