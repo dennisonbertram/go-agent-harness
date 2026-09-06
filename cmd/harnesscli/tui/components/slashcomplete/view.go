@@ -8,14 +8,20 @@ import (
 )
 
 const (
-	// selectedPrefix is prepended to the currently highlighted row.
+	// selectedPrefix marks the highlighted row; normalPrefix keeps the
+	// other rows aligned with it. Both are two columns wide.
 	selectedPrefix = "▶ "
-	// normalPrefix is prepended to non-selected rows.
-	normalPrefix = "  "
+	normalPrefix   = "  "
+	// footerHint tells a first-time user how to drive the menu (#1401).
+	footerHint = "↑↓ choose · Enter run · Tab complete · Esc close"
+	// noMatchHint replaces the list when the query matches nothing, so the
+	// menu never silently vanishes while the user is still typing (#1401).
+	noMatchHint = "No matching commands"
+	ellipsis    = "…"
 )
 
-// View renders the dropdown overlay.
-// Returns "" when the model is not active.
+// View renders the dropdown overlay as a block of rows without a trailing
+// newline. Returns "" when the model is not active.
 // width=0 defaults to 80.
 func (m Model) View(width int) string {
 	if !m.active {
@@ -30,44 +36,50 @@ func (m Model) View(width int) string {
 		maxVis = 8
 	}
 
-	filtered := m.filtered
-	total := len(filtered)
-	if total == 0 {
-		return ""
-	}
-
 	// Styles — built inline so view.go has no external theme dependency.
 	selectedStyle := lipgloss.NewStyle().Reverse(true)
 	dimStyle := lipgloss.NewStyle().Faint(true)
 
-	// Determine the longest name for alignment (across the full list for stable columns).
+	// Columns available to a row after the two-column prefix.
+	available := width - lipgloss.Width(selectedPrefix)
+	if available < 1 {
+		available = 1
+	}
+	fit := func(s string) string { return truncateWithEllipsis(s, available) }
+
+	filtered := m.filtered
+	total := len(filtered)
+	if total == 0 {
+		if m.query == "" {
+			return ""
+		}
+		return strings.Join([]string{
+			normalPrefix + dimStyle.Render(fit(noMatchHint+" for \"/"+m.query+"\"")),
+			normalPrefix + dimStyle.Render(fit("Enter shows the unknown-command hint · Esc close")),
+		}, "\n")
+	}
+
+	// Name column width across the full filtered list for stable alignment.
 	maxName := 0
 	for _, s := range filtered {
-		if len(s.Name) > maxName {
-			maxName = len(s.Name)
+		if w := lipgloss.Width(s.Name); w > maxName {
+			maxName = w
 		}
 	}
-	// Name column: "/" + name padded to maxName+1
-	nameColWidth := maxName + 1 // +1 for leading "/"
+	nameColWidth := maxName + 1 // leading "/"
 
-	// Compute the scroll window: [windowStart, windowEnd).
-	// We need to reserve rows for indicators when items exist outside the window.
-	// Strategy: start with a maxVis window, then shrink for any needed indicator rows
-	// while keeping m.selected within the rendered range.
+	// Compute the scroll window: [windowStart, windowEnd), reserving rows
+	// for the "more above/below" indicators while keeping m.selected visible.
 	windowStart := m.scrollOffset
 	if windowStart < 0 {
 		windowStart = 0
 	}
-
-	// Determine which indicators are needed (based on raw window before shrinking).
 	rawEnd := windowStart + maxVis
 	if rawEnd > total {
 		rawEnd = total
 	}
 	showAbove := windowStart > 0
 	showBelow := rawEnd < total
-
-	// Compute effective content capacity after reserving indicator rows.
 	contentCap := maxVis
 	if showAbove {
 		contentCap--
@@ -78,78 +90,63 @@ func (m Model) View(width int) string {
 	if contentCap < 1 {
 		contentCap = 1
 	}
-
-	// Place the content window so that m.selected is always visible.
-	// Window: [windowStart, windowStart+contentCap).
-	// If selected is beyond the end, shift windowStart forward.
 	if m.selected >= windowStart+contentCap {
 		windowStart = m.selected - contentCap + 1
 	}
-	// If selected is before windowStart, bring windowStart back.
 	if m.selected < windowStart {
 		windowStart = m.selected
 	}
-	// Clamp windowStart.
 	if windowStart < 0 {
 		windowStart = 0
 	}
 	if windowStart >= total {
 		windowStart = total - 1
 	}
-
 	windowEnd := windowStart + contentCap
 	if windowEnd > total {
 		windowEnd = total
 	}
-
-	// Recompute indicators based on final window position.
 	showAbove = windowStart > 0
 	showBelow = windowEnd < total
 
-	var sb strings.Builder
-
+	lines := make([]string, 0, maxVis+3)
 	if showAbove {
-		indicator := fmt.Sprintf("  ▲ %d more above", windowStart)
-		sb.WriteString(dimStyle.Render(indicator) + "\n")
+		lines = append(lines, normalPrefix+dimStyle.Render(fit(fmt.Sprintf("▲ %d more above", windowStart))))
 	}
-
 	for i := windowStart; i < windowEnd; i++ {
 		s := filtered[i]
-		isSelected := i == m.selected
-
-		// Build the name portion: "/name   " padded
 		namePart := "/" + s.Name
-		padding := strings.Repeat(" ", nameColWidth-len(namePart)+2)
-
-		// Build the full row content (without prefix)
-		rowContent := namePart + padding + s.Description
-
-		// Trim to fit within width (prefix takes 2 chars)
-		available := width - len(selectedPrefix)
-		if available < 0 {
-			available = 0
-		}
-		// Use rune-aware truncation
-		runes := []rune(rowContent)
-		if len(runes) > available {
-			runes = runes[:available]
-			rowContent = string(runes)
-		}
-
-		var line string
-		if isSelected {
-			line = selectedPrefix + selectedStyle.Render(rowContent)
+		padding := strings.Repeat(" ", nameColWidth-lipgloss.Width(namePart)+2)
+		row := fit(namePart + padding + s.Description)
+		if i == m.selected {
+			// Pad so the highlight reads as a full-width bar, not a ragged
+			// strip that ends where the description happens to end.
+			row += strings.Repeat(" ", available-lipgloss.Width(row))
+			lines = append(lines, selectedPrefix+selectedStyle.Render(row))
 		} else {
-			line = normalPrefix + rowContent
+			lines = append(lines, normalPrefix+row)
 		}
-		sb.WriteString(line + "\n")
 	}
-
 	if showBelow {
-		below := total - windowEnd
-		indicator := fmt.Sprintf("  ▼ %d more below", below)
-		sb.WriteString(dimStyle.Render(indicator) + "\n")
+		lines = append(lines, normalPrefix+dimStyle.Render(fit(fmt.Sprintf("▼ %d more below", total-windowEnd))))
 	}
+	lines = append(lines, normalPrefix+dimStyle.Render(fit(footerHint)))
+	return strings.Join(lines, "\n")
+}
 
-	return sb.String()
+// truncateWithEllipsis shortens s to at most width terminal columns,
+// replacing the cut with "…" so the reader can tell text was dropped.
+func truncateWithEllipsis(s string, width int) string {
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	if width <= 1 {
+		return ellipsis
+	}
+	runes := []rune(s)
+	// Trim runes until the text plus the ellipsis fits.
+	for len(runes) > 0 && lipgloss.Width(string(runes))+1 > width {
+		runes = runes[:len(runes)-1]
+	}
+	return strings.TrimRight(string(runes), " ") + ellipsis
 }

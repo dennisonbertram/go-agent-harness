@@ -3308,6 +3308,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// When the dropdown is active, Enter accepts the selected suggestion
 			// instead of submitting the input as a message.
 			if m.slashComplete.IsActive() {
+				// A bare "/" with the default highlight is not a choice: running
+				// whatever happens to sort first would surprise a first-time
+				// user (#1401). Keep the menu open and say how to choose.
+				if !m.slashComplete.HasUserChoice() {
+					cmds = append(cmds, m.setStatusMsg("Type a command name or use ↑↓ to choose one, then press Enter"))
+					return m, tea.Batch(cmds...)
+				}
 				newModel, accepted := m.slashComplete.Accept()
 				m.slashComplete = newModel
 				if accepted != "" {
@@ -3740,6 +3747,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The apikeys and model-config overlay arms above already matched earlier
 		// in their own overlay-specific case branches, so this arm only fires
 		// when no overlay is open.
+		// Tab with the slash menu open completes the highlighted command into
+		// the input without running it (#1401). Without this arm the key falls
+		// through to the input box's own prefix completer, which ignores the
+		// highlight the user just moved with the arrow keys.
+		case msg.Type == tea.KeyTab && m.slashComplete.IsActive() && !m.overlayActive:
+			newModel, accepted := m.slashComplete.Accept()
+			m.slashComplete = newModel
+			if accepted != "" {
+				m.input = m.input.SetValue(accepted)
+			}
+			return m, tea.Batch(cmds...)
+
 		case msg.Type == tea.KeyCtrlU && !m.overlayActive:
 			m.input = m.input.Clear()
 			cmds = append(cmds, m.setStatusMsg("Input cleared"))
@@ -5601,6 +5620,15 @@ func (m Model) View() string {
 		sections = append(sections, bannerView)
 	}
 	if dropdownView != "" {
+		// The menu borrows its rows from the top of the main content so the
+		// screen keeps a constant height and the input/status bar stay put
+		// (#1401). The bottom of the transcript is the part worth keeping.
+		mainLines := strings.Split(sections[0], "\n")
+		if drop := lipgloss.Height(dropdownView); drop < len(mainLines) {
+			sections[0] = strings.Join(mainLines[drop:], "\n")
+		} else {
+			sections[0] = ""
+		}
 		sections = append(sections, dropdownView)
 	}
 	sections = append(sections, inputView, sep, statusBarView)

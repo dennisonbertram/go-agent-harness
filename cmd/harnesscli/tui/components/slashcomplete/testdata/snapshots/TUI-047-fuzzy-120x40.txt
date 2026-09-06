@@ -1,2 +1,3 @@
-▶ /clear    Clear conversation history
+▶ /clear    Clear conversation history                                                                                  
   /context  Show context usage grid
+  ↑↓ choose · Enter run · Tab complete · Esc close

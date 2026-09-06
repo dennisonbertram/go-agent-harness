@@ -17,6 +17,9 @@ type Model struct {
 	scrollOffset int          // index of the first visible item in the scroll window
 	active       bool
 	maxVisible   int // max rows to show (default 8)
+	// navigated is set when the user moves the highlight with Up/Down and
+	// cleared whenever the query changes (see HasUserChoice).
+	navigated bool
 }
 
 // New creates a new Model seeded with the given suggestions.
@@ -97,6 +100,7 @@ func (m Model) SetQuery(query string) Model {
 	}
 	m.selected = 0
 	m.scrollOffset = 0
+	m.navigated = false
 	return m
 }
 
@@ -106,6 +110,7 @@ func (m Model) Down() Model {
 		return m
 	}
 	m.selected = (m.selected + 1) % len(m.filtered)
+	m.navigated = true
 	return m.clampScrollWindow()
 }
 
@@ -115,6 +120,7 @@ func (m Model) Up() Model {
 		return m
 	}
 	m.selected = (m.selected - 1 + len(m.filtered)) % len(m.filtered)
+	m.navigated = true
 	return m.clampScrollWindow()
 }
 
@@ -140,8 +146,21 @@ func (m Model) Filtered() []Suggestion {
 func (m Model) Accept() (Model, string) {
 	s, ok := m.Selected()
 	m.active = false
+	m.navigated = false
 	if !ok {
 		return m, ""
 	}
 	return m, "/" + s.Name + " "
+}
+
+// Query returns the current filter text (without the leading "/").
+func (m Model) Query() string {
+	return m.query
+}
+
+// HasUserChoice reports whether the user has expressed a choice: typed a
+// query or moved the highlight with Up/Down. A bare "/" with the default
+// highlight is not a choice, so Enter must not run the first item (#1401).
+func (m Model) HasUserChoice() bool {
+	return m.query != "" || m.navigated
 }
