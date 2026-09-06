@@ -29,7 +29,9 @@ func (m *Model) applyUsageDelta(raw []byte) {
 			CompletionTokens int `json:"completion_tokens"`
 		} `json:"turn_usage"`
 		CumulativeUsage struct {
-			TotalTokens int `json:"total_tokens"`
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
 		} `json:"cumulative_usage"`
 		CumulativeCostUSD float64 `json:"cumulative_cost_usd"`
 	}
@@ -41,6 +43,10 @@ func (m *Model) applyUsageDelta(raw []byte) {
 	m.statusBar.SetCost(m.cumulativeCostUSD)
 	// totalTokens stays cumulative: it feeds cost and accounting surfaces.
 	m.totalTokens = p.CumulativeUsage.TotalTokens
+	// Keep the in/out split for /cost (#1405): before this, the total was
+	// shown as "out" and "in" was always 0.
+	m.promptTokens = p.CumulativeUsage.PromptTokens
+	m.completionTokens = p.CumulativeUsage.CompletionTokens
 	m.usageDataPoints = upsertTodayDataPoint(m.usageDataPoints, 1, p.CumulativeCostUSD)
 	m.statsPanel = statspanel.New(m.usageDataPoints)
 

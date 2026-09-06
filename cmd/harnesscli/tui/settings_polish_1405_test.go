@@ -24,7 +24,7 @@ func TestCost_ShowsPromptAndCompletionTokens(t *testing.T) {
 	if !strings.Contains(view, "15,000 in") || !strings.Contains(view, "700 out") {
 		t.Fatalf("/cost must show 15,000 in and 700 out, got:\n%s", view)
 	}
-	if strings.Contains(view, "0 in") {
+	if strings.Contains(view, "↑ 0 in") {
 		t.Fatalf("/cost must not report 0 input tokens after a run with prompt tokens:\n%s", view)
 	}
 }
