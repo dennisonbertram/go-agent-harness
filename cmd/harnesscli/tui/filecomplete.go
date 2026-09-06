@@ -53,7 +53,9 @@ func FilePathCompleter(input string) []string {
 			break
 		}
 	}
-	if !isPathLike {
+	// A bare name such as "@cal" is a path relative to the working directory:
+	// that is what a first-time user types (#1407).
+	if !isPathLike && strings.ContainsAny(partial, " \t") {
 		return nil
 	}
 
