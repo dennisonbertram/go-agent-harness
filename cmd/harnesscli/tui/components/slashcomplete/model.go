@@ -145,3 +145,7 @@ func (m Model) Accept() (Model, string) {
 	}
 	return m, "/" + s.Name + " "
 }
+
+// HasUserChoice reports whether the user has expressed a choice (typed a
+// query or navigated with the arrow keys). Stub for the red commit.
+func (m Model) HasUserChoice() bool { return false }
