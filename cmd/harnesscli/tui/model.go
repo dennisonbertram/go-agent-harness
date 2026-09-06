@@ -6098,7 +6098,7 @@ func (m Model) viewModelConfigPanel() string {
 	if entry.Provider == "openrouter" {
 		// This id is only served by OpenRouter; a "Direct" choice would be
 		// meaningless (and used to break the run, #1403).
-		gwRows = append(gwRows, "  "+dimStyle.Render("OpenRouter   this model is only available through OpenRouter"))
+		gwRows = append(gwRows, "  "+dimStyle.Render("OpenRouter   served only by OpenRouter"))
 	}
 	for i, opt := range gatewayOptions {
 		if entry.Provider == "openrouter" {
@@ -6179,7 +6179,7 @@ func (m Model) viewModelConfigPanel() string {
 	// --- Footer ---
 	var footer string
 	if !m.modelConfigKeyInputMode {
-		footer = dimStyle.Render("↑/↓ sections  ←/→ gateway  enter confirm  esc back")
+		footer = dimStyle.Render(configPanelFooter(entry.Provider))
 	}
 
 	var innerContent string
@@ -6364,4 +6364,13 @@ func editorExecCommand(editor, file string) *exec.Cmd {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd
+}
+
+// configPanelFooter omits the gateway arrows for models that are only served
+// by OpenRouter, where the gateway choice does not exist (#1403).
+func configPanelFooter(provider string) string {
+	if provider == "openrouter" {
+		return "↑/↓ sections  enter confirm  esc back"
+	}
+	return "↑/↓ sections  ←/→ gateway  enter confirm  esc back"
 }

@@ -33,10 +33,14 @@ func TestOpenRouterModel_ConfigPanelExplainsRouting(t *testing.T) {
 	m := openModelOverlayWithProviders(t, providers)
 	m2, _ := m.Update(tui.ModelsFetchedMsg{Models: []modelswitcher.ServerModelEntry{{ID: "deepseek/deepseek-v4-pro", Provider: "openrouter"}}})
 	m = m2.(tui.Model)
-	m = navigateToModelByID(m, "deepseek/deepseek-v4-pro")
+	// Reach the model through the picker's search, as a user would.
+	m = typeIntoModel(m, "/deepseek/deepseek-v4-pro")
+	if entry, ok := m.ModelSwitcher().Accept(); !ok || entry.ID != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("search did not land on the model, got %+v", entry)
+	}
 	m = sendKey(m, tea.KeyEnter)
 	view := m.View()
-	if !strings.Contains(view, "only available through OpenRouter") {
+	if !strings.Contains(view, "served only by OpenRouter") {
 		t.Fatalf("config panel must explain that the model is served by OpenRouter, view:\n%s", view)
 	}
 	if strings.Contains(view, "Use each model's native provider") {
