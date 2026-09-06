@@ -53,38 +53,58 @@ func CheckSandboxCommand(scope SandboxScope, network NetworkPolicy, workspaceRoo
 }
 
 // checkWorkspaceScopeCommand blocks bash commands that appear to target paths
-// outside the workspace.  It inspects:
-//   - Absolute paths embedded in the command.
+// outside the workspace and outside toolchainWritableDirs() (issue #1399).
+// It inspects:
+//   - Absolute paths embedded in the command (including "~/..." tokens,
+//     expanded against the home directory before the containment check).
 //   - "cd .." or "cd ../../" style path escapes.
-//   - /etc, /tmp, /var, /usr, /home, /root usage (paths outside workspace).
+//   - /etc, /tmp, /var, /usr, /home, /root usage, EXCEPT when the token
+//     falls under one of toolchainWritableDirs() — e.g. a GOTMPDIR or
+//     GOCACHE override pointed at the process temp dir or a per-user cache
+//     dir, which language toolchains legitimately need under workspace
+//     scope.
 func checkWorkspaceScopeCommand(workspaceRoot, command string) error {
-	// Resolve workspace root for comparison.
+	// Resolve workspace root for comparison, canonicalizing symlinks the
+	// same way the extra writable roots below already are (and the same
+	// way the OS-level sandbox builders already resolve the workspace
+	// root) so a token pointing at the same location through a symlink
+	// (e.g. macOS's /var -> /private/var) is not falsely rejected.
 	absRoot, err := filepath.Abs(workspaceRoot)
 	if err != nil {
 		absRoot = workspaceRoot
 	}
 	absRoot = filepath.Clean(absRoot)
+	if resolved, err := filepath.EvalSymlinks(absRoot); err == nil {
+		absRoot = resolved
+	}
 
-	// Detect absolute paths in the command that escape the workspace.
-	// We look for patterns like /something where /something is NOT under absRoot.
-	// Simple heuristic: split on whitespace and check each token that looks like
-	// an absolute path.
+	roots := append([]string{absRoot}, toolchainWritableDirs()...)
+
+	home, homeErr := os.UserHomeDir()
+
+	// Detect absolute paths in the command that escape the workspace and
+	// every toolchain writable root. Simple heuristic: split on whitespace
+	// and check each token that looks like an absolute (or home-relative
+	// "~/...") path.
 	tokens := strings.Fields(command)
 	for _, tok := range tokens {
 		// Strip leading quotes and common shell metacharacters.
 		cleaned := strings.TrimLeft(tok, `"'`)
 		cleaned = strings.TrimRight(cleaned, `"';`)
+		if homeErr == nil && (cleaned == "~" || strings.HasPrefix(cleaned, "~/")) {
+			cleaned = filepath.Join(home, strings.TrimPrefix(cleaned, "~"))
+		}
 		if !filepath.IsAbs(cleaned) {
 			continue
 		}
 		candidate := filepath.Clean(cleaned)
-		rel, relErr := filepath.Rel(absRoot, candidate)
-		if relErr != nil {
+		if resolved, err := canonicalizePathAllowingMissing(candidate); err == nil {
+			candidate = resolved
+		}
+		if pathUnderAnyRoot(candidate, roots) {
 			continue
 		}
-		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("sandbox violation: absolute path %q escapes workspace %q", cleaned, absRoot)
-		}
+		return fmt.Errorf("sandbox violation: absolute path %q escapes workspace %q", cleaned, absRoot)
 	}
 
 	// Detect "cd .." patterns that escape the workspace.
@@ -94,6 +114,17 @@ func checkWorkspaceScopeCommand(workspaceRoot, command string) error {
 	}
 
 	return nil
+}
+
+// pathUnderAnyRoot reports whether candidate lies within any of roots,
+// reusing pathWithinRoot's component-wise (not string-prefix) comparison.
+func pathUnderAnyRoot(candidate string, roots []string) bool {
+	for _, root := range roots {
+		if pathWithinRoot(candidate, root) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkLocalScopeCommand blocks outbound network commands.
@@ -143,6 +174,13 @@ type SandboxExecResult struct {
 	// output always reflects the effective policy rather than leaving the
 	// caller to infer it.
 	NetworkPolicy NetworkPolicy
+	// WritableDirs lists the extra per-user temp/cache roots (beyond the
+	// workspace itself) that were opened up for writes under
+	// SandboxScopeWorkspace (issue #1399), e.g. os.TempDir(), the Go build
+	// and module caches. Empty for scopes where it is not meaningful
+	// ("local"/"unrestricted" already permit unrestricted filesystem
+	// writes).
+	WritableDirs []string
 }
 
 // resolveSandboxUnavailable is called by the platform-specific

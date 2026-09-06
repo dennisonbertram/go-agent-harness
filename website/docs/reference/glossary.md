@@ -80,7 +80,7 @@ See: [Subagents and profiles](/docs/integrations/subagents-and-profiles)
 <CardContent>
 A constraint that limits what the agent's shell and file tools can reach. The three levels, set via `permissions.sandbox` in a `RunRequest`, are:
 
-- `"workspace"` — the `bash` tool can only access paths inside the workspace directory (default)
+- `"workspace"` — the `bash` tool can only access paths inside the workspace directory, plus a small set of per-user temp/cache directories a language toolchain needs (`os.TempDir()`, Go build/module caches, `~/.npm`, `~/.cargo`; issue #1399) (default)
 - `"local"` — filesystem access is unrestricted
 - `"unrestricted"` — no restrictions
 

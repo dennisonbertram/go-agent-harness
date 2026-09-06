@@ -79,7 +79,11 @@ func buildSandboxedCommand(ctx context.Context, scope SandboxScope, workspaceRoo
 		cleanup := func() { os.Remove(f.Name()) }
 
 		cmd := exec.CommandContext(ctx, sandboxExecBinary, "-f", f.Name(), "/bin/bash", "-lc", command)
-		return cmd, cleanup, SandboxExecResult{Applied: true, Mechanism: "seatbelt", NetworkPolicy: network}, nil
+		var writableDirs []string
+		if scope == SandboxScopeWorkspace {
+			writableDirs = toolchainWritableDirs()
+		}
+		return cmd, cleanup, SandboxExecResult{Applied: true, Mechanism: "seatbelt", NetworkPolicy: network, WritableDirs: writableDirs}, nil
 	default:
 		return nil, nil, SandboxExecResult{}, fmt.Errorf("unknown sandbox scope %q", scope)
 	}
@@ -90,10 +94,14 @@ func buildSandboxedCommand(ctx context.Context, scope SandboxScope, workspaceRoo
 // SandboxScopeWorkspace: reads are allowed broadly (needed for coreutils,
 // dynamic linking, terminfo, locale data, etc. without hand-maintaining an
 // allowlist of every system path a shell invocation might touch); writes are
-// confined to workspaceRoot plus the handful of device nodes a non-interactive
-// bash needs (/dev/null, /dev/tty, /dev/zero, /dev/dtracehelper).
+// confined to workspaceRoot, toolchainWritableDirs() (issue #1399 — the
+// per-user temp dir and cache directories a language toolchain writes to
+// even for a workspace-scoped build/test), plus the handful of device nodes
+// a non-interactive bash needs (/dev/null, /dev/tty, /dev/zero,
+// /dev/dtracehelper).
 //
-// SandboxScopeLocal: filesystem access (read and write) is unconfined.
+// SandboxScopeLocal: filesystem access (read and write) is unconfined, so it
+// does not need (and does not get) the toolchainWritableDirs() lines.
 //
 // Both scopes' network access follows the network policy (issue #1397):
 // under "(deny default)", every operation — including network — is denied
@@ -108,6 +116,9 @@ func seatbeltProfile(scope SandboxScope, workspaceRoot string, network NetworkPo
 	switch scope {
 	case SandboxScopeWorkspace:
 		b.WriteString(fmt.Sprintf("(allow file-write* (subpath %s))\n", seatbeltQuote(workspaceRoot)))
+		for _, dir := range toolchainWritableDirs() {
+			b.WriteString(fmt.Sprintf("(allow file-write* (subpath %s))\n", seatbeltQuote(dir)))
+		}
 		b.WriteString(`(allow file-write-data (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper") (literal "/dev/zero"))` + "\n")
 		b.WriteString(`(allow file-ioctl (literal "/dev/null") (literal "/dev/tty"))` + "\n")
 	case SandboxScopeLocal:

@@ -137,6 +137,52 @@ func TestBuildSandboxedCommandLinuxNetworkPolicy(t *testing.T) {
 	}
 }
 
+// TestBuildSandboxedCommandLinuxIncludesToolchainWritableDirs verifies
+// (issue #1399) that the bwrap invocation for SandboxScopeWorkspace binds
+// each of toolchainWritableDirs() read-write ("--bind dir dir"), after the
+// read-only root binds and before the workspace bind, so language
+// toolchains (go build/test, npm, cargo) can write to their per-user
+// temp/cache dirs even though those live outside the workspace. Before this
+// change /tmp was only ever ro-bound, so the process temp dir ended up
+// read-only under workspace scope.
+func TestBuildSandboxedCommandLinuxIncludesToolchainWritableDirs(t *testing.T) {
+	// Not parallel: fakeBwrapOnPath rewrites the process-global PATH via
+	// t.Setenv, which the testing package forbids in parallel tests.
+	fakeBwrapOnPath(t)
+
+	writableDirs := toolchainWritableDirs()
+	if len(writableDirs) == 0 {
+		t.Fatal("test precondition failed: toolchainWritableDirs() returned no directories on this host")
+	}
+
+	cmd, cleanup, res, err := buildSandboxedCommand(context.Background(), SandboxScopeWorkspace, t.TempDir(), "echo hi")
+	if err != nil {
+		t.Fatalf("buildSandboxedCommand: %v", err)
+	}
+	defer cleanup()
+
+	args := bwrapArgsBeforeDoubleDash(cmd)
+	for _, dir := range writableDirs {
+		if !containsArgPair(args, "--bind", dir, dir) {
+			t.Errorf("expected bwrap args to contain \"--bind %s %s\", got: %s", dir, dir, strings.Join(args, " "))
+		}
+	}
+	if len(res.WritableDirs) == 0 {
+		t.Fatalf("expected SandboxExecResult.WritableDirs to be non-empty for workspace scope, got %v", res.WritableDirs)
+	}
+}
+
+// containsArgPair reports whether args contains flag immediately followed by
+// src then dst (bwrap's "--bind src dst" triple).
+func containsArgPair(args []string, flag, src, dst string) bool {
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == flag && args[i+1] == src && args[i+2] == dst {
+			return true
+		}
+	}
+	return false
+}
+
 // TestSandboxLinuxPIDNamespaceHidesHostProcesses guards #785 at the OS level:
 // a process inside the sandbox must not be able to signal a host canary
 // process nor read its /proc environ. Skipped on hosts without a usable
