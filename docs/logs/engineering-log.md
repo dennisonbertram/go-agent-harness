@@ -1,5 +1,11 @@
 # Engineering Log
 
+## 2026-09-06 — Slash-command menu polish (#1401)
+
+- Symptom: driving `harnesscli --tui` in tmux, Tab ignored the item highlighted with ↑/↓ (the input box's prefix completer handled the key), Enter on a bare `/` ran `/add-dir`, a query with no matches made the menu vanish, descriptions were chopped mid-word at 40-60 columns, a blank row appeared under the menu, no key hint was shown, and the menu added rows to the screen (38 → 47 at 120x40) instead of borrowing them from the transcript.
+- Cause: `components/slashcomplete/view.go` returned "" for empty results and a trailing newline otherwise, truncated by rune count without an ellipsis, and the model only wired Enter to the dropdown; the screen stack appended the dropdown without shrinking the viewport.
+- Fix: `Model.HasUserChoice` (query typed or ↑/↓ used) gates Enter; a Tab arm in `model.go` accepts the highlighted item into the input; `View` renders a dim no-match row, `…` truncation, a full-width highlight bar, a footer hint, and no trailing newline; `View()` drops the top rows of the main content by the menu height. Snapshot goldens regenerated. Live tmux captures at 120x40, 60x20 and 40x15 attached to the PR.
+
 ## 2026-09-05 — Issue #1372 workspace_path silently ignored
 
 - Cause: harnesscli (`resolveWorkspacePath`, defaulting to the CLI's cwd) and

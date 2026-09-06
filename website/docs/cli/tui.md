@@ -98,7 +98,7 @@ Press `?` or `Ctrl+H` at any time to open the built-in help dialog with the full
 | `PgDn` | Scroll viewport down half a screen |
 | `/` | Open slash-command autocomplete dropdown |
 | `@` | Insert `@` to begin a file-path attachment |
-| `Tab` | Complete a slash command or file path |
+| `Tab` | With the slash menu open: complete the highlighted command into the input (does not run it). Otherwise: complete a file path after `@` |
 | `Ctrl+O` | Expand/collapse active tool card, or toggle plan mode when idle |
 | `Ctrl+E` | Open `$EDITOR` for multi-line prompt editing |
 | `Ctrl+S` | Copy last assistant response to clipboard |
@@ -143,7 +143,7 @@ While a run is in flight, type corrective input and press `Ctrl+G` to inject it 
 
 ## Slash commands
 
-Type `/` to open the autocomplete dropdown. `Tab` completes to the common prefix; `Enter` selects a command. Commands are case-insensitive.
+Type `/` to open the command menu. `↑`/`↓` move the highlight, `Enter` runs the highlighted command, `Tab` completes it into the input without running it, and `Esc` closes the menu (a second `Esc` clears the input). A bare `/` plus `Enter` does not run anything; type part of a name or move the highlight first. When nothing matches, the menu says so instead of disappearing; `Enter` then shows the unknown-command hint. Descriptions are shortened with `…` on narrow terminals, and the menu takes its rows from the top of the transcript so the input and status bar never move. Commands are case-insensitive.
 
 | Command | Description |
 |---|---|
