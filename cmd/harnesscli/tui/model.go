@@ -335,6 +335,9 @@ type Model struct {
 	apiKeyInput string
 	// apiKeyInputMode is true when the user is typing a key value.
 	apiKeyInputMode bool
+	// apiKeyReason explains why the keys panel opened (set when the model
+	// picker redirects here for an unconfigured provider, #1403).
+	apiKeyReason string
 	// pendingAPIKeys holds keys loaded from config or entered via /keys, replayed on Init().
 	pendingAPIKeys map[string]string
 	// envAPIKeys holds keys read from the shell environment at startup.
@@ -2168,6 +2171,7 @@ func executeKeysCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
 	m.apiKeyCursor = 0
 	m.apiKeyInput = ""
 	m.apiKeyInputMode = false
+	m.apiKeyReason = ""
 	return []tea.Cmd{fetchProvidersCmd(m.config.BaseURL, m.config.APIKey)}, false
 }
 
@@ -2966,6 +2970,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.overlayActive = false
 					m.activeOverlay = ""
+					m.apiKeyReason = ""
 				}
 				return m, tea.Batch(cmds...)
 			}
@@ -3206,9 +3211,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// When the apikeys overlay is active, Enter enters input mode or confirms.
 			if m.overlayActive && m.activeOverlay == "apikeys" {
-				if m.apiKeyInputMode && m.apiKeyInput != "" {
+				if m.apiKeyInputMode {
+					apiKey := strings.TrimSpace(m.apiKeyInput)
+					// Keys never contain whitespace and never start with "/"; a
+					// value like that is a chat message or a slash command that
+					// landed in the wrong box (#1403). Keep the form open and say so.
+					if apiKey == "" || strings.ContainsAny(apiKey, " \t") || strings.HasPrefix(apiKey, "/") {
+						m.apiKeyInput = ""
+						cmds = append(cmds, m.setStatusMsg("That doesn't look like an API key (no spaces, doesn't start with /). Paste the key, or press Esc to cancel."))
+						return m, tea.Batch(cmds...)
+					}
 					provider := m.apiKeyProviders[m.apiKeyCursor].Name
-					apiKey := m.apiKeyInput
 					m.apiKeyInputMode = false
 					m.apiKeyInput = ""
 					cmds = append(cmds, setProviderKeyCmd(m.config.BaseURL, provider, apiKey, m.config.APIKey))
@@ -3289,6 +3302,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else {
 						m.apiKeyCursor = 0
 					}
+					// Say why the keys panel opened and what to do (#1403).
+					m.apiKeyReason = fmt.Sprintf("%s is not set up, so %s cannot be used yet.", entry.ProviderLabel, entry.DisplayName)
+					if m.apiKeyCursor < len(m.apiKeyProviders) && m.apiKeyProviders[m.apiKeyCursor].APIKeyEnv != "" {
+						m.apiKeyReason += fmt.Sprintf(" Enter its API key (%s) below: press Enter to edit, Esc to go back.", m.apiKeyProviders[m.apiKeyCursor].APIKeyEnv)
+					} else {
+						m.apiKeyReason += " Press Enter to set it up, Esc to go back."
+					}
+					cmds = append(cmds, m.setStatusMsg(m.apiKeyReason))
 					return m, tea.Batch(cmds...)
 				}
 				// Provider is configured (or availability not yet known) — enter the config panel normally.
@@ -3918,6 +3939,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmds = append(cmds, cmd)
 					}
 				}
+				return m, tea.Batch(cmds...)
+			}
+			// While an overlay is open, printable keys the overlay did not claim
+			// must not fall through into the chat input (#1403: typed text then
+			// became an API key one Enter later). Say what to do instead.
+			if m.overlayActive && (msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace) {
+				cmds = append(cmds, m.setStatusMsg("Press Esc to close this panel before typing a message"))
 				return m, tea.Batch(cmds...)
 			}
 			// Route to input area
@@ -5889,6 +5917,19 @@ func (m Model) viewAPIKeysOverlay() string {
 	unsetStyle := lipgloss.NewStyle().Faint(true)
 
 	var rows []string
+	nameCol, detailCol := 14, 24
+	for _, p := range m.apiKeyProviders {
+		if l := len(p.Name); l > nameCol {
+			nameCol = l
+		}
+		d := p.APIKeyEnv
+		if p.AuthType == "subscription" {
+			d = subscriptionLabel(p.Name)
+		}
+		if l := len(d); l > detailCol {
+			detailCol = l
+		}
+	}
 	for i, p := range m.apiKeyProviders {
 		cursor := "  "
 		style := lipgloss.NewStyle()
@@ -5913,9 +5954,9 @@ func (m Model) viewAPIKeysOverlay() string {
 		}
 		detail := p.APIKeyEnv
 		if p.AuthType == "subscription" {
-			detail = "ChatGPT subscription"
+			detail = subscriptionLabel(p.Name)
 		}
-		label := style.Render(fmt.Sprintf("%s%-14s %-24s", cursor, p.Name, detail))
+		label := style.Render(fmt.Sprintf("%s%-*s %-*s", cursor, nameCol, p.Name, detailCol, detail))
 		if p.AuthType == "subscription" {
 			status = unsetStyle.Render("○ not connected")
 			if p.Configured {
@@ -5931,20 +5972,85 @@ func (m Model) viewAPIKeysOverlay() string {
 
 	footer := lipgloss.NewStyle().Faint(true).Render(string('\u2191') + "/" + string('\u2193') + " navigate  enter edit/setup  i import subscription  esc close")
 
-	content := strings.Join(rows, "\n") + "\n\n" + footer
+	// Size the box to its widest row so status text never wraps onto a line
+	// of its own (#1403), capped to the terminal; rows wider than that are
+	// shortened with an ellipsis instead.
+	const borderAndPad = 6 // border 1 + padding 2 on each side
+	inner := lipgloss.Width(footer)
+	for _, r := range rows {
+		if w := lipgloss.Width(r); w > inner {
+			inner = w
+		}
+	}
+	if maxInner := m.width - borderAndPad - 2; maxInner > 20 && inner > maxInner {
+		inner = maxInner
+	}
+	for i, r := range rows {
+		rows[i] = truncateVisible(r, inner)
+	}
+	header := []string{lipgloss.NewStyle().Bold(true).Render(title)}
+	if m.apiKeyReason != "" {
+		header = append(header, "", lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render(wrapPlain(m.apiKeyReason, inner)))
+	}
+	content := strings.Join(rows, "\n") + "\n\n" + truncateVisible(footer, inner)
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62")).
 		Padding(1, 2).
-		Width(width).
+		Width(inner + borderAndPad).
 		Render(lipgloss.JoinVertical(lipgloss.Left,
-			lipgloss.NewStyle().Bold(true).Render(title),
-			"",
-			content,
+			append(append(header, ""), content)...,
 		))
 
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+// subscriptionLabel names the product behind a subscription-auth provider.
+func subscriptionLabel(provider string) string {
+	switch provider {
+	case "codex-subscription":
+		return "ChatGPT subscription"
+	case "kimi-subscription":
+		return "Kimi subscription"
+	}
+	return "Subscription"
+}
+
+// truncateVisible shortens s to width terminal columns with an ellipsis,
+// counting styled text by its visible width.
+func truncateVisible(s string, width int) string {
+	if lipgloss.Width(s) <= width || width < 2 {
+		return s
+	}
+	runes := []rune(s)
+	for len(runes) > 0 && lipgloss.Width(string(runes))+1 > width {
+		runes = runes[:len(runes)-1]
+	}
+	return strings.TrimRight(string(runes), " ") + "…"
+}
+
+// wrapPlain word-wraps unstyled text to width columns.
+func wrapPlain(s string, width int) string {
+	if width < 10 {
+		return s
+	}
+	var lines []string
+	line := ""
+	for _, w := range strings.Fields(s) {
+		if line == "" {
+			line = w
+		} else if lipgloss.Width(line)+1+lipgloss.Width(w) <= width {
+			line += " " + w
+		} else {
+			lines = append(lines, line)
+			line = w
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // viewModelConfigPanel renders the Level-1 model configuration panel.

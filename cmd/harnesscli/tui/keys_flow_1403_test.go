@@ -55,11 +55,12 @@ func TestAPIKeys_RejectsImplausibleKey(t *testing.T) {
 // Selecting an unavailable model must say why the keys screen opened.
 func TestModelPicker_UnavailableSelectionExplains(t *testing.T) {
 	providers := []tui.ProviderInfo{
-		{Name: "openai", Configured: false, APIKeyEnv: "OPENAI_API_KEY"},
+		{Name: "groq", Configured: false, APIKeyEnv: "GROQ_API_KEY"},
 		{Name: "anthropic", Configured: true, APIKeyEnv: "ANTHROPIC_API_KEY"},
 	}
+	t.Setenv("GROQ_API_KEY", "")
 	m := openModelOverlayWithProviders(t, providers)
-	m = navigateToModelByID(m, "gpt-4.1")
+	m = navigateToModelByID(m, "llama-3.3-70b-versatile")
 	// Walk down until the highlight sits on a model whose provider is not configured.
 	found := false
 	for i := 0; i < 80; i++ {
@@ -74,7 +75,7 @@ func TestModelPicker_UnavailableSelectionExplains(t *testing.T) {
 	}
 	m = sendKey(m, tea.KeyEnter)
 	view := m.View()
-	if !strings.Contains(view, "OPENAI_API_KEY") || !strings.Contains(view, "not set up") {
+	if !strings.Contains(view, "GROQ_API_KEY") || !strings.Contains(view, "not set up") {
 		t.Fatalf("keys screen must explain the redirect (provider not set up, which key), view:\n%s", view)
 	}
 }

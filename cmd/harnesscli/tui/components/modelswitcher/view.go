@@ -220,7 +220,7 @@ func (m Model) viewProviderList(width int) string {
 	if m.loadError != "" {
 		sb.WriteString(dimStyle.Render("esc cancel"))
 	} else {
-		sb.WriteString(dimStyle.Render("↑/↓ navigate  enter select  / search  esc cancel"))
+		sb.WriteString(dimStyle.Render("↑/↓ navigate  enter select  / search  esc cancel" + m.legendSuffix()))
 	}
 
 	return boxStyle.Width(innerWidth).BorderForeground(lipgloss.Color("240")).Render(sb.String())
@@ -364,7 +364,7 @@ func (m Model) viewModelsForProvider(width int) string {
 	// Footer. Documents "/" (previously undocumented here even though any
 	// other printable key already started a search — see BUG C).
 	sb.WriteByte('\n')
-	sb.WriteString(dimStyle.Render("↑/↓ navigate  enter select  s star  / search  esc back"))
+	sb.WriteString(dimStyle.Render("↑/↓ navigate  enter select  s star  / search  esc back" + m.legendSuffix()))
 
 	return boxStyle.Width(innerWidth).BorderForeground(lipgloss.Color("240")).Render(sb.String())
 }
@@ -532,7 +532,7 @@ func (m Model) viewFlatModelList(width int) string {
 	if m.loadError != "" {
 		sb.WriteString(dimStyle.Render("esc cancel"))
 	} else {
-		sb.WriteString(dimStyle.Render("↑/↓ navigate  enter select  esc cancel search"))
+		sb.WriteString(dimStyle.Render("↑/↓ navigate  enter select  esc cancel search" + m.legendSuffix()))
 	}
 
 	return boxStyle.Width(innerWidth).BorderForeground(lipgloss.Color("240")).Render(sb.String())
@@ -633,4 +633,13 @@ func (m Model) viewReasoning(width int) string {
 		Render(sb.String())
 
 	return box
+}
+
+// legendSuffix explains the row markers once availability is known, so a
+// first-time user can read "(8) ●" without guessing (#1403).
+func (m Model) legendSuffix() string {
+	if !m.availabilitySet && m.keyStatus == nil {
+		return ""
+	}
+	return "\n● ready  ○ needs API key  (n) models  [R] reasoning model"
 }

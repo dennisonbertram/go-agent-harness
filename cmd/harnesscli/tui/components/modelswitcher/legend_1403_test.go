@@ -24,6 +24,9 @@ func TestModelSwitcher_SearchReadyFirst(t *testing.T) {
 	lines := strings.Split(m.View(120), "\n")
 	lastReady, firstUnavailable := -1, -1
 	for i, l := range lines {
+		if strings.Contains(l, "● ready") { // legend line, not a result row
+			continue
+		}
 		if strings.Contains(l, "(unavailable)") && firstUnavailable == -1 {
 			firstUnavailable = i
 		}
