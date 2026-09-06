@@ -796,6 +796,10 @@ func (m Model) ConversationID() string {
 }
 
 // SelectedModel returns the currently active model ID (for testing).
+// EffectiveModelAndProvider exposes the model id and provider the next run
+// will be sent with (for testing).
+func (m Model) EffectiveModelAndProvider() (string, string) { return m.effectiveModelAndProvider() }
+
 func (m Model) SelectedModel() string {
 	return m.selectedModel
 }
@@ -5821,6 +5825,13 @@ func (m Model) effectiveModelAndProvider() (model, provider string) {
 	if m.selectedGateway == "openrouter" {
 		return modelswitcher.OpenRouterSlug(m.selectedModel), "openrouter"
 	}
+	// A model that came from the OpenRouter provider only exists there: send
+	// its id untouched to OpenRouter regardless of the gateway setting. The
+	// slug-to-native rewrite below turned "deepseek/deepseek-v4-pro" into
+	// "deepseek-v4" and OpenRouter rejected it (#1403).
+	if m.selectedProvider == "openrouter" {
+		return m.selectedModel, "openrouter"
+	}
 	modelID := m.selectedModel
 	// When the model list was sourced from OpenRouter, selectedModel may be
 	// an OpenRouter slug (e.g. "deepseek/deepseek-v4-flash"). For a direct
@@ -6084,7 +6095,15 @@ func (m Model) viewModelConfigPanel() string {
 	}
 
 	var gwRows []string
+	if entry.Provider == "openrouter" {
+		// This id is only served by OpenRouter; a "Direct" choice would be
+		// meaningless (and used to break the run, #1403).
+		gwRows = append(gwRows, "  "+dimStyle.Render("OpenRouter   this model is only available through OpenRouter"))
+	}
 	for i, opt := range gatewayOptions {
+		if entry.Provider == "openrouter" {
+			break
+		}
 		isSelected := i == m.modelConfigGatewayCursor
 		var rowStyle lipgloss.Style
 		var cursor string
