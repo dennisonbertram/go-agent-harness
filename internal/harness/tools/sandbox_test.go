@@ -661,3 +661,41 @@ func TestJobManagerRunForegroundReportsSandboxWritableDirsInResult(t *testing.T)
 		t.Errorf(`expected result["sandbox_writable_dirs"] to include os.TempDir() (%q), got %v`, os.TempDir(), dirs)
 	}
 }
+
+// TestSandboxWorkspaceScopeGOCACHEOverrideIsWritableEndToEnd is a
+// regression test for issue #1399: it is a different angle from the other
+// integration tests above (which only exercise the default os.TempDir()
+// path) — it points GOCACHE at a custom directory via the real process
+// environment and proves, through the real OS-level sandbox mechanism, that
+// a write there succeeds. If a future change stopped reading $GOCACHE in
+// toolchainWritableDirs(), or stopped threading its result into the darwin
+// seatbelt profile / Linux bwrap binds, this test would fail with an
+// "operation not permitted" exit code exactly like the original bug report,
+// independent of the other tests that only cover the unconfigured default.
+func TestSandboxWorkspaceScopeGOCACHEOverrideIsWritableEndToEnd(t *testing.T) {
+	if !osSandboxAvailable(t) {
+		t.Skip("no OS-level sandbox mechanism (seatbelt/bubblewrap) available on this host")
+	}
+
+	customGocache := t.TempDir()
+	t.Setenv("GOCACHE", customGocache)
+
+	workspace := t.TempDir()
+	mgr := NewJobManager(workspace, nil)
+	mgr.SetSandboxScope(SandboxScopeWorkspace)
+
+	marker := filepath.Join(customGocache, "sandbox-1399-marker")
+	command := "echo written > " + marker
+	result, err := mgr.RunForeground(context.Background(), command, 10, "")
+	if err != nil {
+		t.Fatalf("RunForeground: %v", err)
+	}
+	exitCode, _ := result["exit_code"].(int)
+	output, _ := result["output"].(string)
+	if exitCode != 0 {
+		t.Fatalf("expected write to custom GOCACHE dir to succeed under workspace sandbox, got exit_code=%d output=%q", exitCode, output)
+	}
+	if _, statErr := os.Stat(marker); statErr != nil {
+		t.Fatalf("expected marker file %q to exist after the sandboxed write, got stat error: %v", marker, statErr)
+	}
+}
