@@ -79,6 +79,8 @@ Source: `cmd/harnesscli/main.go:123`
 | `-prompt-custom` | string | `""` | Custom prompt extension text appended to the prompt. |
 | `-workspace` | string | `""` (resolves to cwd) | Workspace directory for this run. Resolved via `os.Getwd()` when empty, sent as `workspace_path`, and honored by the server when it is an absolute path to an existing directory (tools are rooted there). |
 | `-plan-mode` | bool | `false` | Start the run in enforced read-only plan mode (sent as `plan_mode`). |
+| `-sandbox` | string | `""` (server default: `workspace`) | Sandbox scope for this run: `workspace`, `local`, or `unrestricted`. Sent as `permissions.sandbox`; omitted from the request body when neither `-sandbox` nor `-network` is set (issue #1397). |
+| `-network` | string | `""` (server default: `allow`) | Network policy for the `bash` sandbox: `allow` or `deny`. Sent as `permissions.network`; omitted from the request body when neither `-sandbox` nor `-network` is set (issue #1397). |
 | `-resume` | string | `""` | Resume an existing conversation by ID in the TUI; implies `-tui`. |
 | `-tui` | bool | `false` | Launch the interactive BubbleTea TUI. Requires a real terminal — fails with an error if stdout is a pipe. |
 | `-list-profiles` | bool | `false` | Fetch and print available profiles, then exit. |

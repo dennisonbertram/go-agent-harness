@@ -6102,3 +6102,61 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   client.go. Live verification against DeepSeek via OpenRouter is a
   follow-up for whoever holds the API key; this PR only proves the
   fake/unit/integration paths.
+
+# 2026-09-06 (Issue #1397 bash sandbox network policy — SECURITY-RELEVANT DEFAULT CHANGE)
+
+- Prior behavior: `SandboxScopeWorkspace` and `SandboxScopeLocal` unconditionally
+  denied outbound network from the `bash` tool (`(deny network*)` in the darwin
+  seatbelt profile, `--unshare-net` always in the linux bwrap invocation), with
+  no way for a caller to opt back in. A run that legitimately needed to install
+  a dependency or call an API from a sandboxed `bash` call had no way to do so
+  short of dropping to `SandboxScopeUnrestricted`, which also drops filesystem
+  confinement.
+- Change: `harness.PermissionConfig` gains a third axis, `Network` (json
+  `network`, values `""`/`"allow"`/`"deny"`, default `"allow"`), mirrored at
+  the tools layer as `tools.NetworkPolicy` with a context key
+  (`ContextKeyNetworkPolicy`), `WithNetworkPolicy`, and
+  `NetworkPolicyFromContext`, set alongside the existing sandbox-scope context
+  value wherever the runner sets up a tool call's execution context
+  (`runner_step_engine.go`). **SECURITY-RELEVANT DEFAULT CHANGE:** workspace
+  and local sandbox scopes now allow outbound network by default; callers that
+  need the old always-deny behavior must set `permissions.network` to
+  `"deny"` explicitly. `SandboxScopeUnrestricted` is unaffected (it was never
+  network-confined).
+- Gotcha found while implementing the darwin side: seatbelt's `(deny default)`
+  means every operation — including network — is denied unless explicitly
+  allowed. The first implementation attempt just omitted the `(deny network*)`
+  line for the allow case and left it there; that still left curl unable to
+  resolve DNS (`exit 6`) because omitting a deny rule under `(deny default)`
+  does not become an allow. The fix emits an explicit `(allow network*)` line
+  for the allow case (and an explicit `(deny network*)` for deny, which is
+  redundant with the default but kept for clarity/robustness against a future
+  default-policy change). Confirmed directly with `sandbox-exec` against a
+  real host (`https://proxy.golang.org`): `http_code=200` under an
+  `(allow network*)` profile, `exit=6` ("could not resolve host") under
+  `(deny network*)`.
+- `SandboxExecResult` gains a `NetworkPolicy` field so the bash tool result map
+  carries a `sandbox_network` key reporting the policy actually applied,
+  independent of the mechanism (`seatbelt`, `bubblewrap`, `none`, or
+  `unavailable`).
+- The permissions statement injected into the model's context
+  ("Permissions for this run: sandbox=%s, approval=%s, network=%s.") now
+  includes the network axis and, when denied, an explicit warning that
+  dependency installs will fail and the model should report the blocker
+  rather than substitute a design. It is now appended to every turn's wire
+  message list (not persisted into conversation history, unlike the existing
+  continuation-changed notice) so it reaches the model starting on turn one —
+  previously this line only appeared on a continuation whose permissions
+  changed from the source run, never on a fresh run's first turn.
+- `harnesscli` gains `--sandbox` and `--network` flags on the one-shot run
+  path, populating `permissions` on the run-create request only when either
+  flag is set (both omitted → server defaults, matching the new default
+  above).
+- Regression: `TestRedTeam_SandboxNetwork_DefaultPermissionsAllowCurl` drives a
+  real bash tool call through the full runner with no explicit `Permissions`
+  and asserts curl is not rejected; `TestJobManagerRunForegroundReportsSandboxNetworkInResult`
+  asserts the `sandbox_network` result field matches the applied policy for
+  both allow and deny under a real OS-level sandbox; a live integration test
+  (`TestSandboxWorkspaceScopeNetworkPolicyLiveCurl`) curls
+  `https://proxy.golang.org` through the actual seatbelt sandbox and asserts
+  success under allow, failure under deny.

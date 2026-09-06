@@ -97,13 +97,14 @@ LSP tools (`lsp_diagnostics`, `lsp_references`) are defined but are **not** incl
 
 ## Permission model
 
-Every run operates under a `PermissionConfig` with two independent axes: **sandbox scope** and **approval policy**.
+Every run operates under a `PermissionConfig` with three independent axes: **sandbox scope**, **network policy**, and **approval policy**.
 
 ```go
-// internal/harness/types.go:693-696
+// internal/harness/types.go
 type PermissionConfig struct {
     Sandbox  SandboxScope   `json:"sandbox"`
     Approval ApprovalPolicy `json:"approval"`
+    Network  NetworkPolicy  `json:"network,omitempty"`
 }
 ```
 
@@ -111,36 +112,63 @@ type PermissionConfig struct {
 
 The sandbox scope controls what the agent's `bash` tool can access.
 
-<Tabs defaultValue="unrestricted">
+<Tabs defaultValue="workspace">
   <TabsList>
-    <TabsTrigger value="unrestricted">unrestricted</TabsTrigger>
-    <TabsTrigger value="local">local</TabsTrigger>
     <TabsTrigger value="workspace">workspace</TabsTrigger>
+    <TabsTrigger value="local">local</TabsTrigger>
+    <TabsTrigger value="unrestricted">unrestricted</TabsTrigger>
   </TabsList>
-  <TabsContent value="unrestricted">
-
-**`"unrestricted"`** — No filesystem restrictions. This is the default when `permissions` is omitted.
-
-The agent can read and write any path on the host filesystem and run arbitrary shell commands.
-
-  </TabsContent>
-  <TabsContent value="local">
-
-**`"local"`** — Filesystem access is unrestricted, but outbound network commands (`curl`, `wget`, `nc`, `netcat`, `telnet`) are blocked inside `bash`.
-
-Use this when you want to prevent exfiltration over the network while still allowing full local filesystem access.
-
-  </TabsContent>
   <TabsContent value="workspace">
 
-**`"workspace"`** — Bash commands that reference absolute paths outside the workspace or attempt `cd ..` escapes are rejected. This is a defence-in-depth heuristic, not a kernel-level filesystem jail — it tokenizes the command for out-of-workspace absolute paths and matches `cd ..` patterns. Network access is unrestricted under this scope.
+**`"workspace"`** — Bash commands that reference absolute paths outside the workspace or attempt `cd ..` escapes are rejected. This is a defence-in-depth heuristic, not a kernel-level filesystem jail — it tokenizes the command for out-of-workspace absolute paths and matches `cd ..` patterns. This is the default when `permissions` is omitted.
 
 This scope is recommended for untrusted prompts operating on a bounded codebase.
 
   </TabsContent>
+  <TabsContent value="local">
+
+**`"local"`** — Filesystem access (read and write) is unrestricted.
+
+  </TabsContent>
+  <TabsContent value="unrestricted">
+
+**`"unrestricted"`** — No filesystem restrictions.
+
+The agent can read and write any path on the host filesystem and run arbitrary shell commands.
+
+  </TabsContent>
 </Tabs>
 
-Source: `internal/harness/types.go:670–677`.
+Source: `internal/harness/types.go`.
+
+### Network policy
+
+The network policy controls whether the agent's `bash` tool can reach the network, independent of the sandbox scope's filesystem confinement (issue #1397).
+
+<Tabs defaultValue="allow">
+  <TabsList>
+    <TabsTrigger value="allow">allow</TabsTrigger>
+    <TabsTrigger value="deny">deny</TabsTrigger>
+  </TabsList>
+  <TabsContent value="allow">
+
+**`"allow"`** — Outbound network access from `bash` is unrestricted. This is the default: an omitted or empty `network` field behaves the same as `"allow"`. Applies to both `"workspace"` and `"local"` sandbox scope; `"unrestricted"` scope was never network-confined.
+
+  </TabsContent>
+  <TabsContent value="deny">
+
+**`"deny"`** — Outbound network access from `bash` is blocked at the OS level (a seatbelt `(deny network*)` profile rule on macOS, `bwrap --unshare-net` on Linux) for `"workspace"` and `"local"` sandbox scope. `"unrestricted"` scope ignores this field — it has no network confinement at any setting.
+
+When denied, the model is told in its permissions notice that dependency installs will fail and to report the blocker rather than substitute a different design.
+
+  </TabsContent>
+</Tabs>
+
+Source: `internal/harness/types.go`, `internal/harness/tools/sandbox_darwin.go`, `internal/harness/tools/sandbox_linux.go`.
+
+<Callout type="warning">
+Before this change (issue #1397), `"workspace"` and `"local"` sandbox scope always denied `bash` network access unconditionally — there was no way to opt back in for a run that legitimately needed to install a dependency or call an API. The default is now `"allow"`; set `network: "deny"` explicitly for a run that must not reach the network.
+</Callout>
 
 ### Approval policy
 

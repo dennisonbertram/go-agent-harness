@@ -215,7 +215,8 @@ Fill in the fields below and copy the generated JSON body or curl command. The b
   "fallback_providers": ["anthropic"],
   "permissions": {
     "sandbox": "workspace",
-    "approval": "destructive"
+    "approval": "destructive",
+    "network": "deny"
   },
   "mcp_servers": [
     {"name": "my-mcp", "url": "http://localhost:9000"}
@@ -286,25 +287,27 @@ Fill in the fields below and copy the generated JSON body or curl command. The b
 
 ### Permissions
 
-The `permissions` field controls the two-axis permission model. It is an object — **not** top-level fields:
+The `permissions` field controls the three-axis permission model. It is an object — **not** top-level fields:
 
 ```json
 {
   "permissions": {
     "sandbox": "workspace",
-    "approval": "destructive"
+    "approval": "destructive",
+    "network": "deny"
   }
 }
 ```
 
 <Callout type="warning">
-`sandbox` and `approval` are nested inside the `permissions` object. They are not top-level `RunRequest` fields. Omitting the `permissions` block entirely is equivalent to `{"sandbox": "unrestricted", "approval": "none"}` — the agent runs unsandboxed with no approval gate. See [Tools and Permissions](/docs/concepts/tools-and-permissions) for a full explanation of what each value means.
+`sandbox`, `approval`, and `network` are nested inside the `permissions` object. They are not top-level `RunRequest` fields. Omitting the `permissions` block entirely is equivalent to `{"sandbox": "workspace", "approval": "none", "network": "allow"}` — the agent is workspace-confined with no approval gate, and its `bash` tool can reach the network. See [Tools and Permissions](/docs/concepts/tools-and-permissions) for a full explanation of what each value means.
 </Callout>
 
 | Field | Valid values | Default |
 |---|---|---|
-| `sandbox` | `"unrestricted"`, `"local"`, `"workspace"` | `"unrestricted"` |
+| `sandbox` | `"workspace"`, `"local"`, `"unrestricted"` | `"workspace"` |
 | `approval` | `"none"`, `"destructive"`, `"all"` | `"none"` |
+| `network` (issue #1397) | `"allow"`, `"deny"` | `"allow"` |
 
 ### What the server sets (never send this)
 
