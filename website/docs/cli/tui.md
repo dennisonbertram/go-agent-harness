@@ -145,6 +145,11 @@ While a run is in flight, type corrective input and press `Ctrl+G` to inject it 
 
 Type `/` to open the command menu. `↑`/`↓` move the highlight, `Enter` runs the highlighted command, `Tab` completes it into the input without running it, and `Esc` closes the menu (a second `Esc` clears the input). A bare `/` plus `Enter` does not run anything; type part of a name or move the highlight first. When nothing matches, the menu says so instead of disappearing; `Enter` then shows the unknown-command hint. Descriptions are shortened with `…` on narrow terminals, and the menu takes its rows from the top of the transcript so the input and status bar never move. Commands are case-insensitive.
 
+:::note What the model picker shows
+Provider rows end with `(n)` (number of models) and `●` (ready: an API key is configured) or `○` (needs an API key); `[R]` marks reasoning models. Selecting a model whose provider is not set up opens the API Keys panel with an explanation of what is missing. While any panel is open, typed text is not sent to the chat input (press `Esc` first). The key form rejects values that cannot be keys, such as text with spaces or anything starting with `/`.
+:::
+
+
 | Command | Description |
 |---|---|
 | `/model` | Open the model picker |

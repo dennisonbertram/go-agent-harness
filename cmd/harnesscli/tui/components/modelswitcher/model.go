@@ -457,8 +457,11 @@ func (m Model) providers() []ProviderSummary {
 			pd.configured = true
 		}
 	}
-	// Sort alphabetically by label.
-	sort.Strings(order)
+	// Sort alphabetically by label, ignoring case so raw ids such as
+	// "cerebras" sit with the display names instead of trailing "xAI".
+	sort.SliceStable(order, func(i, j int) bool {
+		return strings.ToLower(order[i]) < strings.ToLower(order[j])
+	})
 	result := make([]ProviderSummary, 0, len(order))
 	for _, label := range order {
 		pd := seen[label]
