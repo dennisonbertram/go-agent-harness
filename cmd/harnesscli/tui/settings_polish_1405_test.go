@@ -66,6 +66,15 @@ func TestConfigPanel_ValuesEllipsisAndROLegend(t *testing.T) {
 	}
 }
 
+// /config must not show an empty model cell before a model is chosen.
+func TestConfigPanel_ModelPlaceholderWhenUnset(t *testing.T) {
+	m := initModel(t, 120, 40)
+	m = sendSlashCommand(m, "/config")
+	if !strings.Contains(m.View(), "server default") {
+		t.Fatalf("/config must say the server default applies when no model is chosen:\n%s", m.View())
+	}
+}
+
 // /permissions must not draw a stray separator.
 func TestPermissionsPanel_NoStraySeparator(t *testing.T) {
 	m := initModel(t, 120, 40)

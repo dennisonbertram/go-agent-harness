@@ -1,5 +1,10 @@
 # Engineering Log
 
+## 2026-09-06 — Settings overlays read wrong to a first-time user (#1405)
+
+- Symptom: `/cost` showed `↑ 0 in  ↓ 15,760 out` after a run (the TUI only tracked a single total and passed it as output); `/profiles` wrapped its highlighted row mid-word; `/config` cut values at 20 characters with no ellipsis (the model id read as `deepseek/deepseek-v4`) and never explained `[RO]`, and showed an empty model cell before a model was chosen; `/permissions` drew a stray `──` line because its separator was as wide as the terminal inside a narrower box.
+- Fix: `applyUsageDelta` keeps cumulative prompt/completion tokens for the cost snapshot; the profile picker sizes rows to the box content area; the config panel widens the value column to the dialog, ends cut values with `…`, adds `[RO] read-only` to the footer and a "(server default — use /model to choose)" placeholder; the permissions panel is sized to the overlay box. Config snapshot goldens regenerated. Live tmux captures in PR.
+
 ## 2026-09-06 — A chat message could be saved as an API key (#1403)
 
 - Symptom: in the TUI, selecting a model whose provider had no key jumped to the API Keys panel with no explanation; letters typed while the panel was open fell through into the chat input; Enter then opened the key form, and the next text plus Enter (`/model`) was stored as the DeepSeek key both client-side (`~/.config/harnesscli/config.json`) and on the daemon. Keys rows also wrapped inside the box and `kimi-subscription` was labelled "ChatGPT subscription"; the picker had no legend for `●/○/(n)` and sorted providers case-sensitively.

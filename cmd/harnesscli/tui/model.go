@@ -2110,6 +2110,11 @@ func configEntriesFromModel(m *Model) []configpanel.ConfigEntry {
 	if model == "" {
 		model = m.config.Model
 	}
+	if model == "" {
+		// Nothing chosen in this session and no --model flag: the daemon's
+		// default applies. Say so instead of showing an empty cell (#1405).
+		model = "(server default — use /model to choose)"
+	}
 	return []configpanel.ConfigEntry{
 		{Key: "base_url", Value: m.config.BaseURL, Description: "harnessd server URL", ReadOnly: true},
 		{Key: "model", Value: model, Description: "Active LLM model", ReadOnly: true},
