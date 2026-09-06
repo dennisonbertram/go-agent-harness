@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/charmbracelet/lipgloss"
 	"net/http"
 	"net/url"
 	"strings"
@@ -232,7 +233,7 @@ func (m Model) renderAskUserOverlay() []string {
 	q := m.askUser.questions[m.askUser.qIdx]
 	lines := []string{
 		"",
-		"┌─ " + q.Header + " ─────────────────────────────────",
+		"┌─ " + q.Header + " ",
 		"│  " + q.Question,
 		"│",
 	}
@@ -257,7 +258,17 @@ func (m Model) renderAskUserOverlay() []string {
 			lines = append(lines, "│  Deadline: expired")
 		}
 	}
-	lines = append(lines, "└────────────────────────────────────────")
+	// Size the top and bottom borders to the widest line so the box reads as
+	// one shape instead of two mismatched rules (#1407).
+	width := 0
+	for _, l := range lines {
+		if w := lipgloss.Width(l); w > width {
+			width = w
+		}
+	}
+	width += 2
+	lines[0] = lines[0] + strings.Repeat("─", width-lipgloss.Width(lines[0]))
+	lines = append(lines, "└"+strings.Repeat("─", width-1))
 	lines = append(lines, "")
 	return lines
 }

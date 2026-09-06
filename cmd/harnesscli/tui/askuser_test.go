@@ -8,6 +8,7 @@ package tui_test
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/charmbracelet/lipgloss"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -711,4 +712,36 @@ func activateAskUserPending(
 	pending.Generation = generation
 	next, _ = model.Update(pending)
 	return next.(tui.Model)
+}
+
+// Issue #1407: the question box's top and bottom borders must be the same
+// width so it reads as one box.
+func TestAskUser_Overlay_BordersMatch(t *testing.T) {
+	m := initModel(t, 80, 24)
+	m = m.WithCancelRun(func() {})
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-border-1"})
+	model := m2.(tui.Model)
+	pending := tui.AskUserPendingMsg{
+		RunID: "run-border-1", CallID: "call-b1",
+		Questions: []tui.AskUserQuestion{{Question: "Which framework should I use?", Header: "Framework",
+			Options: []tui.AskUserOption{{Label: "net/http", Description: "standard library"}, {Label: "gin", Description: "gin-gonic router"}}}},
+		DeadlineAt: time.Now().Add(5 * time.Minute),
+	}
+	model = activateAskUserPending(t, model, pending, 1)
+	var top, bottom string
+	for _, line := range strings.Split(model.View(), "\n") {
+		trimmed := strings.TrimRight(line, " ")
+		if strings.HasPrefix(trimmed, "┌") {
+			top = trimmed
+		}
+		if strings.HasPrefix(trimmed, "└") {
+			bottom = trimmed
+		}
+	}
+	if top == "" || bottom == "" {
+		t.Fatalf("question box borders not found:\n%s", model.View())
+	}
+	if lipgloss.Width(top) != lipgloss.Width(bottom) {
+		t.Fatalf("border widths differ: top %d vs bottom %d\n%s\n%s", lipgloss.Width(top), lipgloss.Width(bottom), top, bottom)
+	}
 }
