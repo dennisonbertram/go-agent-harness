@@ -6256,3 +6256,59 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   execute on this darwin worktree and is verified by
   `GOOS=linux go vet ./internal/harness/tools/` for syntax/type correctness
   only — it needs a real Linux CI run to prove behavior.
+
+# 2026-09-06 (Issue #1409 viewport horizontal clamp truncated ANSI-styled transcript lines)
+
+- Symptom: streamed markdown assistant output in the TUI transcript viewport
+  sometimes lost trailing visible text — a bullet item like "Created
+  `calc.go` with an Add function" could render with "with an Add function"
+  (or more) silently missing — but every unit test for the viewport passed.
+- Cause: `viewport.Model.View()`
+  (`cmd/harnesscli/tui/components/viewport/model.go`) clamped each visible
+  line to the viewport width by rune count: `runes := []rune(line); if
+  len(runes) > m.width { line = string(runes[:m.width]) }`. Under a real
+  color profile, glamour (via `messagebubble.RenderMarkdown`) emits ANSI
+  escape sequences — e.g. a truecolor code-span background is ~20 extra
+  bytes — and each escape byte counts as a rune even though it occupies zero
+  terminal cells. A line with 42 visible cells but 62 runes hit the
+  rune-count budget at rune 40, which fell inside the escape sequence itself,
+  so the slice cut mid-escape and dropped everything after it. Under the
+  `ascii`/`notty` glamour style used when `os.Stdout` is not a real terminal
+  (the case for every test process, and for `messagebubble`'s own
+  `stdoutIsTerminal` probe), there are no escape bytes, so rune count equals
+  cell width and the clamp never mis-cut — which is why the existing test
+  suite never caught this.
+- Fix: replaced the rune slice with
+  `github.com/charmbracelet/x/ansi`'s `Truncate(line, m.width, "")`, which is
+  ANSI-aware (it will not cut inside an escape sequence) and is a no-op when
+  the line already fits within `m.width`. `github.com/charmbracelet/x/ansi`
+  was already an indirect dependency (transitively required by the existing
+  charm ecosystem deps); `go mod tidy` after adding the import promoted it —
+  along with two other packages already imported directly elsewhere in the
+  tree but previously mislabeled indirect (`github.com/creack/pty`,
+  `github.com/coder/acp-go-sdk`) — to the direct `require` block in `go.mod`.
+  No dependency versions changed (`go.sum` is byte-for-byte unchanged).
+- Verification: a new `viewport`-package test
+  (`TestTUI1409_ANSIStyledLineNotTruncatedByRuneCount`) feeds the viewport a
+  line with a real ANSI escape sequence (42 visible cells, 62 runes) at
+  width 40 and asserts the trailing marker word survives and no rendered
+  line exceeds width via `lipgloss.Width`; it fails against the pre-fix
+  clamp (marker dropped) and passes after. A second, model-level regression
+  test in `cmd/harnesscli/tui`
+  (`TestTUI1409_ModelViewPreservesANSIStyledTranscriptLine`) drives the same
+  fixture through the fully assembled `tui.Model` (constructed via `New` +
+  a `tea.WindowSizeMsg`, injected via the model's embedded `m.vp`) and
+  asserts the same invariant over the complete `Model.View()` frame
+  (header/separators/viewport/input/status bar), not just the isolated
+  viewport package — confirmed to fail the same way if the fix in
+  `model.go` is reverted. Glamour could not be made to emit real ANSI
+  escapes in this test process even with `lipgloss.SetColorProfile
+  (termenv.TrueColor)` forced (verified experimentally): `messagebubble`'s
+  own `stdoutIsTerminal` probe is a syscall-level check on `os.Stdout`'s fd,
+  independent of lipgloss's global color profile, so it always resolves to
+  the escape-free `notty` style outside a real terminal. That probe lives in
+  `messagebubble`, outside this fix's file scope, so the model-level test
+  injects a realistic pre-rendered ANSI-styled line directly rather than
+  routing it through glamour. `go test ./cmd/harnesscli/tui/... -race`,
+  `go vet ./cmd/harnesscli/tui/...`, and `go build ./cmd/... ./internal/...`
+  are all clean.
