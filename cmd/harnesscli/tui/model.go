@@ -588,6 +588,7 @@ func New(cfg TUIConfig) Model {
 	m = m.WithAutocompleteProvider(buildCombinedProvider(m.commandRegistry))
 	// Wire slash-complete dropdown.
 	m.slashComplete = buildSlashComplete(m.commandRegistry, m.skillRegistry)
+	m.planMode = cfg.PlanMode
 	if cfg.ResumeConversationID != "" {
 		m.conversationID = cfg.ResumeConversationID
 	}
@@ -1971,6 +1972,21 @@ func (m *Model) resetTranscriptView() {
 	m.clearCompactionBlocks()
 }
 
+// executePlanCommand toggles enforced plan mode explicitly. ctrl+o only
+// reaches plan mode when no tool call has ever run in the session, so a
+// first-time user needs a discoverable command (#1407).
+func executePlanCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+	if m.runActive {
+		return []tea.Cmd{m.setStatusMsg("Plan mode can't change while a run is active — wait for it to finish or press Esc to cancel")}, false
+	}
+	m.planMode = !m.planMode
+	m.statusBar.SetModel(m.statusBarModelLabel())
+	if m.planMode {
+		return []tea.Cmd{m.setStatusMsg("Plan mode: ON — the agent only edits .harness/plan.md until you approve its plan (/plan to turn off)")}, false
+	}
+	return []tea.Cmd{m.setStatusMsg("Plan mode: OFF")}, false
+}
+
 func executeClearCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
 	m.resetTranscriptView()
 	return []tea.Cmd{m.setStatusMsg("Conversation cleared")}, false
@@ -3150,8 +3166,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if !m.runActive {
 				// Idle (no run active, no active tool): toggle plan mode.
 				m.planMode = !m.planMode
+				m.statusBar.SetModel(m.statusBarModelLabel())
 				if m.planMode {
-					cmds = append(cmds, m.setStatusMsg("Plan mode: ON"))
+					cmds = append(cmds, m.setStatusMsg("Plan mode: ON — the agent only edits .harness/plan.md until you approve its plan (/plan to turn off)"))
 				} else {
 					cmds = append(cmds, m.setStatusMsg("Plan mode: OFF"))
 				}
@@ -5858,6 +5875,10 @@ func (m Model) effectiveModelAndProvider() (model, provider string) {
 // including reasoning effort suffix and gateway indicator if applicable.
 func (m Model) statusBarModelLabel() string {
 	label := displayModelName(m.selectedModel)
+	if m.planMode {
+		// Make the mode visible; ctrl+o is overloaded and /plan toggles it (#1407).
+		label = "PLAN · " + label
+	}
 	if m.selectedReasoningEffort != "" {
 		label += " (" + m.selectedReasoningEffort + ")"
 	}

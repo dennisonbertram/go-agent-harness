@@ -82,6 +82,14 @@ func builtinCommandEntries() []CommandEntry {
 	entries := []CommandEntry{
 		{Name: "plugins", Description: "Browse installed plugin bundles", Handler: func(Command) CommandResult { return CommandResult{Status: CmdOK} }, Execute: executePluginsCommand},
 		{
+			Name:        "plan",
+			Description: "Toggle plan mode: the agent plans in .harness/plan.md and waits for your approval before editing",
+			Handler: func(cmd Command) CommandResult {
+				return CommandResult{Status: CmdOK}
+			},
+			Execute: executePlanCommand,
+		},
+		{
 			Name:        "clear",
 			Description: "Clear conversation history",
 			Handler: func(cmd Command) CommandResult {

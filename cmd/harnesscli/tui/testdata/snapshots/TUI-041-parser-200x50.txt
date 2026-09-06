@@ -21,6 +21,7 @@ Command Registry - 200x50
 /model — Select AI model
 /new — Start a new session (resets conversation)
 /permissions — View session tool permissions
+/plan — Toggle plan mode: the agent plans in .harness/plan.md and waits for your approval before editing
 /plugins — Browse installed plugin bundles
 /profiles — View and select a profile for next run
 /quit — Quit the TUI
