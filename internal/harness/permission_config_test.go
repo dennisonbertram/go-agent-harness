@@ -70,6 +70,47 @@ func TestPermissionConfigValidation(t *testing.T) {
 	}
 }
 
+// TestPermissionConfigNetworkValidation checks that ValidatePermissionConfig
+// accepts the empty/allow/deny NetworkPolicy values and rejects anything
+// else (issue #1397).
+func TestPermissionConfigNetworkValidation(t *testing.T) {
+	t.Parallel()
+
+	valid := []PermissionConfig{
+		{Sandbox: SandboxScopeWorkspace, Approval: ApprovalPolicyNone, Network: ""},
+		{Sandbox: SandboxScopeWorkspace, Approval: ApprovalPolicyNone, Network: NetworkPolicyAllow},
+		{Sandbox: SandboxScopeWorkspace, Approval: ApprovalPolicyNone, Network: NetworkPolicyDeny},
+	}
+	for _, cfg := range valid {
+		if err := ValidatePermissionConfig(cfg); err != nil {
+			t.Errorf("expected valid network %q to pass, got: %v", cfg.Network, err)
+		}
+	}
+
+	badCfg := PermissionConfig{Sandbox: SandboxScopeWorkspace, Approval: ApprovalPolicyNone, Network: "maybe"}
+	if err := ValidatePermissionConfig(badCfg); err == nil {
+		t.Error("expected invalid network \"maybe\" to fail, but got nil error")
+	}
+}
+
+// TestNormalizePermissionConfigDefaultsNetworkToAllow verifies that an empty
+// Network field normalizes to NetworkPolicyAllow, matching the safety-biased
+// default documented on PermissionConfig (issue #1397): workspace/local
+// scopes allow outbound network unless a caller explicitly opts into deny.
+func TestNormalizePermissionConfigDefaultsNetworkToAllow(t *testing.T) {
+	t.Parallel()
+
+	got := normalizePermissionConfig(PermissionConfig{Sandbox: SandboxScopeWorkspace, Approval: ApprovalPolicyNone})
+	if got.Network != NetworkPolicyAllow {
+		t.Errorf("expected normalized empty network to default to %q, got %q", NetworkPolicyAllow, got.Network)
+	}
+
+	got = normalizePermissionConfig(PermissionConfig{Sandbox: SandboxScopeWorkspace, Approval: ApprovalPolicyNone, Network: NetworkPolicyDeny})
+	if got.Network != NetworkPolicyDeny {
+		t.Errorf("expected explicit deny to be preserved, got %q", got.Network)
+	}
+}
+
 // TestPermissionConfigToLegacy verifies backward-compatible mapping from
 // PermissionConfig to the legacy ToolApprovalMode.
 func TestPermissionConfigToLegacy(t *testing.T) {

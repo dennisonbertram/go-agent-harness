@@ -330,6 +330,10 @@ func TestRedTeam_SandboxNetwork_BlocksCurl(t *testing.T) {
 		Permissions: &PermissionConfig{
 			Sandbox:  SandboxScopeLocal,
 			Approval: ApprovalPolicyNone,
+			// Issue #1397 changed the default so local scope allows outbound
+			// network; this red-team scenario exercises the still-available
+			// explicit-deny path, not the new default.
+			Network: NetworkPolicyDeny,
 		},
 	})
 	if err != nil {

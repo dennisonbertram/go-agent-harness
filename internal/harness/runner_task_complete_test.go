@@ -291,10 +291,14 @@ func TestRunForkedSkill_TrustedOriginIgnoresTamperedMetadataForInheritedPolicy(t
 	provider := &funcProvider{fn: func(_ context.Context, req CompletionRequest) (CompletionResult, error) {
 		captureMu.Lock()
 		defer captureMu.Unlock()
-		for _, message := range req.Messages {
-			if message.Role == "system" {
-				capturedSystemPrompt = message.Content
-			}
+		// buildTurnMessages always places the static system prompt (if any)
+		// at index 0, ahead of history and the volatile tail (working/
+		// observational memory, dynamic rules, plan-mode guidance, the
+		// permissions notice added in issue #1397, and runtime context) —
+		// several of which are also role=system. Only the leading message
+		// is the system prompt under test here.
+		if len(req.Messages) > 0 && req.Messages[0].Role == "system" {
+			capturedSystemPrompt = req.Messages[0].Content
 		}
 		return CompletionResult{Content: "child done"}, nil
 	}}

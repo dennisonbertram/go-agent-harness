@@ -199,6 +199,7 @@ func TestContinueRunWithOptions_OverridesAllowedToolsAndPermissions(t *testing.T
 	overridePerms := PermissionConfig{
 		Sandbox:  SandboxScopeLocal,
 		Approval: ApprovalPolicyAll,
+		Network:  NetworkPolicyAllow,
 	}
 	run2, err := runner.ContinueRunWithOptions(run1.ID, ContinueRunRequest{
 		Prompt:       "follow up",
@@ -512,6 +513,7 @@ func TestContinueRunPropagatesPermissions(t *testing.T) {
 	wantPerms := PermissionConfig{
 		Sandbox:  SandboxScopeWorkspace,
 		Approval: ApprovalPolicyDestructive,
+		Network:  NetworkPolicyAllow,
 	}
 	run1, err := runner.StartRun(RunRequest{
 		Prompt:      "initial",
