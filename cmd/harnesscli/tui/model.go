@@ -800,6 +800,9 @@ func (m Model) ConversationID() string {
 }
 
 // SelectedModel returns the currently active model ID (for testing).
+// StatusBarModelLabel exposes the status bar's model segment (for testing).
+func (m Model) StatusBarModelLabel() string { return m.statusBarModelLabel() }
+
 // EffectiveModelAndProvider exposes the model id and provider the next run
 // will be sent with (for testing).
 func (m Model) EffectiveModelAndProvider() (string, string) { return m.effectiveModelAndProvider() }
@@ -5877,7 +5880,11 @@ func (m Model) statusBarModelLabel() string {
 	label := displayModelName(m.selectedModel)
 	if m.planMode {
 		// Make the mode visible; ctrl+o is overloaded and /plan toggles it (#1407).
-		label = "PLAN · " + label
+		if label == "" {
+			label = "PLAN"
+		} else {
+			label = "PLAN · " + label
+		}
 	}
 	if m.selectedReasoningEffort != "" {
 		label += " (" + m.selectedReasoningEffort + ")"

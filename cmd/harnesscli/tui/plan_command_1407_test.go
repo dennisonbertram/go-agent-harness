@@ -19,14 +19,14 @@ func TestPlanCommand_TogglesAndShowsInStatusBar(t *testing.T) {
 	if !m.PlanMode() {
 		t.Fatal("/plan must turn plan mode on")
 	}
-	if !strings.Contains(m.View(), "PLAN") {
-		t.Fatalf("status bar must show the PLAN badge while plan mode is on:\n%s", m.View())
+	if !strings.Contains(m.StatusBarModelLabel(), "PLAN") {
+		t.Fatalf("status bar must show the PLAN badge while plan mode is on, got %q", m.StatusBarModelLabel())
 	}
 	if !strings.Contains(m.StatusMsg(), "Plan mode") {
 		t.Fatalf("status must confirm the toggle, got %q", m.StatusMsg())
 	}
 	m = sendSlashCommand(m, "/plan")
-	if m.PlanMode() || strings.Contains(m.View(), "PLAN") {
+	if m.PlanMode() || strings.Contains(m.StatusBarModelLabel(), "PLAN") {
 		t.Fatal("/plan again must turn plan mode off and drop the badge")
 	}
 }
