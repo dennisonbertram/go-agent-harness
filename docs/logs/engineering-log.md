@@ -1,5 +1,11 @@
 # Engineering Log
 
+## 2026-09-06 — A chat message could be saved as an API key (#1403)
+
+- Symptom: in the TUI, selecting a model whose provider had no key jumped to the API Keys panel with no explanation; letters typed while the panel was open fell through into the chat input; Enter then opened the key form, and the next text plus Enter (`/model`) was stored as the DeepSeek key both client-side (`~/.config/harnesscli/config.json`) and on the daemon. Keys rows also wrapped inside the box and `kimi-subscription` was labelled "ChatGPT subscription"; the picker had no legend for `●/○/(n)` and sorted providers case-sensitively.
+- Cause: the final key-routing fallthrough in `cmd/harnesscli/tui/model.go` had no overlay guard; the key form accepted any non-empty string; the redirect set no message; the keys box had a fixed 54-column width with 14/24-column fields.
+- Fix: swallow printable keys while an overlay is open (status hint), validate keys (no whitespace, not starting with `/`), set `apiKeyReason` on redirect and render it under the panel title, size the keys box to its rows and truncate with `…`, product-specific subscription labels, a legend line in the picker footers, case-insensitive provider order. Live tmux captures at 120x40 in PR #1404.
+
 ## 2026-09-06 — Slash-command menu polish (#1401)
 
 - Symptom: driving `harnesscli --tui` in tmux, Tab ignored the item highlighted with ↑/↓ (the input box's prefix completer handled the key), Enter on a bare `/` ran `/add-dir`, a query with no matches made the menu vanish, descriptions were chopped mid-word at 40-60 columns, a blank row appeared under the menu, no key hint was shown, and the menu added rows to the screen (38 → 47 at 120x40) instead of borrowing them from the transcript.
