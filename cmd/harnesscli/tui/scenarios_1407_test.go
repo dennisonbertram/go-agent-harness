@@ -41,6 +41,9 @@ func TestInterruptedTool_CtrlOKeepsOneCard(t *testing.T) {
 	m = sendKey(m, tea.KeyEsc) // interrupt
 	m = sse(m, "run.cancelled", "run-1", `{"step":1}`)
 	before := strings.Count(m.View(), "bash")
+	if before == 0 {
+		t.Fatalf("fixture did not render the tool card at all:\n%s", m.View())
+	}
 	m = sendKey(m, tea.KeyCtrlO)
 	after := strings.Count(m.View(), "bash")
 	if after > before {
