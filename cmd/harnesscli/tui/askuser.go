@@ -267,7 +267,12 @@ func (m Model) renderAskUserOverlay() []string {
 		}
 	}
 	width += 2
-	lines[0] = lines[0] + strings.Repeat("─", width-lipgloss.Width(lines[0]))
+	for i, l := range lines {
+		if strings.HasPrefix(l, "┌") {
+			lines[i] = l + strings.Repeat("─", width-lipgloss.Width(l))
+			break
+		}
+	}
 	lines = append(lines, "└"+strings.Repeat("─", width-1))
 	lines = append(lines, "")
 	return lines
