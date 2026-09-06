@@ -71,6 +71,8 @@ The `run_id=` / `terminal_event=` stdout lines are unchanged by this mapping. Se
 | `-prompt-custom` | `""` | Custom prompt extension text |
 | `-workspace` | cwd | Workspace directory for this run (sent as `workspace_path`; see the callout below) |
 | `-plan-mode` | `false` | Start the run in enforced read-only plan mode (`plan_mode` in the request); see [Enforced Plan Mode](/docs/concepts/configuration) |
+| `-sandbox` | `""` (server default: `workspace`) | Sandbox scope: `workspace`, `local`, or `unrestricted` (`permissions.sandbox` in the request) |
+| `-network` | `""` (server default: `allow`) | Network policy for the `bash` sandbox: `allow` or `deny` (`permissions.network` in the request; issue #1397) |
 | `-resume` | `""` | Resume an existing conversation by ID in the TUI; implies `-tui` |
 | `-tui` | `false` | Launch the interactive BubbleTea TUI (requires a real terminal) |
 | `-list-profiles` | `false` | List available profiles and exit |

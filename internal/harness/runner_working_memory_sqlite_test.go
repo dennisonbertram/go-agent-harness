@@ -171,11 +171,18 @@ func injectedMemorySnippetForRun(t *testing.T, store workingmemory.Store, req Ru
 	}
 	msgs := provider.calls[0].Messages
 	// Working/observational memory is injected as a system message at the tail
-	// (after the history) for cache friendliness; return the last system message.
+	// (after the history) for cache friendliness; return the last such
+	// message. The permissions notice (issue #1397) is appended after memory
+	// on every turn, so it is skipped here rather than mistaken for the
+	// memory injection.
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "system" {
-			return msgs[i].Content
+		if msgs[i].Role != "system" {
+			continue
 		}
+		if strings.HasPrefix(msgs[i].Content, "Permissions for this run:") {
+			continue
+		}
+		return msgs[i].Content
 	}
 	return ""
 }

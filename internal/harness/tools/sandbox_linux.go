@@ -20,11 +20,18 @@ import (
 // sandboxing tool that gives us real mount-namespace filesystem
 // confinement and network-namespace isolation without adding a Go
 // dependency.
+// The network policy is read from ctx (NetworkPolicyFromContext), defaulting
+// to NetworkPolicyAllow when absent; --unshare-net is only added to the bwrap
+// invocation when the resolved policy is deny (issue #1397).
 func buildSandboxedCommand(ctx context.Context, scope SandboxScope, workspaceRoot, command string) (*exec.Cmd, func(), SandboxExecResult, error) {
 	noop := func() {}
+	network, _ := NetworkPolicyFromContext(ctx)
+	if network == "" {
+		network = NetworkPolicyAllow
+	}
 	switch scope {
 	case SandboxScopeUnrestricted, "":
-		return exec.CommandContext(ctx, "/bin/bash", "-lc", command), noop, SandboxExecResult{Applied: false, Mechanism: "none"}, nil
+		return exec.CommandContext(ctx, "/bin/bash", "-lc", command), noop, SandboxExecResult{Applied: false, Mechanism: "none", NetworkPolicy: network}, nil
 	case SandboxScopeWorkspace, SandboxScopeLocal:
 		bwrapPath, lookErr := exec.LookPath("bwrap")
 		if lookErr != nil {
@@ -32,6 +39,7 @@ func buildSandboxedCommand(ctx context.Context, scope SandboxScope, workspaceRoo
 			if err != nil {
 				return nil, nil, SandboxExecResult{}, err
 			}
+			res.NetworkPolicy = network
 			return exec.CommandContext(ctx, "/bin/bash", "-lc", command), noop, res, nil
 		}
 
@@ -42,7 +50,6 @@ func buildSandboxedCommand(ctx context.Context, scope SandboxScope, workspaceRoo
 
 		args := []string{
 			"--die-with-parent",
-			"--unshare-net",
 			// Isolate PID and IPC namespaces so sandboxed processes can
 			// neither signal same-UID host processes nor read host
 			// /proc/<pid>/environ (API keys) — parity with darwin seatbelt's
@@ -54,6 +61,9 @@ func buildSandboxedCommand(ctx context.Context, scope SandboxScope, workspaceRoo
 			"--new-session",
 			"--proc", "/proc",
 			"--dev", "/dev",
+		}
+		if network == NetworkPolicyDeny {
+			args = append(args, "--unshare-net")
 		}
 		if scope == SandboxScopeWorkspace {
 			// Bind the whole root filesystem read-only, then punch a
@@ -74,7 +84,7 @@ func buildSandboxedCommand(ctx context.Context, scope SandboxScope, workspaceRoo
 		args = append(args, "--", "/bin/bash", "-lc", command)
 
 		cmd := exec.CommandContext(ctx, bwrapPath, args...)
-		return cmd, noop, SandboxExecResult{Applied: true, Mechanism: "bubblewrap"}, nil
+		return cmd, noop, SandboxExecResult{Applied: true, Mechanism: "bubblewrap", NetworkPolicy: network}, nil
 	default:
 		return nil, nil, SandboxExecResult{}, fmt.Errorf("unknown sandbox scope %q", scope)
 	}

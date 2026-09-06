@@ -633,9 +633,11 @@ func TestRunnerInjectsMemorySnippetAndEmitsMemoryEvents(t *testing.T) {
 	}
 	// Volatile blocks (including observational memory) are injected at the tail,
 	// after the conversation history, so the cached prefix is not invalidated.
+	// The permissions notice (issue #1397) is appended after memory on every
+	// turn, so the memory snippet is now second-to-last rather than last.
 	msgs0 := provider.calls[0].Messages
-	if len(msgs0) < 1 || msgs0[len(msgs0)-1].Content != "<observational-memory>test</observational-memory>" {
-		t.Fatalf("expected injected memory snippet at the tail of the first request: %+v", msgs0)
+	if len(msgs0) < 2 || msgs0[len(msgs0)-2].Content != "<observational-memory>test</observational-memory>" {
+		t.Fatalf("expected injected memory snippet second-to-last (before the permissions notice) in the first request: %+v", msgs0)
 	}
 	requireEventOrder(t, events, "memory.observe.started", "memory.observe.completed", "run.completed")
 }

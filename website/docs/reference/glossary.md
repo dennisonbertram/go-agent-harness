@@ -80,9 +80,11 @@ See: [Subagents and profiles](/docs/integrations/subagents-and-profiles)
 <CardContent>
 A constraint that limits what the agent's shell and file tools can reach. The three levels, set via `permissions.sandbox` in a `RunRequest`, are:
 
-- `"unrestricted"` — no restrictions (default)
-- `"local"` — filesystem access is unrestricted, but outbound network commands (`curl`, `wget`, `nc`, etc.) are blocked in the `bash` tool
-- `"workspace"` — the `bash` tool can only access paths inside the workspace directory
+- `"workspace"` — the `bash` tool can only access paths inside the workspace directory (default)
+- `"local"` — filesystem access is unrestricted
+- `"unrestricted"` — no restrictions
+
+Outbound network access from the `bash` tool is a separate axis, `permissions.network` (issue #1397): `"allow"` (default) or `"deny"`, enforced at the OS level for `"workspace"`/`"local"` scope.
 
 See: [HTTP API guide](/docs/server/http-api-guide)
 </CardContent>

@@ -2112,8 +2112,8 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 	}, nil
 }
 
-func (r *Runner) runStepEngine(ctx context.Context, runID string, req RunRequest, preflight *runPreflightResult, effectiveMaxSteps int, effectiveMaxTurns int, runForkDepth int, effectiveApprovalPolicy ApprovalPolicy, effectiveSandboxScope htools.SandboxScope) {
-	newStepEngine(r, ctx, runID, req, preflight, effectiveMaxSteps, effectiveMaxTurns, runForkDepth, effectiveApprovalPolicy, effectiveSandboxScope).run()
+func (r *Runner) runStepEngine(ctx context.Context, runID string, req RunRequest, preflight *runPreflightResult, effectiveMaxSteps int, effectiveMaxTurns int, runForkDepth int, effectiveApprovalPolicy ApprovalPolicy, effectiveSandboxScope htools.SandboxScope, effectiveNetworkPolicy htools.NetworkPolicy) {
+	newStepEngine(r, ctx, runID, req, preflight, effectiveMaxSteps, effectiveMaxTurns, runForkDepth, effectiveApprovalPolicy, effectiveSandboxScope, effectiveNetworkPolicy).run()
 }
 
 func mapPromptExtensions(input *PromptExtensions) systemprompt.Extensions {
@@ -3447,7 +3447,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	// Captured once from req to avoid repeated lock acquisitions in the step loop.
 	runForkDepth := req.ForkDepth
 
-	r.runStepEngine(ctx, runID, req, preflight, effectiveMaxSteps, effectiveMaxTurns, runForkDepth, effectiveApprovalPolicy, htools.SandboxScope(effectivePermissions.Sandbox))
+	r.runStepEngine(ctx, runID, req, preflight, effectiveMaxSteps, effectiveMaxTurns, runForkDepth, effectiveApprovalPolicy, htools.SandboxScope(effectivePermissions.Sandbox), htools.NetworkPolicy(effectivePermissions.Network))
 	return
 }
 
@@ -7424,6 +7424,11 @@ func normalizePermissionConfig(p PermissionConfig) PermissionConfig {
 	if p.Approval == "" {
 		p.Approval = ApprovalPolicyNone
 	}
+	if p.Network == "" {
+		// Default: outbound network is allowed (issue #1397). See
+		// DefaultPermissionConfig in types.go.
+		p.Network = NetworkPolicyAllow
+	}
 	p.Rules = copyPermissionRuleSet(p.Rules)
 	return p
 }
@@ -7448,9 +7453,27 @@ func buildContinuationPolicyNotice(srcAllowed, currentAllowed []string, srcPerms
 		}
 	}
 	if permsChanged {
-		lines = append(lines, fmt.Sprintf("Permissions for this run: sandbox=%s, approval=%s.", currentPerms.Sandbox, currentPerms.Approval))
+		lines = append(lines, permissionsNoticeLines(currentPerms)...)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// permissionsNoticeLines renders the permissions statement injected into the
+// model's context: one line reporting the current sandbox/approval/network
+// axes, plus (when network is denied) a warning that dependency installs
+// will fail rather than letting the model silently substitute a different
+// design (issue #1397). Used both for the first-turn notice (always present)
+// and the continuation notice (present only when permissions changed).
+func permissionsNoticeLines(perms PermissionConfig) []string {
+	network := perms.Network
+	if network == "" {
+		network = NetworkPolicyAllow
+	}
+	lines := []string{fmt.Sprintf("Permissions for this run: sandbox=%s, approval=%s, network=%s.", perms.Sandbox, perms.Approval, network)}
+	if network == NetworkPolicyDeny {
+		lines = append(lines, "Outbound network is blocked for this run: dependency installs will fail; report the blocker instead of substituting a different design.")
+	}
+	return lines
 }
 
 func stringSlicesEqual(a, b []string) bool {

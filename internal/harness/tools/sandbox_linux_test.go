@@ -13,30 +13,56 @@ import (
 	"testing"
 )
 
-// TestBuildSandboxedCommandLinuxIsolatesPIDAndIPC guards #785 at the
-// argument level: the bwrap invocation must unshare the PID and IPC
-// namespaces (and start a new session) in addition to the pre-existing
-// network unshare, for both confinement scopes. Without --unshare-pid a
-// sandboxed process can signal every same-UID host process and read host
-// /proc/<pid>/environ (API keys); darwin's seatbelt already restricts
-// signals to self.
-func TestBuildSandboxedCommandLinuxIsolatesPIDAndIPC(t *testing.T) {
-	// Not parallel: this test rewrites the process-global PATH via
-	// t.Setenv, which the testing package forbids in parallel tests.
-	//
-	// A fake bwrap on PATH is sufficient: the test only inspects the
-	// assembled argv, it never executes it.
+// bwrapArgsBeforeDoubleDash returns the bwrap argv up to (not including) the
+// "--" separator, so tests can inspect which flags were assembled without
+// tripping over the wrapped command itself.
+func bwrapArgsBeforeDoubleDash(cmd *exec.Cmd) []string {
+	var args []string
+	for _, a := range cmd.Args {
+		if a == "--" {
+			break
+		}
+		args = append(args, a)
+	}
+	return args
+}
+
+func containsArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+// fakeBwrapOnPath installs a no-op bwrap binary on PATH so tests can inspect
+// the assembled argv without actually creating a namespace sandbox. Not safe
+// to use from a parallel subtest: t.Setenv forbids it.
+func fakeBwrapOnPath(t *testing.T) {
+	t.Helper()
 	dir := t.TempDir()
 	fakeBwrap := filepath.Join(dir, "bwrap")
 	if err := os.WriteFile(fakeBwrap, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestBuildSandboxedCommandLinuxIsolatesPIDAndIPC guards #785 at the
+// argument level: the bwrap invocation must unshare the PID and IPC
+// namespaces (and start a new session), for both confinement scopes,
+// regardless of network policy. Without --unshare-pid a sandboxed process
+// can signal every same-UID host process and read host /proc/<pid>/environ
+// (API keys); darwin's seatbelt already restricts signals to self.
+func TestBuildSandboxedCommandLinuxIsolatesPIDAndIPC(t *testing.T) {
+	// Not parallel: fakeBwrapOnPath rewrites the process-global PATH via
+	// t.Setenv, which the testing package forbids in parallel tests.
+	fakeBwrapOnPath(t)
 
 	for _, scope := range []SandboxScope{SandboxScopeWorkspace, SandboxScopeLocal} {
 		scope := scope
 		t.Run(string(scope), func(t *testing.T) {
-			t.Parallel()
 			cmd, cleanup, res, err := buildSandboxedCommand(context.Background(), scope, t.TempDir(), "echo hi")
 			if err != nil {
 				t.Fatalf("buildSandboxedCommand: %v", err)
@@ -46,24 +72,66 @@ func TestBuildSandboxedCommandLinuxIsolatesPIDAndIPC(t *testing.T) {
 				t.Fatalf("expected sandbox to be applied, got %+v", res)
 			}
 
-			var bwrapArgs []string
-			for _, a := range cmd.Args {
-				if a == "--" {
-					break
-				}
-				bwrapArgs = append(bwrapArgs, a)
-			}
-			for _, want := range []string{"--unshare-pid", "--unshare-ipc", "--new-session", "--unshare-net", "--die-with-parent"} {
-				found := false
-				for _, a := range bwrapArgs {
-					if a == want {
-						found = true
-						break
-					}
-				}
-				if !found {
+			bwrapArgs := bwrapArgsBeforeDoubleDash(cmd)
+			for _, want := range []string{"--unshare-pid", "--unshare-ipc", "--new-session", "--die-with-parent"} {
+				if !containsArg(bwrapArgs, want) {
 					t.Errorf("expected %q in bwrap args before \"--\", got: %s", want, strings.Join(bwrapArgs, " "))
 				}
+			}
+		})
+	}
+}
+
+// TestBuildSandboxedCommandLinuxNetworkPolicy verifies that --unshare-net is
+// added only when the network policy read from ctx is deny (issue #1397).
+// Before this change bwrap always unshared the network namespace regardless
+// of caller intent.
+func TestBuildSandboxedCommandLinuxNetworkPolicy(t *testing.T) {
+	// Not parallel: fakeBwrapOnPath rewrites the process-global PATH via
+	// t.Setenv, which the testing package forbids in parallel tests.
+	fakeBwrapOnPath(t)
+
+	for _, scope := range []SandboxScope{SandboxScopeWorkspace, SandboxScopeLocal} {
+		scope := scope
+		t.Run(string(scope)+"/deny", func(t *testing.T) {
+			ctx := WithNetworkPolicy(context.Background(), NetworkPolicyDeny)
+			cmd, cleanup, res, err := buildSandboxedCommand(ctx, scope, t.TempDir(), "echo hi")
+			if err != nil {
+				t.Fatalf("buildSandboxedCommand: %v", err)
+			}
+			defer cleanup()
+			if !containsArg(bwrapArgsBeforeDoubleDash(cmd), "--unshare-net") {
+				t.Errorf("expected --unshare-net in bwrap args when network=deny, got: %s", strings.Join(bwrapArgsBeforeDoubleDash(cmd), " "))
+			}
+			if res.NetworkPolicy != NetworkPolicyDeny {
+				t.Errorf("expected SandboxExecResult.NetworkPolicy=%q, got %q", NetworkPolicyDeny, res.NetworkPolicy)
+			}
+		})
+		t.Run(string(scope)+"/allow", func(t *testing.T) {
+			ctx := WithNetworkPolicy(context.Background(), NetworkPolicyAllow)
+			cmd, cleanup, res, err := buildSandboxedCommand(ctx, scope, t.TempDir(), "echo hi")
+			if err != nil {
+				t.Fatalf("buildSandboxedCommand: %v", err)
+			}
+			defer cleanup()
+			if containsArg(bwrapArgsBeforeDoubleDash(cmd), "--unshare-net") {
+				t.Errorf("expected no --unshare-net in bwrap args when network=allow, got: %s", strings.Join(bwrapArgsBeforeDoubleDash(cmd), " "))
+			}
+			if res.NetworkPolicy != NetworkPolicyAllow {
+				t.Errorf("expected SandboxExecResult.NetworkPolicy=%q, got %q", NetworkPolicyAllow, res.NetworkPolicy)
+			}
+		})
+		t.Run(string(scope)+"/default_is_allow", func(t *testing.T) {
+			cmd, cleanup, res, err := buildSandboxedCommand(context.Background(), scope, t.TempDir(), "echo hi")
+			if err != nil {
+				t.Fatalf("buildSandboxedCommand: %v", err)
+			}
+			defer cleanup()
+			if containsArg(bwrapArgsBeforeDoubleDash(cmd), "--unshare-net") {
+				t.Errorf("expected no --unshare-net in bwrap args by default, got: %s", strings.Join(bwrapArgsBeforeDoubleDash(cmd), " "))
+			}
+			if res.NetworkPolicy != NetworkPolicyAllow {
+				t.Errorf("expected default SandboxExecResult.NetworkPolicy=%q, got %q", NetworkPolicyAllow, res.NetworkPolicy)
 			}
 		})
 	}

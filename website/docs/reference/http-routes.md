@@ -375,8 +375,9 @@ Source: `internal/harness/types.go`.
   "profile": "",
   "parent_context_handoff": null,
   "permissions": {
-    "sandbox": "unrestricted",
-    "approval": "none"
+    "sandbox": "workspace",
+    "approval": "none",
+    "network": "allow"
   },
   "role_models": {
     "primary": "",
@@ -397,8 +398,9 @@ Selected field notes:
 - `max_steps` and `max_turns`: `0` means unlimited — there is no default step cap; negative values are rejected.
 - `max_cost_usd`: `0` means unlimited; the run emits `run.cost_limit_reached` on breach (run still completes normally).
 - `denied_tools` lists tool names that must never be offered to or callable from this run, even if `allowed_tools` or an activated skill would otherwise grant them.
-- `permissions.sandbox`: `"unrestricted"` (default), `"local"`, or `"workspace"`.
+- `permissions.sandbox`: `"workspace"` (default), `"local"`, or `"unrestricted"`.
 - `permissions.approval`: `"none"` (default), `"destructive"`, or `"all"`.
+- `permissions.network` (issue #1397): `"allow"` (default) or `"deny"` — controls whether the `bash` tool can reach the network under `"workspace"`/`"local"` sandbox scope; `"unrestricted"` scope is unaffected.
 - `rules` applies fine-grained allow/ask/deny effects to tool calls; evaluated together with `permissions.rules`, with `rules` appended after.
 - `initiator_api_key_prefix` is server-populated from the auth context — it is never accepted from the request body.
 

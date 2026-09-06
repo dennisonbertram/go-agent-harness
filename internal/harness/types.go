@@ -877,10 +877,31 @@ const (
 	ApprovalPolicyAll ApprovalPolicy = "all"
 )
 
-// PermissionConfig combines sandbox scope and approval policy.
+// NetworkPolicy controls whether the bash sandbox permits outbound network
+// access, independent of SandboxScope's filesystem confinement (issue #1397).
+type NetworkPolicy string
+
+const (
+	// NetworkPolicyAllow permits outbound network access from the bash
+	// sandbox. This is the default: an empty NetworkPolicy is treated as
+	// allow.
+	NetworkPolicyAllow NetworkPolicy = "allow"
+	// NetworkPolicyDeny blocks outbound network access from the bash
+	// sandbox at the OS level (seatbelt on darwin, bubblewrap on linux).
+	NetworkPolicyDeny NetworkPolicy = "deny"
+)
+
+// PermissionConfig combines sandbox scope, approval policy, and network
+// policy.
 type PermissionConfig struct {
 	Sandbox  SandboxScope   `json:"sandbox"`
 	Approval ApprovalPolicy `json:"approval"`
+	// Network controls outbound network access from the bash sandbox.
+	// Empty defaults to NetworkPolicyAllow: workspace/local scopes permit
+	// outbound network unless a caller explicitly opts into deny (issue
+	// #1397; previously the bash sandbox always denied network for these
+	// two scopes).
+	Network NetworkPolicy `json:"network,omitempty"`
 	// Rules applies fine-grained effects to matching tool calls. A nil or empty
 	// rule set leaves the legacy two-axis permission behavior unchanged.
 	Rules *PermissionRuleSet `json:"rules,omitempty"`
@@ -901,6 +922,7 @@ func DefaultPermissionConfig() PermissionConfig {
 	return PermissionConfig{
 		Sandbox:  SandboxScopeWorkspace,
 		Approval: ApprovalPolicyNone,
+		Network:  NetworkPolicyAllow,
 	}
 }
 
@@ -938,6 +960,15 @@ func ValidatePermissionConfig(p PermissionConfig) error {
 		// empty defaults to none — also valid at validation time
 	default:
 		return fmt.Errorf("invalid approval policy %q: must be one of none, destructive, all", p.Approval)
+	}
+	switch p.Network {
+	case NetworkPolicyAllow, NetworkPolicyDeny:
+		// valid
+	case "":
+		// empty defaults to allow (see DefaultPermissionConfig and
+		// normalizePermissionConfig) — also valid at validation time
+	default:
+		return fmt.Errorf("invalid network policy %q: must be one of allow, deny", p.Network)
 	}
 	if err := ValidatePermissionRules(permissionRulesFromSet(p.Rules)); err != nil {
 		return err

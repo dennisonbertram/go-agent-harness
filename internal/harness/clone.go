@@ -82,17 +82,24 @@ func copyMessages(msgs []Message) []Message {
 // conversation history — so the provider-visible prefix (tools + system +
 // history) only ever grows by appending and stays a valid cached prefix across
 // steps. All volatile per-step content (working memory, observational memory,
-// dynamic rules, plan-mode guidance, and the runtime context, which carries the
-// step number, token and cost totals, and a timestamp) is placed at the tail,
-// after the history, where it can change every step without invalidating the
-// cached prefix. Empty snippets are skipped.
-func (r *Runner) buildTurnMessages(systemPrompt string, messages []Message, workingMemory, observationalMemory, ruleContent, planModeGuidance, runtimeContext string) []Message {
-	tm := make([]Message, 0, len(messages)+6)
+// dynamic rules, plan-mode guidance, the permissions notice, and the runtime
+// context, which carries the step number, token and cost totals, and a
+// timestamp) is placed at the tail, after the history, where it can change
+// every step without invalidating the cached prefix. Empty snippets are
+// skipped.
+//
+// permissionsNotice reports the run's sandbox/approval/network policy
+// (issue #1397). It is recomputed and re-appended every turn rather than
+// persisted into conversation history, so it always reaches the model
+// (including turn one) without inflating the stored transcript the way a
+// history message would.
+func (r *Runner) buildTurnMessages(systemPrompt string, messages []Message, workingMemory, observationalMemory, ruleContent, planModeGuidance, permissionsNotice, runtimeContext string) []Message {
+	tm := make([]Message, 0, len(messages)+7)
 	if systemPrompt != "" {
 		tm = append(tm, Message{Role: "system", Content: systemPrompt})
 	}
 	tm = append(tm, copyMessages(messages)...)
-	for _, tail := range []string{workingMemory, observationalMemory, ruleContent, planModeGuidance, runtimeContext} {
+	for _, tail := range []string{workingMemory, observationalMemory, ruleContent, planModeGuidance, permissionsNotice, runtimeContext} {
 		if strings.TrimSpace(tail) != "" {
 			tm = append(tm, Message{Role: "system", Content: tail})
 		}

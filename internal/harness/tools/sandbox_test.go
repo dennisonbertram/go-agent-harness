@@ -43,37 +43,48 @@ func TestCheckSandboxCommandUnrestricted(t *testing.T) {
 		"cd /etc && cat passwd",
 	}
 	for _, cmd := range commands {
-		if err := CheckSandboxCommand(SandboxScopeUnrestricted, workspace, cmd); err != nil {
+		if err := CheckSandboxCommand(SandboxScopeUnrestricted, NetworkPolicyDeny, workspace, cmd); err != nil {
 			t.Errorf("unrestricted scope: unexpected error for command %q: %v", cmd, err)
 		}
 	}
 	// Empty scope is also unrestricted.
 	for _, cmd := range commands {
-		if err := CheckSandboxCommand("", workspace, cmd); err != nil {
+		if err := CheckSandboxCommand("", NetworkPolicyDeny, workspace, cmd); err != nil {
 			t.Errorf("empty scope: unexpected error for command %q: %v", cmd, err)
 		}
 	}
 }
 
+// TestCheckSandboxCommandLocalScope verifies that SandboxScopeLocal's
+// network heuristic is gated by NetworkPolicy (issue #1397): explicit deny
+// still blocks curl/wget/nc/netcat/telnet, but the new default (allow, both
+// as an explicit value and as the empty zero value) does not.
 func TestCheckSandboxCommandLocalScope(t *testing.T) {
 	t.Parallel()
 
 	workspace := t.TempDir()
 
-	blocked := []string{
+	networkCommands := []string{
 		"curl https://example.com",
 		"wget http://example.com",
 		"nc -l 1234",
 		"netcat example.com 80",
 		"telnet example.com",
 	}
-	for _, cmd := range blocked {
-		if err := CheckSandboxCommand(SandboxScopeLocal, workspace, cmd); err == nil {
-			t.Errorf("local scope: expected error for command %q, got nil", cmd)
+	for _, cmd := range networkCommands {
+		if err := CheckSandboxCommand(SandboxScopeLocal, NetworkPolicyDeny, workspace, cmd); err == nil {
+			t.Errorf("local scope, network=deny: expected error for command %q, got nil", cmd)
+		}
+	}
+	for _, network := range []NetworkPolicy{NetworkPolicyAllow, ""} {
+		for _, cmd := range networkCommands {
+			if err := CheckSandboxCommand(SandboxScopeLocal, network, workspace, cmd); err != nil {
+				t.Errorf("local scope, network=%q: unexpected error for command %q: %v", network, cmd, err)
+			}
 		}
 	}
 
-	// Local scope allows filesystem operations.
+	// Local scope allows filesystem operations regardless of network policy.
 	allowed := []string{
 		"ls /tmp",
 		"cat /etc/hosts",
@@ -81,7 +92,7 @@ func TestCheckSandboxCommandLocalScope(t *testing.T) {
 		"go test ./...",
 	}
 	for _, cmd := range allowed {
-		if err := CheckSandboxCommand(SandboxScopeLocal, workspace, cmd); err != nil {
+		if err := CheckSandboxCommand(SandboxScopeLocal, NetworkPolicyDeny, workspace, cmd); err != nil {
 			t.Errorf("local scope: unexpected error for command %q: %v", cmd, err)
 		}
 	}
@@ -101,14 +112,14 @@ func TestCheckSandboxCommandWorkspaceScope(t *testing.T) {
 		"rm /var/log/messages",
 	}
 	for _, cmd := range outsideAbsPaths {
-		if err := CheckSandboxCommand(SandboxScopeWorkspace, absWorkspace, cmd); err == nil {
+		if err := CheckSandboxCommand(SandboxScopeWorkspace, NetworkPolicyAllow, absWorkspace, cmd); err == nil {
 			t.Errorf("workspace scope: expected error for command %q with outside absolute path, got nil", cmd)
 		}
 	}
 
 	// Commands entirely within the workspace should be allowed.
 	insideCmd := "ls " + absWorkspace
-	if err := CheckSandboxCommand(SandboxScopeWorkspace, absWorkspace, insideCmd); err != nil {
+	if err := CheckSandboxCommand(SandboxScopeWorkspace, NetworkPolicyAllow, absWorkspace, insideCmd); err != nil {
 		t.Errorf("workspace scope: unexpected error for in-workspace command %q: %v", insideCmd, err)
 	}
 
@@ -119,7 +130,7 @@ func TestCheckSandboxCommandWorkspaceScope(t *testing.T) {
 		"cd ../  ",
 	}
 	for _, cmd := range cdEscape {
-		if err := CheckSandboxCommand(SandboxScopeWorkspace, absWorkspace, cmd); err == nil {
+		if err := CheckSandboxCommand(SandboxScopeWorkspace, NetworkPolicyAllow, absWorkspace, cmd); err == nil {
 			t.Errorf("workspace scope: expected error for cd-escape command %q, got nil", cmd)
 		}
 	}
@@ -132,7 +143,7 @@ func TestCheckSandboxCommandWorkspaceScope(t *testing.T) {
 		"cat notes.txt",
 	}
 	for _, cmd := range safeCommands {
-		if err := CheckSandboxCommand(SandboxScopeWorkspace, absWorkspace, cmd); err != nil {
+		if err := CheckSandboxCommand(SandboxScopeWorkspace, NetworkPolicyAllow, absWorkspace, cmd); err != nil {
 			t.Errorf("workspace scope: unexpected error for safe command %q: %v", cmd, err)
 		}
 	}
@@ -149,14 +160,14 @@ func TestSandboxWorkspaceScopeEnforcesFilePaths(t *testing.T) {
 	// Writing to a path outside the workspace via absolute path should be blocked.
 	outsideFile := filepath.Join(filepath.Dir(absWorkspace), "outside.txt")
 	cmd := "echo secret > " + outsideFile
-	if err := CheckSandboxCommand(SandboxScopeWorkspace, absWorkspace, cmd); err == nil {
+	if err := CheckSandboxCommand(SandboxScopeWorkspace, NetworkPolicyAllow, absWorkspace, cmd); err == nil {
 		t.Errorf("workspace scope: expected error for write to %q, got nil", outsideFile)
 	}
 
 	// Writing inside the workspace is fine.
 	insideFile := filepath.Join(absWorkspace, "inside.txt")
 	cmd2 := "echo hello > " + insideFile
-	if err := CheckSandboxCommand(SandboxScopeWorkspace, absWorkspace, cmd2); err != nil {
+	if err := CheckSandboxCommand(SandboxScopeWorkspace, NetworkPolicyAllow, absWorkspace, cmd2); err != nil {
 		t.Errorf("workspace scope: unexpected error for write to %q: %v", insideFile, err)
 	}
 }
@@ -166,7 +177,7 @@ func TestCheckSandboxCommandUnknownScope(t *testing.T) {
 	t.Parallel()
 
 	workspace := t.TempDir()
-	if err := CheckSandboxCommand("badscope", workspace, "echo hi"); err == nil {
+	if err := CheckSandboxCommand("badscope", NetworkPolicyAllow, workspace, "echo hi"); err == nil {
 		t.Error("expected error for unknown sandbox scope, got nil")
 	}
 }
@@ -201,7 +212,7 @@ func TestJobManagerSandboxScopeWorkspace(t *testing.T) {
 }
 
 // TestJobManagerSandboxScopeLocal verifies that network commands are blocked
-// under SandboxScopeLocal.
+// under SandboxScopeLocal when the network policy is explicitly deny.
 func TestJobManagerSandboxScopeLocal(t *testing.T) {
 	t.Parallel()
 
@@ -212,7 +223,7 @@ func TestJobManagerSandboxScopeLocal(t *testing.T) {
 	mgr := NewJobManager(workspace, nil)
 	mgr.SetSandboxScope(SandboxScopeLocal)
 
-	ctx := context.Background()
+	ctx := WithNetworkPolicy(context.Background(), NetworkPolicyDeny)
 
 	// curl should be blocked.
 	_, err := mgr.RunForeground(ctx, "curl https://example.com", 5, "")
@@ -227,6 +238,25 @@ func TestJobManagerSandboxScopeLocal(t *testing.T) {
 	}
 	if result == nil {
 		t.Error("expected non-nil result for echo")
+	}
+}
+
+// TestJobManagerSandboxScopeLocalAllowsNetworkByDefault verifies the default
+// behavior change from issue #1397: with no network policy configured on
+// either the JobManager or the context, SandboxScopeLocal no longer rejects
+// curl before it runs (the pre-execution heuristic check must not fire).
+func TestJobManagerSandboxScopeLocalAllowsNetworkByDefault(t *testing.T) {
+	t.Parallel()
+
+	workspace, _ := os.MkdirTemp("", "sandbox-test")
+	defer os.RemoveAll(workspace)
+
+	mgr := NewJobManager(workspace, nil)
+	mgr.SetSandboxScope(SandboxScopeLocal)
+
+	_, err := mgr.RunForeground(context.Background(), "curl --version", 5, "")
+	if err != nil {
+		t.Errorf("expected curl not to be rejected under default (allow) network policy, got error: %v", err)
 	}
 }
 
@@ -262,9 +292,10 @@ func TestJobManagerContextSandboxScopeBlocksBackgroundCommand(t *testing.T) {
 	mgr.SetSandboxScope(SandboxScopeUnrestricted)
 
 	ctx := WithSandboxScope(context.Background(), SandboxScopeLocal)
+	ctx = WithNetworkPolicy(ctx, NetworkPolicyDeny)
 
 	if _, err := mgr.RunBackgroundWithContext(ctx, "curl https://example.com", 5, ""); err == nil {
-		t.Fatal("expected local sandbox override to block background network command")
+		t.Fatal("expected local sandbox override with network=deny to block background network command")
 	}
 }
 
@@ -299,7 +330,7 @@ func TestSandboxWorkspaceScopeBlocksWriteOutsideWorkspaceAtOSLevel(t *testing.T)
 	// The heuristic layer must NOT catch this obfuscated escape — that is
 	// what makes this a proof of OS-level enforcement rather than a
 	// duplicate of the existing string-matching tests above.
-	if err := CheckSandboxCommand(SandboxScopeWorkspace, absWorkspace, command); err != nil {
+	if err := CheckSandboxCommand(SandboxScopeWorkspace, NetworkPolicyAllow, absWorkspace, command); err != nil {
 		t.Fatalf("expected heuristic to miss the obfuscated escape (so the OS layer is what's under test), got error: %v", err)
 	}
 
@@ -314,12 +345,13 @@ func TestSandboxWorkspaceScopeBlocksWriteOutsideWorkspaceAtOSLevel(t *testing.T)
 	}
 }
 
-// TestSandboxLocalScopeBlocksObfuscatedNetworkAtOSLevel proves that
-// local-scope network denial is enforced by the OS, not by regex matching
-// against the command string: "curl" is assembled from two shell variables
-// so the literal substring "curl" never appears in the command, defeating
-// the \bcurl\b pattern in checkLocalScopeCommand. The request must still
-// fail because the OS layer denies network operations outright.
+// TestSandboxLocalScopeBlocksObfuscatedNetworkAtOSLevel proves that, when the
+// network policy is deny, local-scope network denial is enforced by the OS,
+// not by regex matching against the command string: "curl" is assembled from
+// two shell variables so the literal substring "curl" never appears in the
+// command, defeating the \bcurl\b pattern in checkLocalScopeCommand. The
+// request must still fail because the OS layer denies network operations
+// outright.
 func TestSandboxLocalScopeBlocksObfuscatedNetworkAtOSLevel(t *testing.T) {
 	if !osSandboxAvailable(t) {
 		t.Skip("no OS-level sandbox mechanism (seatbelt/bubblewrap) available on this host")
@@ -328,14 +360,15 @@ func TestSandboxLocalScopeBlocksObfuscatedNetworkAtOSLevel(t *testing.T) {
 	workspace := t.TempDir()
 	mgr := NewJobManager(workspace, nil)
 	mgr.SetSandboxScope(SandboxScopeLocal)
+	ctx := WithNetworkPolicy(context.Background(), NetworkPolicyDeny)
 
 	command := `A=cur; B=l; "$A$B" -s -m 5 https://example.com -o /dev/null -w '%{http_code}'`
 
-	if err := CheckSandboxCommand(SandboxScopeLocal, workspace, command); err != nil {
+	if err := CheckSandboxCommand(SandboxScopeLocal, NetworkPolicyDeny, workspace, command); err != nil {
 		t.Fatalf("expected heuristic to miss the obfuscated network command (so the OS layer is what's under test), got error: %v", err)
 	}
 
-	result, err := mgr.RunForeground(context.Background(), command, 10, "")
+	result, err := mgr.RunForeground(ctx, command, 10, "")
 	if err != nil {
 		// A hard exec failure also demonstrates the network call never
 		// succeeded; only a clean success (exit 0) would be a problem.
@@ -371,5 +404,87 @@ func TestResolveSandboxUnavailableFailsClosedWhenStrict(t *testing.T) {
 
 	if _, err := resolveSandboxUnavailable(SandboxScopeWorkspace, "seatbelt", "binary not found"); err == nil {
 		t.Fatal("expected an error when strict mode is enabled and the mechanism is unavailable")
+	}
+}
+
+// TestSandboxWorkspaceScopeNetworkPolicyLiveCurl proves end-to-end, with a
+// real network request, that workspace-scope network confinement follows
+// PermissionConfig.Network (issue #1397): curl to a real host fails under
+// network=deny and succeeds under network=allow. Skipped when no OS-level
+// sandbox mechanism (seatbelt/bubblewrap) or no curl binary is available.
+// The allow-case is skipped rather than failed when the host itself has no
+// route to the internet, since that is an environment limitation, not a
+// sandbox defect.
+func TestSandboxWorkspaceScopeNetworkPolicyLiveCurl(t *testing.T) {
+	if !osSandboxAvailable(t) {
+		t.Skip("no OS-level sandbox mechanism (seatbelt/bubblewrap) available on this host")
+	}
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl not available on this host")
+	}
+
+	workspace := t.TempDir()
+	mgr := NewJobManager(workspace, nil)
+	mgr.SetSandboxScope(SandboxScopeWorkspace)
+
+	const command = `curl -sI -m 10 https://proxy.golang.org`
+
+	t.Run("deny", func(t *testing.T) {
+		t.Parallel()
+		ctx := WithNetworkPolicy(context.Background(), NetworkPolicyDeny)
+		result, _ := mgr.RunForeground(ctx, command, 15, "")
+		if result == nil {
+			t.Fatal("expected non-nil result")
+		}
+		if exitCode, _ := result["exit_code"].(int); exitCode == 0 {
+			t.Errorf("expected curl to fail under network=deny, got exit_code 0; result=%v", result)
+		}
+	})
+
+	t.Run("allow", func(t *testing.T) {
+		t.Parallel()
+		ctx := WithNetworkPolicy(context.Background(), NetworkPolicyAllow)
+		result, err := mgr.RunForeground(ctx, command, 15, "")
+		if err != nil {
+			t.Skipf("curl exec failed under network=allow (host likely has no route to the internet): %v", err)
+		}
+		exitCode, _ := result["exit_code"].(int)
+		if exitCode != 0 {
+			t.Skipf("curl exited %d under network=allow (host likely has no route to the internet); result=%v", exitCode, result)
+		}
+	})
+}
+
+// TestJobManagerRunForegroundReportsSandboxNetworkInResult is a regression
+// test for issue #1397: the bash tool result map must surface which network
+// policy was actually applied (result["sandbox_network"]), for both allow
+// and deny, so an operator inspecting a run's tool output can see the policy
+// without cross-referencing the run's permissions separately. If a future
+// change stopped threading SandboxExecResult.NetworkPolicy into the result
+// map (bash_manager.go), this test would fail by finding the key absent or
+// mismatched, independent of whether the command itself succeeded.
+func TestJobManagerRunForegroundReportsSandboxNetworkInResult(t *testing.T) {
+	if !osSandboxAvailable(t) {
+		t.Skip("no OS-level sandbox mechanism (seatbelt/bubblewrap) available on this host")
+	}
+	t.Parallel()
+
+	workspace := t.TempDir()
+	mgr := NewJobManager(workspace, nil)
+	mgr.SetSandboxScope(SandboxScopeWorkspace)
+
+	for _, policy := range []NetworkPolicy{NetworkPolicyAllow, NetworkPolicyDeny} {
+		policy := policy
+		t.Run(string(policy), func(t *testing.T) {
+			t.Parallel()
+			ctx := WithNetworkPolicy(context.Background(), policy)
+			result, err := mgr.RunForeground(ctx, "echo hi", 5, "")
+			if err != nil {
+				t.Fatalf("RunForeground: %v", err)
+			}
+			if got := result["sandbox_network"]; got != string(policy) {
+				t.Errorf("result[\"sandbox_network\"] = %v, want %q", got, string(policy))
+			}
+		})
 	}
 }

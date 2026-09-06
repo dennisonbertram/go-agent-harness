@@ -20,17 +20,27 @@ const sandboxExecBinary = "/usr/bin/sandbox-exec"
 // appropriate for scope. The returned cleanup func must be called once the
 // command has finished running (Run/Wait returned) to remove the temporary
 // profile file.
+//
+// The network policy is read from ctx (NetworkPolicyFromContext), defaulting
+// to NetworkPolicyAllow when absent, and only affects the seatbelt profile
+// generated for SandboxScopeWorkspace/SandboxScopeLocal; SandboxScopeUnrestricted
+// is unaffected (issue #1397).
 func buildSandboxedCommand(ctx context.Context, scope SandboxScope, workspaceRoot, command string) (*exec.Cmd, func(), SandboxExecResult, error) {
 	noop := func() {}
+	network, _ := NetworkPolicyFromContext(ctx)
+	if network == "" {
+		network = NetworkPolicyAllow
+	}
 	switch scope {
 	case SandboxScopeUnrestricted, "":
-		return exec.CommandContext(ctx, "/bin/bash", "-lc", command), noop, SandboxExecResult{Applied: false, Mechanism: "none"}, nil
+		return exec.CommandContext(ctx, "/bin/bash", "-lc", command), noop, SandboxExecResult{Applied: false, Mechanism: "none", NetworkPolicy: network}, nil
 	case SandboxScopeWorkspace, SandboxScopeLocal:
 		if _, statErr := os.Stat(sandboxExecBinary); statErr != nil {
 			res, err := resolveSandboxUnavailable(scope, "seatbelt", fmt.Sprintf("%s not found: %v", sandboxExecBinary, statErr))
 			if err != nil {
 				return nil, nil, SandboxExecResult{}, err
 			}
+			res.NetworkPolicy = network
 			return exec.CommandContext(ctx, "/bin/bash", "-lc", command), noop, res, nil
 		}
 
@@ -52,7 +62,7 @@ func buildSandboxedCommand(ctx context.Context, scope SandboxScope, workspaceRoo
 			absRoot = resolvedRoot
 		}
 
-		profile := seatbeltProfile(scope, absRoot)
+		profile := seatbeltProfile(scope, absRoot, network)
 		f, err := os.CreateTemp("", "harness-sandbox-*.sb")
 		if err != nil {
 			return nil, nil, SandboxExecResult{}, fmt.Errorf("sandbox: create seatbelt profile: %w", err)
@@ -69,7 +79,7 @@ func buildSandboxedCommand(ctx context.Context, scope SandboxScope, workspaceRoo
 		cleanup := func() { os.Remove(f.Name()) }
 
 		cmd := exec.CommandContext(ctx, sandboxExecBinary, "-f", f.Name(), "/bin/bash", "-lc", command)
-		return cmd, cleanup, SandboxExecResult{Applied: true, Mechanism: "seatbelt"}, nil
+		return cmd, cleanup, SandboxExecResult{Applied: true, Mechanism: "seatbelt", NetworkPolicy: network}, nil
 	default:
 		return nil, nil, SandboxExecResult{}, fmt.Errorf("unknown sandbox scope %q", scope)
 	}
@@ -81,12 +91,18 @@ func buildSandboxedCommand(ctx context.Context, scope SandboxScope, workspaceRoo
 // dynamic linking, terminfo, locale data, etc. without hand-maintaining an
 // allowlist of every system path a shell invocation might touch); writes are
 // confined to workspaceRoot plus the handful of device nodes a non-interactive
-// bash needs (/dev/null, /dev/tty, /dev/zero, /dev/dtracehelper); all network
-// operations are denied.
+// bash needs (/dev/null, /dev/tty, /dev/zero, /dev/dtracehelper).
 //
-// SandboxScopeLocal: filesystem access (read and write) is unconfined;
-// network operations are denied.
-func seatbeltProfile(scope SandboxScope, workspaceRoot string) string {
+// SandboxScopeLocal: filesystem access (read and write) is unconfined.
+//
+// Both scopes' network access follows the network policy (issue #1397):
+// under "(deny default)", every operation — including network — is denied
+// unless explicitly allowed, so NetworkPolicyAllow (the default) emits an
+// explicit "(allow network*)" rather than merely omitting a deny rule; a
+// bare omission would still leave network denied by the profile's default.
+// NetworkPolicyDeny emits the equivalent explicit deny for clarity, since
+// deny-by-default already covers it.
+func seatbeltProfile(scope SandboxScope, workspaceRoot string, network NetworkPolicy) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n(deny default)\n(allow process-fork)\n(allow process-exec)\n(allow signal (target self))\n(allow sysctl-read)\n(allow mach-lookup)\n(allow iokit-open)\n(allow file-read*)\n")
 	switch scope {
@@ -97,7 +113,11 @@ func seatbeltProfile(scope SandboxScope, workspaceRoot string) string {
 	case SandboxScopeLocal:
 		b.WriteString("(allow file-write*)\n")
 	}
-	b.WriteString("(deny network*)\n")
+	if network == NetworkPolicyDeny {
+		b.WriteString("(deny network*)\n")
+	} else {
+		b.WriteString("(allow network*)\n")
+	}
 	return b.String()
 }
 

@@ -399,18 +399,25 @@ When `allowed_tools` is non-empty, only the listed names **plus** `AlwaysAvailab
 ## Default permissions (security)
 
 <Callout type="warning">
-By default, tools run without any sandboxing and without any approval prompts. This is appropriate for trusted development environments and automated pipelines where you control the workspace. For anything handling untrusted input, explicitly set a `permissions` policy.
+By default, tools run sandbox-confined to the workspace directory and without any approval prompts (no sandboxing at all requires explicitly opting into `"unrestricted"`). Bash's outbound network access is unrestricted by default too — set `network: "deny"` to block it. For anything handling untrusted input, review the `permissions` policy explicitly rather than relying on defaults.
 </Callout>
 
-The `PermissionConfig` struct (source: `internal/harness/types.go`) controls two independent axes:
+The `PermissionConfig` struct (source: `internal/harness/types.go`) controls three independent axes:
 
 **Sandbox scope** (`sandbox` field):
 
 | Value | Behavior |
 |-------|----------|
-| `"unrestricted"` | No restrictions. **Default.** |
-| `"local"` | Filesystem access unrestricted; outbound network commands (`curl`, `wget`, `nc`, `netcat`, `telnet`) blocked in bash. |
-| `"workspace"` | Bash can only access paths inside the workspace directory. |
+| `"workspace"` | Bash can only access paths inside the workspace directory. **Default.** |
+| `"local"` | Filesystem access unrestricted. |
+| `"unrestricted"` | No restrictions. |
+
+**Network policy** (`network` field, issue #1397):
+
+| Value | Behavior |
+|-------|----------|
+| `"allow"` | Bash's outbound network access is unrestricted. **Default** (an omitted or empty `network` field behaves the same as `"allow"`). |
+| `"deny"` | Bash's outbound network access is denied at the OS level (seatbelt on macOS, bubblewrap on Linux) for `"workspace"` and `"local"` sandbox scopes. `"unrestricted"` scope is never network-confined regardless of this field. |
 
 **Approval policy** (`approval` field):
 
@@ -427,7 +434,8 @@ To harden a run, pass a `permissions` object in the run request:
   "prompt": "...",
   "permissions": {
     "sandbox": "workspace",
-    "approval": "destructive"
+    "approval": "destructive",
+    "network": "deny"
   }
 }
 ```
