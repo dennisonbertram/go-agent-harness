@@ -1,5 +1,10 @@
 # Engineering Log
 
+## 2026-09-06 — TUI scenario walk: plan mode, @ completion, question box, bubble width (#1407)
+
+- Twelve multi-step TUI scenarios driven live in tmux (fake provider with scripted streaming/tool turns, and OpenRouter DeepSeek). Fixes: `/plan` command toggles enforced plan mode with a `PLAN` status badge and `harnesscli --tui --plan-mode` now honored (`runTUI` passes the flag into `TUIConfig`); `@name` Tab completion completes bare relative file names, not only `./`, `/`, `~/` paths; the AskUserQuestion and Plan-Approval boxes size their top/bottom borders to the content instead of a fixed 40-col rule; assistant markdown bubbles render at the indented width, expand tabs, and trim padding so a bubble never exceeds the terminal width. Guards added: streamed-transcript integrity and no duplicate tool card on ctrl+o after interrupt.
+- Filed separately: the streamed-markdown truncation under a real color profile is a streaming re-render accounting defect (`ReplaceTailLines` vs. glamour reflow as `looksLikeMarkdown` flips), not the bubble width; not fixed here.
+
 ## 2026-09-06 — Settings overlays read wrong to a first-time user (#1405)
 
 - Symptom: `/cost` showed `↑ 0 in  ↓ 15,760 out` after a run (the TUI only tracked a single total and passed it as output); `/profiles` wrapped its highlighted row mid-word; `/config` cut values at 20 characters with no ellipsis (the model id read as `deepseek/deepseek-v4`) and never explained `[RO]`, and showed an empty model cell before a model was chosen; `/permissions` drew a stray `──` line because its separator was as wide as the terminal inside a narrower box.

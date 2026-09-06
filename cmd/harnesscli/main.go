@@ -176,7 +176,7 @@ func run(args []string) int {
 	workspacePath := resolveWorkspacePath(*workspace)
 
 	if *enableTUI {
-		if err := runTUI(*baseURL, workspacePath, *resume); err != nil {
+		if err := runTUI(*baseURL, workspacePath, *resume, *planMode); err != nil {
 			fmt.Fprintf(stderr, "harnesscli: tui: %v\n", err)
 			return exitClientError
 		}
@@ -571,11 +571,12 @@ func newTUIConfig(baseURL, workspace, resumeConversationID string) tui.TUIConfig
 	}
 }
 
-func runTUI(baseURL, workspace, resumeConversationID string) error {
+func runTUI(baseURL, workspace, resumeConversationID string, planMode bool) error {
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
 		return fmt.Errorf("--tui requires a terminal; pipe output or use without --tui for streaming mode")
 	}
 	tuiCfg := newTUIConfig(baseURL, workspace, resumeConversationID)
+	tuiCfg.PlanMode = planMode
 	// Resolve and apply the color profile to the renderer before building the
 	// model, and store the effective profile back for accurate display.
 	tuiCfg.ColorProfile = tui.ApplyColorProfile(tuiCfg.ColorProfile)
