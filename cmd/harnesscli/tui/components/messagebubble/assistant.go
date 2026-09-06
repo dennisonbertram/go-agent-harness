@@ -1,6 +1,7 @@
 package messagebubble
 
 import (
+	"github.com/charmbracelet/lipgloss"
 	"strings"
 
 	"go-agent-harness/cmd/harnesscli/tui/components/streamrenderer"
@@ -70,12 +71,19 @@ func (b AssistantBubble) View() string {
 
 	if b.Content != "" {
 		if looksLikeMarkdown(b.Content) {
-			// Render via glamour; strip trailing newlines so we control spacing.
-			rendered := RenderMarkdown(b.Content, width)
+			// Render via glamour at the width left after the indent, and strip
+			// trailing newlines so we control spacing. Glamour pads every line
+			// to its wrap width; rendering at the full width and then indenting
+			// pushed rows past the terminal edge, where the terminal wrapped
+			// them and the renderer's row bookkeeping cut and merged lines
+			// (#1407). Tabs are expanded for the same reason: a terminal skips
+			// cells over a tab without clearing them.
+			rendered := RenderMarkdown(b.Content, contentWidth)
 			rendered = strings.TrimRight(rendered, "\n")
 			// Split rendered output into lines for prefix/indent handling.
 			mdLines := strings.Split(rendered, "\n")
 			for i, line := range mdLines {
+				line = fitLine(line, contentWidth)
 				if b.Title == "" && i == 0 {
 					sb.WriteString(dotRendered)
 					sb.WriteString(" ")
@@ -114,4 +122,19 @@ func (b AssistantBubble) View() string {
 	sb.WriteString("\n")
 
 	return sb.String()
+}
+
+// fitLine expands tabs, drops trailing padding, and guarantees the line is at
+// most width columns wide so the terminal never has to wrap it (#1407).
+func fitLine(line string, width int) string {
+	line = strings.ReplaceAll(line, "\t", "    ")
+	line = strings.TrimRight(line, " ")
+	if width > 0 && lipgloss.Width(line) > width {
+		runes := []rune(line)
+		for len(runes) > 0 && lipgloss.Width(string(runes)) > width {
+			runes = runes[:len(runes)-1]
+		}
+		line = string(runes)
+	}
+	return line
 }

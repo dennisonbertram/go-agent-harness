@@ -26,7 +26,9 @@ func TestAssistantBubble_FitsWidthAndHasNoTabs(t *testing.T) {
 				t.Errorf("width %d line %d is %d columns wide: %q", width, i, w, line)
 			}
 		}
-		if !strings.Contains(out, "sum of two integers") || !strings.Contains(out, "mixed signs, and zeros") {
+		// Narrow widths wrap mid-phrase; compare with whitespace collapsed.
+		flat := strings.Join(strings.Fields(out), " ")
+		if !strings.Contains(flat, "sum of two integers") || !strings.Contains(flat, "mixed signs, and zeros") {
 			t.Errorf("width %d: content lost:\n%s", width, out)
 		}
 	}
