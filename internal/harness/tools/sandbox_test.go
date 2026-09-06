@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -179,6 +180,41 @@ func TestCheckSandboxCommandUnknownScope(t *testing.T) {
 	workspace := t.TempDir()
 	if err := CheckSandboxCommand("badscope", NetworkPolicyAllow, workspace, "echo hi"); err == nil {
 		t.Error("expected error for unknown sandbox scope, got nil")
+	}
+}
+
+// TestCheckWorkspaceScopeCommandToolchainWritableDirs verifies (issue #1399)
+// that checkWorkspaceScopeCommand no longer flags absolute-path tokens that
+// fall under one of toolchainWritableDirs()'s roots — e.g. a GOTMPDIR or
+// GOCACHE override pointed at the process temp dir or per-user cache dir —
+// while still rejecting genuinely out-of-scope system paths.
+func TestCheckWorkspaceScopeCommandToolchainWritableDirs(t *testing.T) {
+	workspace := t.TempDir()
+	absWorkspace, err := filepath.Abs(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tempFile := filepath.Join(os.TempDir(), "harness-1399-gotmpdir-probe")
+	accepted := []string{
+		"ls " + os.TempDir(),
+		"echo hi > " + tempFile,
+	}
+	for _, cmd := range accepted {
+		if err := CheckSandboxCommand(SandboxScopeWorkspace, NetworkPolicyAllow, absWorkspace, cmd); err != nil {
+			t.Errorf("expected command %q referencing a toolchain-writable dir to be accepted, got error: %v", cmd, err)
+		}
+	}
+
+	rejected := []string{
+		"cat /etc/passwd",
+		"ls /usr/local/bin/x",
+		"cat ~/.ssh/id_rsa",
+	}
+	for _, cmd := range rejected {
+		if err := CheckSandboxCommand(SandboxScopeWorkspace, NetworkPolicyAllow, absWorkspace, cmd); err == nil {
+			t.Errorf("expected command %q to still be rejected as a sandbox violation, got nil", cmd)
+		}
 	}
 }
 
@@ -486,5 +522,127 @@ func TestJobManagerRunForegroundReportsSandboxNetworkInResult(t *testing.T) {
 				t.Errorf("result[\"sandbox_network\"] = %v, want %q", got, string(policy))
 			}
 		})
+	}
+}
+
+// TestSandboxWorkspaceScopeToolchainCanBuildAndTest is the integration proof
+// for issue #1399: under SandboxScopeWorkspace, with the REAL Go toolchain
+// and no env var overrides steering GOCACHE/GOTMPDIR/GOMODCACHE into the
+// workspace, `go build ./...` and `go test ./...` must succeed against a
+// throwaway module created inside the workspace. Before this change this
+// failed with "failed to initialize build cache ... operation not
+// permitted" (build cache lives under the per-user cache dir) or "creating
+// work dir: mkdir /var/folders/...: operation not permitted" (Go's scratch
+// dir lives under the process temp dir) — neither is the workspace, so
+// neither the darwin seatbelt profile nor the Linux bwrap binds covered
+// them. Skipped when no OS-level sandbox mechanism is available.
+func TestSandboxWorkspaceScopeToolchainCanBuildAndTest(t *testing.T) {
+	if !osSandboxAvailable(t) {
+		t.Skip("no OS-level sandbox mechanism (seatbelt/bubblewrap) available on this host")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not available on this host")
+	}
+
+	workspace := t.TempDir()
+	absWorkspace, err := filepath.Abs(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	files := map[string]string{
+		"go.mod": "module sandboxcachetest\n\ngo 1.21\n",
+		"main.go": `package main
+
+func add(a, b int) int { return a + b }
+
+func main() { println(add(2, 3)) }
+`,
+		"main_test.go": `package main
+
+import "testing"
+
+func TestAdd(t *testing.T) {
+	if add(2, 3) != 5 {
+		t.Fatal("add(2,3) != 5")
+	}
+}
+`,
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(absWorkspace, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	mgr := NewJobManager(absWorkspace, nil)
+	mgr.SetSandboxScope(SandboxScopeWorkspace)
+
+	result, err := mgr.RunForeground(context.Background(), "go env GOCACHE && go build ./... && go test ./...", 90, "")
+	if err != nil {
+		t.Fatalf("run foreground: %v", err)
+	}
+	output, _ := result["output"].(string)
+	exitCode, _ := result["exit_code"].(int)
+	if exitCode != 0 {
+		t.Fatalf("expected go build/test to succeed under workspace sandbox with no env overrides, got exit_code=%d output=%q", exitCode, output)
+	}
+	if !strings.Contains(output, "ok") {
+		t.Errorf("expected go test output to report \"ok\", got: %q", output)
+	}
+}
+
+// TestSandboxWorkspaceScopeAllowsMktempDir is the second integration proof
+// required by issue #1399: `mktemp -d` (which creates a directory under the
+// process temp dir, not the workspace) must succeed under
+// SandboxScopeWorkspace with no env overrides.
+func TestSandboxWorkspaceScopeAllowsMktempDir(t *testing.T) {
+	if !osSandboxAvailable(t) {
+		t.Skip("no OS-level sandbox mechanism (seatbelt/bubblewrap) available on this host")
+	}
+
+	workspace := t.TempDir()
+	mgr := NewJobManager(workspace, nil)
+	mgr.SetSandboxScope(SandboxScopeWorkspace)
+
+	result, err := mgr.RunForeground(context.Background(), "mktemp -d", 10, "")
+	if err != nil {
+		t.Fatalf("run foreground: %v", err)
+	}
+	exitCode, _ := result["exit_code"].(int)
+	output, _ := result["output"].(string)
+	if exitCode != 0 {
+		t.Fatalf("expected \"mktemp -d\" to succeed under workspace sandbox, got exit_code=%d output=%q", exitCode, output)
+	}
+	if strings.TrimSpace(output) == "" {
+		t.Errorf("expected \"mktemp -d\" to print the created directory path, got empty output")
+	}
+}
+
+// TestJobManagerRunForegroundReportsSandboxWritableDirsInResult is a
+// regression test for issue #1399: the bash tool result map must surface
+// which extra writable roots were opened up under workspace scope
+// (result["sandbox_writable_dirs"]), so an operator/model inspecting a run's
+// tool output can see why writes outside the literal workspace succeeded.
+func TestJobManagerRunForegroundReportsSandboxWritableDirsInResult(t *testing.T) {
+	if !osSandboxAvailable(t) {
+		t.Skip("no OS-level sandbox mechanism (seatbelt/bubblewrap) available on this host")
+	}
+	t.Parallel()
+
+	workspace := t.TempDir()
+	mgr := NewJobManager(workspace, nil)
+	mgr.SetSandboxScope(SandboxScopeWorkspace)
+
+	result, err := mgr.RunForeground(context.Background(), "echo hi", 5, "")
+	if err != nil {
+		t.Fatalf("RunForeground: %v", err)
+	}
+	dirs, ok := result["sandbox_writable_dirs"].([]string)
+	if !ok || len(dirs) == 0 {
+		t.Fatalf(`expected result["sandbox_writable_dirs"] to be a non-empty []string, got %#v`, result["sandbox_writable_dirs"])
+	}
+	if !containsDir(t, dirs, os.TempDir()) {
+		t.Errorf(`expected result["sandbox_writable_dirs"] to include os.TempDir() (%q), got %v`, os.TempDir(), dirs)
 	}
 }

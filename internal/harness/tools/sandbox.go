@@ -143,6 +143,13 @@ type SandboxExecResult struct {
 	// output always reflects the effective policy rather than leaving the
 	// caller to infer it.
 	NetworkPolicy NetworkPolicy
+	// WritableDirs lists the extra per-user temp/cache roots (beyond the
+	// workspace itself) that were opened up for writes under
+	// SandboxScopeWorkspace (issue #1399), e.g. os.TempDir(), the Go build
+	// and module caches. Empty for scopes where it is not meaningful
+	// ("local"/"unrestricted" already permit unrestricted filesystem
+	// writes).
+	WritableDirs []string
 }
 
 // resolveSandboxUnavailable is called by the platform-specific

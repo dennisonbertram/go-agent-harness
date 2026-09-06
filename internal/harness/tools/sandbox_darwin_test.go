@@ -4,6 +4,8 @@ package tools
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -76,5 +78,55 @@ func TestBuildSandboxedCommandDarwinNetworkPolicyFromContext(t *testing.T) {
 	defer cleanup4()
 	if res4.Mechanism != "none" {
 		t.Errorf("expected unrestricted scope to skip sandboxing, got mechanism %q", res4.Mechanism)
+	}
+}
+
+// TestSeatbeltProfileIncludesToolchainWritableDirs verifies (issue #1399)
+// that the darwin seatbelt profile for SandboxScopeWorkspace emits a
+// "(allow file-write* (subpath ...))" line for each of
+// toolchainWritableDirs(), not just the workspace root, so language
+// toolchains (go build/test, npm, cargo) can write to their per-user
+// temp/cache dirs. SandboxScopeLocal already emits a blanket
+// "(allow file-write*)" so it does not need — and should not gain — these
+// per-dir lines.
+func TestSeatbeltProfileIncludesToolchainWritableDirs(t *testing.T) {
+	writableDirs := toolchainWritableDirs()
+	if len(writableDirs) == 0 {
+		t.Fatal("test precondition failed: toolchainWritableDirs() returned no directories on this host")
+	}
+
+	profile := seatbeltProfile(SandboxScopeWorkspace, t.TempDir(), NetworkPolicyAllow)
+	for _, dir := range writableDirs {
+		want := fmt.Sprintf("(allow file-write* (subpath %s))", seatbeltQuote(dir))
+		if !strings.Contains(profile, want) {
+			t.Errorf("expected workspace-scope profile to contain %q for toolchain dir %q, got:\n%s", want, dir, profile)
+		}
+	}
+
+	localProfile := seatbeltProfile(SandboxScopeLocal, t.TempDir(), NetworkPolicyAllow)
+	for _, dir := range writableDirs {
+		want := fmt.Sprintf("(allow file-write* (subpath %s))", seatbeltQuote(dir))
+		if strings.Contains(localProfile, want) {
+			t.Errorf("expected local-scope profile (already unrestricted) NOT to also emit a per-dir subpath rule for %q, got:\n%s", dir, localProfile)
+		}
+	}
+}
+
+// TestBuildSandboxedCommandDarwinReportsWritableDirs verifies that
+// buildSandboxedCommand surfaces the toolchain writable dirs on
+// SandboxExecResult.WritableDirs for workspace scope, so the bash tool
+// result map (bash_manager.go) can report them to the caller.
+func TestBuildSandboxedCommandDarwinReportsWritableDirs(t *testing.T) {
+	workspace := t.TempDir()
+	_, cleanup, res, err := buildSandboxedCommand(context.Background(), SandboxScopeWorkspace, workspace, "echo hi")
+	if err != nil {
+		t.Fatalf("buildSandboxedCommand: %v", err)
+	}
+	defer cleanup()
+	if len(res.WritableDirs) == 0 {
+		t.Fatalf("expected SandboxExecResult.WritableDirs to be non-empty for workspace scope, got %v", res.WritableDirs)
+	}
+	if !containsDir(t, res.WritableDirs, os.TempDir()) {
+		t.Errorf("expected SandboxExecResult.WritableDirs to include os.TempDir() (%q), got %v", os.TempDir(), res.WritableDirs)
 	}
 }
