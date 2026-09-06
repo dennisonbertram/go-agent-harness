@@ -30,12 +30,21 @@ var networkRestrictedPatterns = []*regexp.Regexp{
 // are blocked.
 //
 // For SandboxScopeUnrestricted (or empty), no additional checks are applied.
-func CheckSandboxCommand(scope SandboxScope, workspaceRoot, command string) error {
+//
+// network gates the SandboxScopeLocal heuristic: it only rejects network
+// commands when network is NetworkPolicyDeny. An empty network (or
+// NetworkPolicyAllow) is the default and lets network commands proceed —
+// the real enforcement for that case is simply the absence of any OS-level
+// network restriction (see buildSandboxedCommand).
+func CheckSandboxCommand(scope SandboxScope, network NetworkPolicy, workspaceRoot, command string) error {
 	switch scope {
 	case SandboxScopeWorkspace:
 		return checkWorkspaceScopeCommand(workspaceRoot, command)
 	case SandboxScopeLocal:
-		return checkLocalScopeCommand(command)
+		if network == NetworkPolicyDeny {
+			return checkLocalScopeCommand(command)
+		}
+		return nil
 	case SandboxScopeUnrestricted, "":
 		return nil
 	default:
@@ -128,6 +137,12 @@ type SandboxExecResult struct {
 	// Warning is non-empty when confinement degraded to heuristic-only
 	// enforcement and should be surfaced to the caller.
 	Warning string
+	// NetworkPolicy is the network policy actually applied when building the
+	// command (issue #1397): "allow" or "deny". It is populated even for
+	// scopes/mechanisms that do not enforce it at the OS level, so bash tool
+	// output always reflects the effective policy rather than leaving the
+	// caller to infer it.
+	NetworkPolicy NetworkPolicy
 }
 
 // resolveSandboxUnavailable is called by the platform-specific

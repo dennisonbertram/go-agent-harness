@@ -81,15 +81,16 @@ var (
 )
 
 type runCreateRequest struct {
-	Prompt           string                   `json:"prompt"`
-	Model            string                   `json:"model,omitempty"`
-	SystemPrompt     string                   `json:"system_prompt,omitempty"`
-	AgentIntent      string                   `json:"agent_intent,omitempty"`
-	TaskContext      string                   `json:"task_context,omitempty"`
-	PromptProfile    string                   `json:"prompt_profile,omitempty"`
-	PromptExtensions *runCreatePromptSettings `json:"prompt_extensions,omitempty"`
-	WorkspacePath    string                   `json:"workspace_path,omitempty"`
-	PlanMode         bool                     `json:"plan_mode,omitempty"`
+	Prompt           string                    `json:"prompt"`
+	Model            string                    `json:"model,omitempty"`
+	SystemPrompt     string                    `json:"system_prompt,omitempty"`
+	AgentIntent      string                    `json:"agent_intent,omitempty"`
+	TaskContext      string                    `json:"task_context,omitempty"`
+	PromptProfile    string                    `json:"prompt_profile,omitempty"`
+	PromptExtensions *runCreatePromptSettings  `json:"prompt_extensions,omitempty"`
+	WorkspacePath    string                    `json:"workspace_path,omitempty"`
+	PlanMode         bool                      `json:"plan_mode,omitempty"`
+	Permissions      *harness.PermissionConfig `json:"permissions,omitempty"`
 }
 
 type runCreatePromptSettings struct {
@@ -153,6 +154,8 @@ func run(args []string) int {
 	promptCustom := flags.String("prompt-custom", "", "custom prompt extension text")
 	workspace := flags.String("workspace", "", "workspace directory for this run (defaults to current working directory)")
 	planMode := flags.Bool("plan-mode", false, "start the run in enforced read-only plan mode")
+	sandbox := flags.String("sandbox", "", "sandbox scope for this run: workspace, local, or unrestricted (default: server default)")
+	network := flags.String("network", "", "network policy for the bash sandbox: allow or deny (default: server default, currently allow)")
 	enableTUI := flags.Bool("tui", false, "launch interactive BubbleTea TUI (experimental)")
 	resume := flags.String("resume", "", "resume an existing conversation by ID in the TUI (implies --tui)")
 	listProfiles := flags.Bool("list-profiles", false, "list available profiles and exit")
@@ -194,6 +197,17 @@ func run(args []string) int {
 		}
 	}
 
+	// permissions is populated only when the caller sets --sandbox and/or
+	// --network; leaving both flags unset omits "permissions" from the
+	// request body entirely, so the server's own defaults apply (issue #1397).
+	var permissions *harness.PermissionConfig
+	if strings.TrimSpace(*sandbox) != "" || strings.TrimSpace(*network) != "" {
+		permissions = &harness.PermissionConfig{
+			Sandbox: harness.SandboxScope(*sandbox),
+			Network: harness.NetworkPolicy(*network),
+		}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -207,6 +221,7 @@ func run(args []string) int {
 		PromptExtensions: extensions,
 		WorkspacePath:    workspacePath,
 		PlanMode:         *planMode,
+		Permissions:      permissions,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "harnesscli: start run: %v\n", err)

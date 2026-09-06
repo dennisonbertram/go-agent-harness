@@ -123,7 +123,8 @@ type JobManager struct {
 	ttl            time.Duration
 	maxOutputBytes int
 	now            func() time.Time
-	sandboxScope   SandboxScope // optional sandbox enforcement
+	sandboxScope   SandboxScope  // optional sandbox enforcement
+	networkPolicy  NetworkPolicy // optional network policy fallback (issue #1397)
 	events         JobEvents
 }
 
@@ -161,6 +162,13 @@ func (m *JobManager) SetSandboxScope(scope SandboxScope) {
 	m.sandboxScope = scope
 }
 
+// SetNetworkPolicy configures the fallback network policy enforced for
+// commands run via this JobManager when the per-call context carries none
+// (issue #1397). It is safe to call before any commands are launched.
+func (m *JobManager) SetNetworkPolicy(policy NetworkPolicy) {
+	m.networkPolicy = policy
+}
+
 func (m *JobManager) runForeground(ctx context.Context, command string, timeoutSeconds int, workingDir string) (map[string]any, error) {
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 30
@@ -169,7 +177,8 @@ func (m *JobManager) runForeground(ctx context.Context, command string, timeoutS
 		timeoutSeconds = 300
 	}
 	scope := m.sandboxScopeForContext(ctx)
-	if err := CheckSandboxCommand(scope, m.root, command); err != nil {
+	network := m.networkPolicyForContext(ctx)
+	if err := CheckSandboxCommand(scope, network, m.root, command); err != nil {
 		return nil, err
 	}
 	workDir, err := resolveWorkingDir(m.root, workingDir)
@@ -177,7 +186,7 @@ func (m *JobManager) runForeground(ctx context.Context, command string, timeoutS
 		return nil, err
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(WithNetworkPolicy(ctx, network), time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
 	cmd, sandboxCleanup, sbResult, err := buildSandboxedCommand(timeoutCtx, scope, m.root, command)
@@ -277,6 +286,9 @@ func (m *JobManager) runForeground(ctx context.Context, command string, timeoutS
 	if sbResult.Warning != "" {
 		result["sandbox_warning"] = sbResult.Warning
 	}
+	if sbResult.NetworkPolicy != "" {
+		result["sandbox_network"] = string(sbResult.NetworkPolicy)
+	}
 	return result, nil
 }
 
@@ -288,13 +300,15 @@ func (m *JobManager) runBackground(ctx context.Context, command string, timeoutS
 		timeoutSeconds = 3600
 	}
 	scope := m.sandboxScopeForContext(ctx)
-	if err := CheckSandboxCommand(scope, m.root, command); err != nil {
+	network := m.networkPolicyForContext(ctx)
+	if err := CheckSandboxCommand(scope, network, m.root, command); err != nil {
 		return nil, err
 	}
 	workDir, err := resolveWorkingDir(m.root, workingDir)
 	if err != nil {
 		return nil, err
 	}
+	ctx = WithNetworkPolicy(ctx, network)
 
 	m.cleanupExpired()
 
@@ -430,6 +444,9 @@ func (m *JobManager) runBackground(ctx context.Context, command string, timeoutS
 	}
 	if sbResult.Warning != "" {
 		result["sandbox_warning"] = sbResult.Warning
+	}
+	if sbResult.NetworkPolicy != "" {
+		result["sandbox_network"] = string(sbResult.NetworkPolicy)
 	}
 	return result, nil
 }
@@ -687,6 +704,19 @@ func (m *JobManager) sandboxScopeForContext(ctx context.Context) SandboxScope {
 		return scope
 	}
 	return m.sandboxScope
+}
+
+// networkPolicyForContext resolves the effective network policy: an explicit
+// per-call context value wins, falling back to the JobManager-level default,
+// and finally to NetworkPolicyAllow (issue #1397's safety-biased default).
+func (m *JobManager) networkPolicyForContext(ctx context.Context) NetworkPolicy {
+	if policy, ok := NetworkPolicyFromContext(ctx); ok && policy != "" {
+		return policy
+	}
+	if m.networkPolicy != "" {
+		return m.networkPolicy
+	}
+	return NetworkPolicyAllow
 }
 
 func resolveWorkingDir(workspaceRoot, workingDir string) (string, error) {

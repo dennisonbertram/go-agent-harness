@@ -43,6 +43,22 @@ const (
 	SandboxScopeUnrestricted SandboxScope = "unrestricted"
 )
 
+// NetworkPolicy mirrors harness.NetworkPolicy at the tools layer for the same
+// import-cycle reason as SandboxScope above. It controls whether the bash
+// sandbox denies outbound network access, independent of the sandbox scope's
+// filesystem confinement (issue #1397).
+type NetworkPolicy string
+
+const (
+	// NetworkPolicyAllow permits outbound network access from the bash
+	// sandbox. This is the default: an empty NetworkPolicy is treated as
+	// allow everywhere it is read.
+	NetworkPolicyAllow NetworkPolicy = "allow"
+	// NetworkPolicyDeny blocks outbound network access from the bash
+	// sandbox at the OS level (seatbelt on darwin, bubblewrap on linux).
+	NetworkPolicyDeny NetworkPolicy = "deny"
+)
+
 type PolicyInput struct {
 	ToolName  string          `json:"tool_name"`
 	Action    Action          `json:"action"`
@@ -581,6 +597,7 @@ const ContextKeyTranscriptReader contextKey = "transcript_reader"
 const ContextKeyOutputStreamer contextKey = "output_streamer"
 const ContextKeyMessageReplacer contextKey = "message_replacer"
 const ContextKeySandboxScope contextKey = "sandbox_scope"
+const ContextKeyNetworkPolicy contextKey = "network_policy"
 const ContextKeyPlanModeGate contextKey = "plan_mode_gate"
 const contextKeyRecipeStepAuthorizer contextKey = "recipe_step_authorizer"
 const contextKeyAskUserQuestionPendingNotifier contextKey = "ask_user_question_pending_notifier"
@@ -640,6 +657,15 @@ func WithSandboxScope(ctx context.Context, scope SandboxScope) context.Context {
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, ContextKeySandboxScope, scope)
+}
+
+// WithNetworkPolicy returns a context with the given network policy set for
+// the current tool execution. Nil contexts are promoted to Background.
+func WithNetworkPolicy(ctx context.Context, policy NetworkPolicy) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, ContextKeyNetworkPolicy, policy)
 }
 
 // ContextKeyExtraAllowedRoots carries the per-run extra directory roots a
@@ -792,6 +818,19 @@ func SandboxScopeFromContext(ctx context.Context) (SandboxScope, bool) {
 		return "", false
 	}
 	v, ok := ctx.Value(ContextKeySandboxScope).(SandboxScope)
+	return v, ok
+}
+
+// NetworkPolicyFromContext retrieves the effective network policy override
+// from the tool execution context. Callers that need a concrete default
+// (rather than the raw ok bool) should treat a missing or empty value as
+// NetworkPolicyAllow, matching the safety-biased default documented on
+// NetworkPolicyAllow.
+func NetworkPolicyFromContext(ctx context.Context) (NetworkPolicy, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	v, ok := ctx.Value(ContextKeyNetworkPolicy).(NetworkPolicy)
 	return v, ok
 }
 

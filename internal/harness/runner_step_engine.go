@@ -67,9 +67,10 @@ type stepEngine struct {
 	runForkDepth            int
 	effectiveApprovalPolicy ApprovalPolicy
 	effectiveSandboxScope   htools.SandboxScope
+	effectiveNetworkPolicy  htools.NetworkPolicy
 }
 
-func newStepEngine(r *Runner, ctx context.Context, runID string, req RunRequest, preflight *runPreflightResult, effectiveMaxSteps int, effectiveMaxTurns int, runForkDepth int, effectiveApprovalPolicy ApprovalPolicy, effectiveSandboxScope htools.SandboxScope) *stepEngine {
+func newStepEngine(r *Runner, ctx context.Context, runID string, req RunRequest, preflight *runPreflightResult, effectiveMaxSteps int, effectiveMaxTurns int, runForkDepth int, effectiveApprovalPolicy ApprovalPolicy, effectiveSandboxScope htools.SandboxScope, effectiveNetworkPolicy htools.NetworkPolicy) *stepEngine {
 	return &stepEngine{
 		runner:                  r,
 		ctx:                     ctx,
@@ -81,6 +82,7 @@ func newStepEngine(r *Runner, ctx context.Context, runID string, req RunRequest,
 		runForkDepth:            runForkDepth,
 		effectiveApprovalPolicy: effectiveApprovalPolicy,
 		effectiveSandboxScope:   effectiveSandboxScope,
+		effectiveNetworkPolicy:  effectiveNetworkPolicy,
 	}
 }
 
@@ -95,6 +97,7 @@ func (se *stepEngine) run() {
 	runForkDepth := se.runForkDepth
 	effectiveApprovalPolicy := se.effectiveApprovalPolicy
 	effectiveSandboxScope := se.effectiveSandboxScope
+	effectiveNetworkPolicy := se.effectiveNetworkPolicy
 
 	// rc is this run's config snapshot, captured at run creation. It is
 	// immutable for the run's lifetime, so per-step reads stay stable even
@@ -138,6 +141,16 @@ func (se *stepEngine) run() {
 		causalBuilder = causalgraph.NewBuilder()
 	}
 	consecutiveEmptyResponses := 0
+
+	// permissionsNotice reports this run's sandbox/approval/network policy to
+	// the model every turn, including the first (issue #1397). It is static
+	// for the run's lifetime — the three axes are fixed at run start — so it
+	// is computed once here rather than inside the per-step loop.
+	permissionsNotice := strings.Join(permissionsNoticeLines(PermissionConfig{
+		Sandbox:  SandboxScope(effectiveSandboxScope),
+		Approval: effectiveApprovalPolicy,
+		Network:  NetworkPolicy(effectiveNetworkPolicy),
+	}), "\n")
 
 	emitCausalGraph := func(lastStep int) {
 		if causalBuilder == nil {
@@ -295,7 +308,7 @@ func (se *stepEngine) run() {
 			}
 		}
 		planModeGuidance := r.planModePromptBlock(runID)
-		turnMessages := r.buildTurnMessages(systemPrompt, messages, workingMemorySnippet, memorySnippetForSnapshot, injectedRuleContent.String(), planModeGuidance, runtimeContext)
+		turnMessages := r.buildTurnMessages(systemPrompt, messages, workingMemorySnippet, memorySnippetForSnapshot, injectedRuleContent.String(), planModeGuidance, permissionsNotice, runtimeContext)
 
 		if rc.AutoCompactEnabled && rc.ModelContextWindow > 0 {
 			estimated := 0
@@ -325,7 +338,7 @@ func (se *stepEngine) run() {
 					}
 					messages = compactedMsgs
 					r.stepSetMessages(runID, messages)
-					turnMessages = r.buildTurnMessages(systemPrompt, messages, workingMemorySnippet, memorySnippetForSnapshot, injectedRuleContent.String(), planModeGuidance, runtimeContext)
+					turnMessages = r.buildTurnMessages(systemPrompt, messages, workingMemorySnippet, memorySnippetForSnapshot, injectedRuleContent.String(), planModeGuidance, permissionsNotice, runtimeContext)
 					r.emit(runID, EventAutoCompactCompleted, map[string]any{
 						"before_tokens": estimated,
 						"after_tokens":  afterTokens,
@@ -1271,6 +1284,7 @@ func (se *stepEngine) run() {
 				toolCtx = htools.WithAskUserQuestionPendingNotifier(toolCtx, pendingNotifier)
 			}
 			toolCtx = htools.WithSandboxScope(toolCtx, effectiveSandboxScope)
+			toolCtx = htools.WithNetworkPolicy(toolCtx, effectiveNetworkPolicy)
 			// Extra directory roots granted on the run request (TUI /add-dir)
 			// ride the same per-call context so file-tool confinement permits
 			// them in addition to the workspace root.
