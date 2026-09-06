@@ -454,3 +454,37 @@ func TestSandboxWorkspaceScopeNetworkPolicyLiveCurl(t *testing.T) {
 		}
 	})
 }
+
+// TestJobManagerRunForegroundReportsSandboxNetworkInResult is a regression
+// test for issue #1397: the bash tool result map must surface which network
+// policy was actually applied (result["sandbox_network"]), for both allow
+// and deny, so an operator inspecting a run's tool output can see the policy
+// without cross-referencing the run's permissions separately. If a future
+// change stopped threading SandboxExecResult.NetworkPolicy into the result
+// map (bash_manager.go), this test would fail by finding the key absent or
+// mismatched, independent of whether the command itself succeeded.
+func TestJobManagerRunForegroundReportsSandboxNetworkInResult(t *testing.T) {
+	if !osSandboxAvailable(t) {
+		t.Skip("no OS-level sandbox mechanism (seatbelt/bubblewrap) available on this host")
+	}
+	t.Parallel()
+
+	workspace := t.TempDir()
+	mgr := NewJobManager(workspace, nil)
+	mgr.SetSandboxScope(SandboxScopeWorkspace)
+
+	for _, policy := range []NetworkPolicy{NetworkPolicyAllow, NetworkPolicyDeny} {
+		policy := policy
+		t.Run(string(policy), func(t *testing.T) {
+			t.Parallel()
+			ctx := WithNetworkPolicy(context.Background(), policy)
+			result, err := mgr.RunForeground(ctx, "echo hi", 5, "")
+			if err != nil {
+				t.Fatalf("RunForeground: %v", err)
+			}
+			if got := result["sandbox_network"]; got != string(policy) {
+				t.Errorf("result[\"sandbox_network\"] = %v, want %q", got, string(policy))
+			}
+		})
+	}
+}

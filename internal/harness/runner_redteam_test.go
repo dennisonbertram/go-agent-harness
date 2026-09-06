@@ -378,6 +378,79 @@ func TestRedTeam_SandboxNetwork_BlocksCurl(t *testing.T) {
 	}
 }
 
+// TestRedTeam_SandboxNetwork_DefaultPermissionsAllowCurl is a regression test
+// for issue #1397's default change: a real bash tool call under a run with NO
+// explicit Permissions (so SandboxScopeWorkspace + the default NetworkPolicy)
+// must NOT be rejected as a sandbox violation. Before this change, the
+// runner's default sandbox scope always denied outbound network for bash
+// regardless of caller intent; if that regression were reintroduced (e.g. a
+// future edit to normalizePermissionConfig or the step engine's context
+// wiring dropped the network policy), this test would start failing with
+// "sandbox violation" on the curl call the way TestRedTeam_SandboxNetwork_BlocksCurl
+// above intentionally does for an explicit deny.
+func TestRedTeam_SandboxNetwork_DefaultPermissionsAllowCurl(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	registry := NewDefaultRegistryWithOptions(workspace, DefaultRegistryOptions{
+		ApprovalMode: ToolApprovalModeFullAuto,
+		SandboxScope: SandboxScopeWorkspace,
+	})
+
+	provider := &continuationProvider{
+		turns: []CompletionResult{
+			{
+				ToolCalls: []ToolCall{{
+					ID:        "call_curl_default",
+					Name:      "bash",
+					Arguments: `{"command":"curl --version"}`,
+				}},
+			},
+			{Content: "done"},
+		},
+	}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     4,
+	})
+
+	// No Permissions field at all: exercises the server's real default, not
+	// an explicitly requested policy.
+	run, err := runner.StartRun(RunRequest{Prompt: "check curl"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collectRunEvents: %v", err)
+	}
+
+	var completedSeen bool
+	for _, ev := range events {
+		if ev.Type != EventToolCallCompleted {
+			continue
+		}
+		if callID, _ := ev.Payload["call_id"].(string); callID != "call_curl_default" {
+			continue
+		}
+		completedSeen = true
+		errField, _ := ev.Payload["error"].(string)
+		if strings.Contains(errField, "sandbox violation") {
+			t.Errorf("tool.call.completed error = %q, want no sandbox violation under default permissions", errField)
+		}
+	}
+	if !completedSeen {
+		t.Fatalf("expected tool.call.completed for call_curl_default, events=%v", eventTypes(events))
+	}
+
+	payload := toolMessagePayload(t, runner, run.ID, "bash")
+	if errMsg, _ := payload["error"].(string); strings.Contains(errMsg, "sandbox violation") {
+		t.Errorf("bash tool result error = %v, want no sandbox violation under default permissions", payload["error"])
+	}
+}
+
 // TestRedTeam_SandboxNetworkRegexBypasses_NotEnforced DOCUMENTS (does not claim a
 // guarantee for) the known regex-only bypasses of the SandboxScopeLocal network
 // filter. The filter is a set of regexes over the raw command string
