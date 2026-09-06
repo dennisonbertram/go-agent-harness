@@ -5,7 +5,13 @@
 #
 # Format: sections wrapped in [SECTION <NAME>]...[END SECTION] tags,
 # separated by double newlines. The runtime_context block is injected
-# as a separate system message each turn (not part of the static prompt).
+# as a separate message each turn (not part of the static prompt). It is
+# built with role "system" in the harness's turn messages array; the
+# OpenAI-compatible provider client sends it on the wire as role "user"
+# (issue #1395 — a trailing system-role message causes empty responses
+# from some OpenAI-compatible backends, e.g. DeepSeek via OpenRouter). The
+# Anthropic client hoists all system-role messages into the top-level
+# system parameter regardless of position, so it is unaffected.
 #
 # To assemble the full per-turn system prompt, append the runtime_context
 # block (shown at the end of this file) after the static sections.
@@ -97,11 +103,15 @@ Model guidance:
 # [END SECTION]
 
 # ---------------------------------------------------------------------------
-# RUNTIME CONTEXT (injected as a separate system message each LLM turn)
+# RUNTIME CONTEXT (injected as a separate message each LLM turn)
 # ---------------------------------------------------------------------------
 # This block is produced by BuildRuntimeContext() in
-# internal/systemprompt/runtime_context.go and appended as a system-role
-# message to the turn messages array, NOT to the static system prompt.
+# internal/systemprompt/runtime_context.go and appended with role "system"
+# to the turn messages array, NOT to the static system prompt. The
+# OpenAI-compatible provider client (internal/provider/openai/client.go
+# mapMessages) sends this trailing message on the wire as role "user"
+# instead (issue #1395); the Anthropic client hoists it into the top-level
+# system parameter regardless of wire role.
 #
 # Example shape (values are live at runtime):
 #

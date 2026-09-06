@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/systemprompt"
 )
 
 // TestMapMessagesNonLeadingSystemSentAsUser is the issue #1395 regression:
@@ -123,5 +124,78 @@ func TestCompleteWireBodyTrailingSystemAsUser(t *testing.T) {
 	}
 	if last.Content != "<runtime_context>turn 1</runtime_context>" {
 		t.Errorf("wire.Messages[last].Content = %q, want the runtime_context text unchanged", last.Content)
+	}
+}
+
+// fixedRuntimeContextEngine is a minimal systemprompt.Engine stub that always
+// resolves a static prompt and returns a fixed runtime_context body, so a
+// full Runner run deterministically produces a trailing system message.
+type fixedRuntimeContextEngine struct{}
+
+func (fixedRuntimeContextEngine) Resolve(systemprompt.ResolveRequest) (systemprompt.ResolvedPrompt, error) {
+	return systemprompt.ResolvedPrompt{StaticPrompt: "STATIC_SYSTEM_PROMPT"}, nil
+}
+
+func (fixedRuntimeContextEngine) RuntimeContext(systemprompt.RuntimeContextInput) string {
+	return "<runtime_context>fixed</runtime_context>"
+}
+
+// TestRunnerRuntimeContextReachesOpenAIWireAsUser is the issue #1395
+// regression test at the integration seam: it drives a real harness.Runner
+// (buildTurnMessages appends the runtime_context block as a trailing
+// system-role message, per runner_step_engine.go) through the real
+// openai.Client, and asserts that on the wire the trailing message is role
+// "user" (not "system") — this is what stops DeepSeek/OpenRouter from
+// returning empty responses. Unlike the unit-level mapMessages tests above,
+// this exercises the actual production seam (Runner → buildTurnMessages →
+// Complete → mapMessages) rather than calling mapMessages directly, so it
+// would also fail if a future change moved the trailing-system rewrite
+// somewhere that no longer sees runner-built turn messages.
+func TestRunnerRuntimeContextReachesOpenAIWireAsUser(t *testing.T) {
+	t.Parallel()
+
+	var hits atomic.Int32
+	var bodies atomic.Pointer[[]byte]
+	srv := captureChatServer(t, &hits, &bodies)
+
+	client, err := NewClient(Config{APIKey: "test-key", BaseURL: srv.URL, ProviderName: "openrouter"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	runner := harness.NewRunner(client, harness.NewRegistry(), harness.RunnerConfig{
+		DefaultModel:       "deepseek/deepseek-v4-flash",
+		DefaultAgentIntent: "general",
+		MaxSteps:           1,
+		PromptEngine:       fixedRuntimeContextEngine{},
+	})
+	run, err := runner.StartRun(harness.RunRequest{Prompt: "do the thing"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitTerminal(t, runner, run.ID)
+
+	if hits.Load() != 1 {
+		t.Fatalf("server hit %d times, want 1", hits.Load())
+	}
+
+	var wire struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(*bodies.Load(), &wire); err != nil {
+		t.Fatalf("unmarshal wire body: %v", err)
+	}
+	if len(wire.Messages) == 0 {
+		t.Fatal("wire request had no messages")
+	}
+	lastWire := wire.Messages[len(wire.Messages)-1]
+	if lastWire.Content != "<runtime_context>fixed</runtime_context>" {
+		t.Fatalf("last wire message content = %q, want the runtime_context block (it must stay last)", lastWire.Content)
+	}
+	if lastWire.Role != "user" {
+		t.Errorf("last wire message role = %q, want user — reverting the #1395 fix would send this as system and DeepSeek would go empty", lastWire.Role)
 	}
 }
