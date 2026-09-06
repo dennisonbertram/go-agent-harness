@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Model is the scrollable viewport for conversation content.
@@ -319,10 +320,12 @@ func (m Model) View() string {
 	}
 
 	for _, line := range visible {
-		runes := []rune(line)
-		if len(runes) > m.width {
-			line = string(runes[:m.width])
-		}
+		// Clamp by visible cell width, not rune count: lines can contain
+		// ANSI escape sequences (glamour output under a real color
+		// profile) whose bytes count as runes but occupy no cells.
+		// ansi.Truncate is ANSI-aware and a no-op when the line already
+		// fits within m.width.
+		line = ansi.Truncate(line, m.width, "")
 		sb.WriteString(line)
 		sb.WriteString("\n")
 	}
