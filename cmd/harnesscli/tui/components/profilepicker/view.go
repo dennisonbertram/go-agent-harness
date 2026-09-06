@@ -28,8 +28,10 @@ func (m Model) View() string {
 		width = 80
 	}
 
-	// Inner content width: rounded border uses 2 cols (border+space) on each side.
-	const padding = 4
+	// Inner content width: the box takes 1 border column and 1 padding
+	// column on each side (4 total), and lipgloss counts the padding inside
+	// Width, so rows must be two columns narrower than the box (#1405).
+	const padding = 6
 	innerWidth := width - padding
 	if innerWidth < 20 {
 		innerWidth = 20
@@ -139,7 +141,7 @@ func (m Model) View() string {
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		Padding(0, 1).
-		Width(innerWidth)
+		Width(innerWidth + 2)
 
 	return boxStyle.Render(sb.String())
 }

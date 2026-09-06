@@ -269,6 +269,9 @@ type Model struct {
 	// accounting surfaces. It is NOT context occupancy — see
 	// contextOccupancyTokens.
 	totalTokens int
+	// promptTokens/completionTokens split totalTokens for /cost (#1405).
+	promptTokens     int
+	completionTokens int
 	// contextOccupancyTokens is the latest turn's prompt plus completion: what
 	// the next request will actually carry in the context window (issue #1307).
 	contextOccupancyTokens int
@@ -2070,7 +2073,8 @@ func executeStatsCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
 // surfaced as OutputTokens rather than fabricating a breakdown.
 func costSnapshotFromModel(m *Model) costdisplay.CostSnapshot {
 	return costdisplay.CostSnapshot{
-		OutputTokens: m.totalTokens,
+		InputTokens:  m.promptTokens,
+		OutputTokens: m.completionTokens,
 		TotalCostUSD: m.cumulativeCostUSD,
 		Model:        m.selectedModel,
 	}
@@ -2105,6 +2109,11 @@ func configEntriesFromModel(m *Model) []configpanel.ConfigEntry {
 	model := m.selectedModel
 	if model == "" {
 		model = m.config.Model
+	}
+	if model == "" {
+		// Nothing chosen in this session and no --model flag: the daemon's
+		// default applies. Say so instead of showing an empty cell (#1405).
+		model = "(server default — use /model to choose)"
 	}
 	return []configpanel.ConfigEntry{
 		{Key: "base_url", Value: m.config.BaseURL, Description: "harnessd server URL", ReadOnly: true},
@@ -5601,7 +5610,10 @@ func (m Model) View() string {
 		case "search":
 			mainContent = m.viewSearchOverlay()
 		case "permissions":
-			m.permissionsPanel.Width = m.width
+			// boxOverlay draws a border around the panel, so the panel's own
+			// separator must be narrower than the terminal or it wraps into a
+			// stray "──" line (#1405).
+			m.permissionsPanel.Width = m.width - 4
 			m.permissionsPanel.Height = m.layout.ViewportHeight
 			raw := m.permissionsPanel.View()
 			mainContent = boxOverlay(raw, m.width)

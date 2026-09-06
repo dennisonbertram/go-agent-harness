@@ -131,8 +131,13 @@ func renderContent(m Model, width, maxLines int) string {
 			maxValLen = valLen
 		}
 	}
-	// Cap value column to avoid overflow.
-	maxValDisplay := 20
+	// Cap the value column to what the dialog can show: prefix (2), key,
+	// gaps (2+2), dirty marker (1), badge "[RO]" (4) and a margin. Anything
+	// longer is shortened with an ellipsis rather than cut silently (#1405).
+	maxValDisplay := width - maxKeyLen - 14
+	if maxValDisplay < 20 {
+		maxValDisplay = 20
+	}
 	if maxValLen > maxValDisplay {
 		maxValLen = maxValDisplay
 	}
@@ -182,8 +187,8 @@ func renderRow(e ConfigEntry, selected, editing bool, editBuf string, maxKeyLen,
 		valStr = fmt.Sprintf("%-*s", maxValLen, editBuf+"_")
 	} else {
 		v := e.Value
-		if len(v) > maxValLen {
-			v = v[:maxValLen]
+		if r := []rune(v); len(r) > maxValLen {
+			v = string(r[:maxValLen-1]) + "…"
 		}
 		valStr = fmt.Sprintf("%-*s", maxValLen, v)
 	}
@@ -233,7 +238,7 @@ func renderFooter(m Model, width int) string {
 	if m.editing {
 		hint = "[Enter] commit  [Esc] cancel"
 	} else {
-		hint = "[Enter] edit  [Esc] close"
+		hint = "[Enter] edit  [Esc] close  [RO] read-only"
 	}
 	return lipgloss.NewStyle().
 		Width(width).
