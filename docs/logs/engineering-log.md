@@ -1,5 +1,76 @@
 # Engineering Log
 
+## 2026-09-08 — Issue #1415 truthful spinner label
+
+- Symptom/motivation: `cmd/harnesscli/tui/components/spinner/verbs.go` held
+  `DefaultVerbs`, a pool of fifteen near-synonyms for "thinking" ("Thinking",
+  "Reasoning", "Pondering", "Analyzing", "Processing", "Computing",
+  "Synthesizing", "Evaluating", "Reflecting", "Deliberating", "Considering",
+  "Examining", "Contemplating", "Strategizing", "Planning"). `verbRotateEvery
+  = 8` re-picked one every 8 ticks at the 120ms tick rate, so the word changed
+  roughly once a second while telling the user nothing new — motion without
+  novelty reads as a stuck animation, not a live one. A comment on
+  `DefaultVerbs` also claimed these were "the same verbs Claude Code uses in
+  its thinking indicator," which was false.
+- Research that informed the decision (secondary, not verified against the
+  actual Claude Code source): an extraction across 139 published
+  `@anthropic-ai/claude-code` npm versions (the `levindixon/tengu_spinner_words`
+  repo) reports roughly 90 varied whimsical words plus a runtime-fetched
+  Statsig dynamic-config set merged in, and a word-rotation interval of
+  roughly 1000ms. Our own rotation was ~960ms (8 ticks × 120ms) — essentially
+  the same speed. So speed was never the differentiator here; vocabulary was.
+  Nobody on this project has extracted the literal interval from the minified
+  Claude Code bundle, so that 1000ms figure is a well-sourced hypothesis, not
+  a confirmed fact — treat it accordingly. By contrast, opencode
+  (`anomalyco/opencode`, `packages/tui/src/component/spinner.tsx`) is a
+  primary source we could read directly, and it uses no randomized words at
+  all.
+- Decision: matching a 90-plus-word decorative list would mean maintaining it
+  against a scale we cannot verify, from a secondary source, to reproduce an
+  effect that depends on a runtime-fetched set we do not have. Rather than
+  that, or keeping the false "same as Claude Code" claim, say something true
+  about what the run is doing. The false comment was removed along with `DefaultVerbs`.
+- Fix: `verbs.go` now holds one `fallbackLabel = "Working"` constant
+  (`cmd/harnesscli/tui/components/spinner/verbs.go:12`), used only when no
+  action is known. `currentSpinnerAction()` in
+  `cmd/harnesscli/tui/model.go:1175` returns a most-specific-first ladder: a
+  tool genuinely still running -> "Running <tool>"; assistant text streaming
+  (`responseStarted`) -> "Writing response"; reasoning deltas arrived
+  (`thinkingText != ""`) -> "Thinking"; otherwise -> "Waiting for <model>" (or
+  "Waiting for model" with none selected). It never returns "", which is what
+  makes the verb pool unnecessary — there is always something true to say, and
+  it is always narrower than "thinking". The glyph still animates every 120ms so the line reads as
+  live; only the word now holds still until the state actually changes. The
+  trailing "..." was dropped too ("Running bash" is a fact, not a vague one).
+  `TUIConfig.SpinnerSeed` and the `spinnerSeed()` helper were removed — they
+  existed only to make random verb selection deterministic for snapshots, and
+  rendering is now deterministic by construction, so the field would have
+  been a setting that no longer did anything. `spinner.New(seed)` keeps its
+  parameter for its ~115 call sites but ignores it.
+- Trade-off: "Waiting for gpt-4.1-mini" is much longer than the "Computing..."
+  it replaced, and at 40 columns a right-truncated line ate the cancel hint,
+  rendering "(esc to inter" with no way to tell the user how to stop the run.
+  `shortenLabel` (`cmd/harnesscli/tui/components/spinner/model.go:235`) now
+  drops the duration first, then truncates the label with an ellipsis, so
+  "(esc to interrupt)" always survives — the label yields, the hint does not.
+  At 40 columns this renders `✶ Waiting for gpt-4.… (esc to interrupt)`.
+- Durable note: the six glyphs (`✶ · ✻ ✽ ✳ ✢`,
+  `cmd/harnesscli/tui/components/spinner/model.go:18`) do match the six
+  independently reported for Claude Code, so the glyph layer was already
+  right and was deliberately left alone — only the word layer changed.
+- Tests: added `TestSpinnerLabelDoesNotRotateOnTicks`,
+  `TestSpinnerGlyphStillAnimates` (control against freezing the whole line),
+  `TestSpinnerLabelIsSeedIndependent`, `TestSpinnerFallbackLabelWhenNoActionKnown`,
+  `TestSpinnerKeepsCancelHintAtNarrowWidth`,
+  `TestSpinnerHintSurvivesEvenWhenLabelCannotFit` in
+  `cmd/harnesscli/tui/components/spinner/truthful_label_test.go`, and
+  `TestCurrentSpinnerActionLadder` (5 cases) plus
+  `TestCurrentSpinnerActionNeverEmptyWhileRunning` in
+  `cmd/harnesscli/tui/spinner_truthful_action_test.go`. Removed
+  `TestTUI024_SpinnerVerbFromSeed` and `TestTUI024_EmptyVerbFallback`, which
+  pinned the deleted rotation behavior. Snapshot goldens regenerated:
+  `✽ Computing... (esc to interrupt)` became `✽ Working (esc to interrupt)`.
+
 ## 2026-09-08 — Issue #1416 closed output pipe orphaned harnessd
 
 - Symptom: `go-code runs | head -5` (or piping into a pager the user quits

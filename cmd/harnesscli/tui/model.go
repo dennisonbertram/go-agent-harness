@@ -485,14 +485,6 @@ type Model struct {
 }
 
 // New creates a new root Model.
-// spinnerSeed returns the spinner verb seed: the configured value when non-zero
-// (deterministic, used by tests), otherwise a time-based seed for variety.
-func spinnerSeed(cfg TUIConfig) int64 {
-	if cfg.SpinnerSeed != 0 {
-		return cfg.SpinnerSeed
-	}
-	return time.Now().UnixNano()
-}
 
 func New(cfg TUIConfig) Model {
 	m := Model{
@@ -503,7 +495,7 @@ func New(cfg TUIConfig) Model {
 		contextGrid:           contextgrid.New(),
 		statsPanel:            statspanel.New(nil),
 		costDisplay:           costdisplay.New(),
-		spinner:               spinner.New(spinnerSeed(cfg)),
+		spinner:               spinner.New(0),
 		thinkingBar:           thinkingbar.New(),
 		interruptBanner:       interruptui.New(),
 		selectedModel:         cfg.Model,
@@ -1168,20 +1160,33 @@ func spinnerTickCmd() tea.Cmd {
 	return tea.Tick(SpinnerInterval, func(t time.Time) tea.Msg { return spinner.SpinnerTickMsg{T: t} })
 }
 
-// currentSpinnerAction returns a short label describing what is currently
-// running, for display in the spinner, or "" when nothing more specific than
-// "thinking" is known. Only reports the active tool while it is genuinely
-// still running — activeToolCallID lingers after completion so it can be
-// expanded/collapsed, but by then there is nothing left to announce.
+// currentSpinnerAction returns a short label describing what the run is
+// actually doing, for display in the spinner.
+//
+// It never returns "": there is always something true to say, which is what
+// makes a pool of decorative synonyms unnecessary (issue #1415). The ladder is
+// ordered most-specific first, because several of these are true at once — a
+// tool runs *while* a response is streaming, and reasoning arrives before text.
+// The user is best served by the narrowest true statement.
+//
+// The running-tool check is deliberately strict: activeToolCallID lingers after
+// completion so the call can still be expanded or collapsed, but by then the
+// tool is no longer what is happening.
 func (m Model) currentSpinnerAction() string {
-	if m.activeToolCallID == "" {
-		return ""
+	if view, ok := m.toolViews[m.activeToolCallID]; m.activeToolCallID != "" && ok &&
+		view.Status == "running" && view.ToolName != "" {
+		return "Running " + view.ToolName
 	}
-	view, ok := m.toolViews[m.activeToolCallID]
-	if !ok || view.Status != "running" || view.ToolName == "" {
-		return ""
+	if m.responseStarted {
+		return "Writing response"
 	}
-	return "Running " + view.ToolName
+	if m.thinkingText != "" {
+		return "Thinking"
+	}
+	if m.selectedModel != "" {
+		return "Waiting for " + m.selectedModel
+	}
+	return "Waiting for model"
 }
 
 // StatusTickMsgForTesting returns a statusTickMsg as a tea.Msg for use in
@@ -4203,7 +4208,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.activeAssistantLineCount = 0
 		}
 		m.clearThinkingBar()
-		m.spinner = spinner.New(spinnerSeed(m.config)).WithStyles(spinnerStylesFromTheme(m.theme)).Start()
+		m.spinner = spinner.New(0).WithStyles(spinnerStylesFromTheme(m.theme)).Start()
 		cmds = append(cmds, spinnerTickCmd())
 		// Continuations provide their inherited conversation identity. A blank
 		// TUI adopts it; an already selected conversation remains authoritative

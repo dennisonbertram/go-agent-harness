@@ -50,26 +50,6 @@ func TestTUI024_SpinnerAddsDurationAfterThreshold(t *testing.T) {
 	}
 }
 
-// TestTUI024_SpinnerVerbFromSeed verifies that using the same seed always
-// produces the same initial verb after Start().
-func TestTUI024_SpinnerVerbFromSeed(t *testing.T) {
-	const seed = int64(12345)
-
-	m1 := New(seed)
-	m1 = m1.Start()
-
-	m2 := New(seed)
-	m2 = m2.Start()
-
-	if m1.verb != m2.verb {
-		t.Errorf("same seed should produce same verb: m1=%q, m2=%q", m1.verb, m2.verb)
-	}
-
-	if m1.verb == "" {
-		t.Error("verb should not be empty after Start()")
-	}
-}
-
 // TestTUI024_SpinnerStopsCleanly verifies that Stop() transitions the model to
 // done=true, active=false and stores the token count.
 func TestTUI024_SpinnerStopsCleanly(t *testing.T) {
@@ -166,19 +146,6 @@ func TestTUI024_ConcurrentIndependentState(t *testing.T) {
 	wg.Wait()
 }
 
-// TestTUI024_EmptyVerbFallback verifies that an empty verb pool falls back
-// to "Thinking".
-func TestTUI024_EmptyVerbFallback(t *testing.T) {
-	m := New(42)
-	// Override verbs to empty slice via test helper.
-	m.testVerbs = []string{}
-	m = m.Start()
-
-	if m.verb != "Thinking" {
-		t.Errorf("empty verb pool should fall back to 'Thinking', got %q", m.verb)
-	}
-}
-
 // TestTUI024_BoundaryWidths verifies that View() does not panic at various
 // terminal widths including very narrow and very wide.
 func TestTUI024_BoundaryWidths(t *testing.T) {
@@ -203,8 +170,8 @@ func TestTUI024_BoundaryWidths(t *testing.T) {
 }
 
 // TestSpinnerShowsCancelHintWhileActive verifies that View() always surfaces
-// the cancel hint while the spinner is active, using the rotating verb when
-// no current action has been set.
+// the cancel hint while the spinner is active, falling back to the neutral
+// label when no current action has been set.
 func TestSpinnerShowsCancelHintWhileActive(t *testing.T) {
 	m := New(42)
 	m = m.Start()
@@ -213,15 +180,14 @@ func TestSpinnerShowsCancelHintWhileActive(t *testing.T) {
 	if !strings.Contains(view, CancelHint) {
 		t.Errorf("active View() should contain cancel hint %q, got: %q", CancelHint, view)
 	}
-	if !strings.Contains(view, m.verb) {
-		t.Errorf("active View() with no action set should still show the verb %q, got: %q", m.verb, view)
+	if !strings.Contains(view, fallbackLabel) {
+		t.Errorf("active View() with no action set should show %q, got: %q", fallbackLabel, view)
 	}
 }
 
-// TestSpinnerShowsCurrentActionInsteadOfVerb verifies that once SetAction is
-// called with a non-empty label, View() displays that label instead of the
-// rotating verb, while still showing the cancel hint.
-func TestSpinnerShowsCurrentActionInsteadOfVerb(t *testing.T) {
+// TestSpinnerShowsCurrentAction verifies that SetAction's label is what View()
+// renders, while still showing the cancel hint.
+func TestSpinnerShowsCurrentAction(t *testing.T) {
 	m := New(42)
 	m = m.Start()
 	m = m.SetAction("Running bash")
@@ -230,17 +196,17 @@ func TestSpinnerShowsCurrentActionInsteadOfVerb(t *testing.T) {
 	if !strings.Contains(view, "Running bash") {
 		t.Errorf("View() should show the current action, got: %q", view)
 	}
-	if strings.Contains(view, m.verb+"...") {
-		t.Errorf("View() should not show the rotating verb once an action is set, got: %q", view)
+	if strings.Contains(view, fallbackLabel) {
+		t.Errorf("View() should not show the fallback label once an action is set, got: %q", view)
 	}
 	if !strings.Contains(view, CancelHint) {
 		t.Errorf("View() with an action set should still contain cancel hint %q, got: %q", CancelHint, view)
 	}
 }
 
-// TestSpinnerClearingActionRestoresVerb verifies that SetAction("") reverts
-// View() back to the rotating verb.
-func TestSpinnerClearingActionRestoresVerb(t *testing.T) {
+// TestSpinnerClearingActionRestoresFallback verifies that SetAction("") reverts
+// View() to the neutral label.
+func TestSpinnerClearingActionRestoresFallback(t *testing.T) {
 	m := New(42)
 	m = m.Start()
 	m = m.SetAction("Running bash")
@@ -250,8 +216,8 @@ func TestSpinnerClearingActionRestoresVerb(t *testing.T) {
 	if strings.Contains(view, "Running bash") {
 		t.Errorf("View() should not show a cleared action, got: %q", view)
 	}
-	if !strings.Contains(view, m.verb) {
-		t.Errorf("View() should fall back to the verb once action is cleared, got: %q", view)
+	if !strings.Contains(view, fallbackLabel) {
+		t.Errorf("View() should fall back to %q once the action is cleared, got: %q", fallbackLabel, view)
 	}
 }
 

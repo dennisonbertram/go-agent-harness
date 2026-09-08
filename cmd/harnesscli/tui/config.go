@@ -28,10 +28,6 @@ type TUIConfig struct {
 	ResumeConversationID string
 	// PlanMode starts the TUI in enforced plan mode (harnesscli --tui --plan-mode).
 	PlanMode bool
-	// SpinnerSeed seeds the thinking-spinner's verb selection. Zero (the default)
-	// uses a time-based seed for whimsical variety in real use; tests set a fixed
-	// non-zero seed so rendered snapshots are deterministic.
-	SpinnerSeed int64
 	// APIKey authenticates requests to the harnessd server
 	// ("Authorization: Bearer <APIKey>"), including the SSE event stream
 	// (see bridge.go's SSEBridgeOptions). Empty means unauthenticated,
