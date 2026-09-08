@@ -1,5 +1,67 @@
 # Engineering Log
 
+## 2026-09-08 — Issue #1416 closed output pipe orphaned harnessd
+
+- Symptom: `go-code runs | head -5` (or piping into a pager the user quits
+  early) left `harnessd` running after the wrapper exited. The orphaned
+  daemon holds the workspace's callback-recovery lock
+  (`internal/harness/tools/delayed_callback_store.go:156`), so the next
+  `go-code` invocation in that project died about 11 seconds later with
+  `fatal: recover callbacks: acquire callback recovery authority: callback
+  workspace is already owned: resource temporarily unavailable`. The
+  wrapper's own error hint made it worse by suggesting a port conflict —
+  advice that cannot work, since the lock is workspace-scoped, not
+  port-scoped.
+- Cause, confirmed with a `bash -x` trace rather than inferred: the script
+  runs under `set -euo pipefail` (`scripts/go-code.sh:2`). `stop_server()`'s
+  first statement after its guards was an `info "stopping harnessd (pid
+  ...)"` call, which writes to stdout. With stdout already closed, that
+  write fails, `set -e` aborts the function right there, and the `kill
+  "$pid"` on the next line never runs. Cleanup was killed by its own status
+  message. The trace ended exactly at:
+  ```
+  + info 'stopping harnessd (pid 42794)'
+  + printf '%s %s\n' '[go-code]' 'stopping harnessd (pid 42794)'
+  scripts/go-code.sh: line 99: printf: write error: Broken pipe
+  ```
+- Fix: `trap '' PIPE` at the top of `stop_server()` (`scripts/go-code.sh:178`)
+  so cleanup can no longer be killed by a failed write — necessary on its
+  own, because `|| true` alone did **not** fix the leak: a `SIGPIPE` taken
+  while the `EXIT` trap is already running terminates the shell outright
+  instead of returning control to the trap, which was verified by
+  re-running the trace with only the `|| true` guard in place and still
+  seeing the daemon leak. `|| true` was then added to the `printf` calls in
+  `info`, `warn`, `die` (`scripts/go-code.sh:99-101`), and in
+  `show_harnessd_log`, so a status line can never abort its caller under
+  `set -e`. The `EXIT` trap is now armed in `start_server()`
+  (`scripts/go-code.sh:281`) immediately after the daemon is spawned,
+  replacing three separate per-mode `trap stop_server EXIT` arms in `main()`
+  (tui/prompt/cli), so there is one owner of the cleanup contract and no
+  window between spawning the daemon and arming its cleanup.
+- The durable lesson: under `set -e`, a status message inside a cleanup path
+  is load-bearing, and a `SIGPIPE` taken during an `EXIT` trap kills the
+  shell rather than returning to it — so cleanup must be immune to write
+  failures, not merely tolerant of them.
+- The corrected diagnosis: issue #1416 was originally filed claiming Ctrl+C
+  (`SIGINT`) caused the leak. That was wrong. The evidence was an artifact
+  of how the reproduction was run: the wrapper was signalled alone rather
+  than as a process group, so bash deferred its trap while a foreground
+  child was running, and the liveness check happened while the wrapper was
+  still alive — making it look like Ctrl+C failed to clean up when it
+  actually just hadn't run yet. Ctrl+C is handled correctly; the real
+  trigger is a closed output pipe, not a signal, and the fix was found by
+  `bash -x` tracing the pipe case, not by reasoning about signals. An
+  earlier draft of the fix added `INT`/`TERM`/`HUP`/`PIPE` signal traps and
+  an `on_signal` helper; those were removed — they were written against the
+  wrong mechanism and were not needed.
+- Tests: `TestGoCodeScriptStopsHarnessdWhenOutputPipeCloses`
+  (`cmd/harnesscli/go_code_script_test.go`) is the real bug, red first with
+  `harnessd (pid 41667) still running after the wrapper's output pipe
+  closed`. `TestGoCodeScriptStopsHarnessdOnInterrupt` covers two cases
+  (wrapper-started daemon stopped; pre-existing daemon left alone),
+  signalling the whole process group as a real Ctrl+C does; it passes today
+  and is a guard against regression, not a red-first test.
+
 ## 2026-09-08 — Issue #1413 readable go-code startup output
 
 - Symptom: `go-code` printed 13 lines of undifferentiated output on a normal
