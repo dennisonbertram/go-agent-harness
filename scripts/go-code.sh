@@ -20,9 +20,11 @@ set -euo pipefail
 #                            Run or plan the self-improvement test loop.
 #
 # Environment:
-#   HARNESS_ADDR   Listen address (default :8080). The port is extracted and
-#                  used to construct the BASE_URL for health checks and CLI
-#                  invocations.
+#   HARNESS_ADDR   Listen address (default :8080). Only the port is used: it
+#                  constructs the BASE_URL for health checks and CLI
+#                  invocations, and a wrapper-started harnessd always binds
+#                  127.0.0.1 on that port. Run harnessd directly for a daemon
+#                  that listens beyond this machine.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR=""
@@ -49,7 +51,8 @@ Usage:
                            Run or plan the self-improvement test loop.
 
 Environment:
-  HARNESS_ADDR   Override the server address (default: :8080).
+  HARNESS_ADDR   Override the server port (default: :8080). A wrapper-started
+                 harnessd always binds 127.0.0.1 on that port.
                  Example: HARNESS_ADDR=:9090 go-code "ls *.go"
 
 Description:
@@ -193,7 +196,13 @@ start_server() {
   # harnessd unchanged.
   #
   # Start in background, capturing the PID.
-  HARNESS_ADDR=":${port}" "$harnessd_bin" &
+  # Loopback only. The wrapper talks to this daemon exclusively over
+  # http://127.0.0.1:${port}, so a wildcard bind has no consumer — it would just
+  # publish an unauthenticated agent-execution service to the local network, and
+  # harnessd's bind guard (cmd/harnessd/bind_guard.go, issue #1328) refuses to
+  # start there without auth. HARNESS_ADDR supplies the port; the host is ours.
+  # Issue #1411.
+  HARNESS_ADDR="127.0.0.1:${port}" "$harnessd_bin" &
   local pid=$!
   PID_FILE="${TMPDIR:-/tmp}/harnessd.${$}.pid"
   echo "$pid" > "$PID_FILE"
@@ -209,7 +218,7 @@ start_server() {
       die "server did not become healthy within 10 s"
     fi
     if ! kill -0 "$pid" 2>/dev/null; then
-      die "harnessd (pid ${pid}) exited before becoming healthy on port ${port}. If the port is already in use (see the harnessd log above), free it or run on another port with HARNESS_ADDR=:PORT (e.g. HARNESS_ADDR=:9090 go-code)."
+      die "harnessd (pid ${pid}) exited before becoming healthy on port ${port}. See the harnessd log above for the reason it stopped. If it reports the port is already in use, free it or run on another port with HARNESS_ADDR=:PORT (e.g. HARNESS_ADDR=:9090 go-code)."
     fi
   done
   info "server is ready"

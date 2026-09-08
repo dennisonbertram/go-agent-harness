@@ -145,3 +145,60 @@ func TestGoCodeScriptPropagatesHarnessCLIExitCode(t *testing.T) {
 		})
 	}
 }
+
+// TestGoCodeScriptStartsHarnessdOnLoopback pins the wrapper's bind contract
+// (issue #1411): a harnessd the wrapper starts for its own use must listen on
+// loopback only.
+//
+// The wrapper's client base URL is always http://127.0.0.1:${port}, so a wider
+// bind has no consumer — it only exposes an unauthenticated agent-execution
+// service to the local network. cmd/harnessd/bind_guard.go refuses exactly that
+// address when no auth is configured, which killed `go-code` at startup on any
+// machine without an API key store.
+func TestGoCodeScriptStartsHarnessdOnLoopback(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "..", "scripts", "go-code.sh"))
+	if err != nil {
+		t.Fatalf("resolve go-code script path: %v", err)
+	}
+
+	tmp := t.TempDir()
+	binDir := t.TempDir()
+	addrFile := filepath.Join(tmp, "harnessd.addr")
+	recordFile := filepath.Join(tmp, "harnesscli.called")
+	countFile := filepath.Join(tmp, "curl.count")
+
+	// curl: fail the first health check so the wrapper takes the start_server
+	// path, then succeed so it proceeds to harnesscli.
+	writeExecutable(t, filepath.Join(binDir, "curl"), "#!/usr/bin/env bash\nf=\"$CURL_COUNT_FILE\"\nn=0\nif [ -f \"$f\" ]; then n=$(cat \"$f\"); fi\nn=$((n+1))\necho \"$n\" > \"$f\"\nif [ \"$n\" -eq 1 ]; then exit 1; fi\nexit 0\n")
+	// harnessd: record the bind address it was handed, then exit.
+	writeExecutable(t, filepath.Join(binDir, "harnessd"), "#!/usr/bin/env bash\nprintf '%s' \"$HARNESS_ADDR\" > \"$ADDR_FILE\"\nexit 0\n")
+	writeExecutable(t, filepath.Join(binDir, "harnesscli"), "#!/usr/bin/env bash\nprintf 'called\\n' >> \"$RECORD_FILE\"\nexit 0\n")
+
+	cmd := exec.Command("bash", scriptPath, "runs")
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"HARNESS_ADDR=:19282",
+		"ADDR_FILE="+addrFile,
+		"RECORD_FILE="+recordFile,
+		"CURL_COUNT_FILE="+countFile,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go-code runs failed: %v\n%s", err, out)
+	}
+
+	gotRaw, err := os.ReadFile(addrFile)
+	if err != nil {
+		t.Fatalf("read recorded harnessd address: %v\nscript output:\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(gotRaw))
+
+	// The port from HARNESS_ADDR must still be honored, so a fix that hardcodes
+	// 127.0.0.1:8080 fails here too.
+	const want = "127.0.0.1:19282"
+	if got != want {
+		t.Fatalf("harnessd bind address = %q, want %q\n"+
+			"a wildcard bind is refused by cmd/harnessd/bind_guard.go when no auth is configured\nscript output:\n%s",
+			got, want, out)
+	}
+}
