@@ -171,7 +171,7 @@ The full code table (`0` completed, `1` client error, `2` failed, `3` blocked, `
 
 ### Server address: `HARNESS_ADDR`
 
-The `HARNESS_ADDR` environment variable controls the listen address. The default is `127.0.0.1:8080`. The wrapper extracts the port from this value and constructs the base URL as `http://127.0.0.1:<port>`.
+The `HARNESS_ADDR` environment variable controls the listen address. The default is `127.0.0.1:8080`. The wrapper only uses the **port** from this value — the host part is ignored. A `harnessd` that the wrapper starts always binds `127.0.0.1` on that port, because the wrapper only ever talks to it over loopback (`http://127.0.0.1:<port>`).
 
 ```bash
 # Run on a different port
@@ -179,6 +179,8 @@ HARNESS_ADDR=:9090 go-code "List the Go source files"
 ```
 
 The address can also be set in your project or user config file (`~/.harness/config.toml` or `.harness/config.toml`). `HARNESS_ADDR` takes precedence over the TOML layers.
+
+If you need a daemon reachable from another machine, don't go through `go-code` — run `harnessd` directly with an explicit `HARNESS_ADDR` (a real host, not just a port) and either a configured API key store or `HARNESS_AUTH_DISABLED=true`. An unauthenticated daemon that listens beyond loopback refuses to start otherwise.
 
 ### Project root detection
 

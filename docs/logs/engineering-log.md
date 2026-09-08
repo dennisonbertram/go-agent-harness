@@ -1,5 +1,39 @@
 # Engineering Log
 
+## 2026-09-08 — Issue #1411 go-code wrapper bound harnessd beyond loopback
+
+- Symptom: plain `go-code` (no flags) died on a clean machine with no API key
+  store configured and no `HARNESS_AUTH_DISABLED` set — the daemon exited
+  before becoming healthy, and the wrapper's failure hint blamed port
+  contention.
+- Cause: `scripts/go-code.sh:196` (pre-fix) hardcoded
+  `HARNESS_ADDR=":${port}"` — a wildcard bind — when spawning `harnessd` for
+  its own use, even though the wrapper's client `base_url` is always built as
+  `http://127.0.0.1:${port}`. `cmd/harnessd/bind_guard.go` (issue #1328)
+  refuses to start an unauthenticated daemon that listens beyond loopback, so
+  the wider bind had no legitimate purpose and just tripped the guard.
+- Fix: `start_server()` now spawns with `HARNESS_ADDR="127.0.0.1:${port}"`;
+  the failure hint no longer asserts port contention as the only cause and
+  points at the harnessd log above it instead; the header comment and
+  `--help` text now say `HARNESS_ADDR` supplies only the port and that a
+  wrapper-started `harnessd` always binds `127.0.0.1`.
+- Security note: this is strictly tightening, not a new restriction users
+  need to work around. Before the #1328 guard existed, this same line
+  silently ran an unauthenticated agent-execution daemon on every network
+  interface, reachable by anyone on the LAN with the user's provider
+  credentials.
+- Regression: `TestGoCodeScriptStartsHarnessdOnLoopback` in
+  `cmd/harnesscli/go_code_script_test.go`, red before the fix with
+  `harnessd bind address = ":19282", want "127.0.0.1:19282"`.
+- Cross-reference: the 2026-09-05 `#1380` entry below first spotted this
+  pattern in `internal/workspace/bootstrap.go:36` (VM cloud-init template),
+  filed as a follow-up rather than fixed there; that sibling instance is
+  tracked separately as issue #1392 and is unaffected by this fix.
+- Left alone deliberately: `scripts/soak.sh:271-272`, `scripts/smoke-test.sh:87`,
+  and `scripts/run-bench-smoke.sh:135-136` also bind `:${PORT}` (wildcard),
+  but all three pass `HARNESS_AUTH_DISABLED=true`, so the bind guard admits
+  them.
+
 ## 2026-09-06 — TUI scenario walk: plan mode, @ completion, question box, bubble width (#1407)
 
 - Twelve multi-step TUI scenarios driven live in tmux (fake provider with scripted streaming/tool turns, and OpenRouter DeepSeek). Fixes: `/plan` command toggles enforced plan mode with a `PLAN` status badge and `harnesscli --tui --plan-mode` now honored (`runTUI` passes the flag into `TUIConfig`); `@name` Tab completion completes bare relative file names, not only `./`, `/`, `~/` paths; the AskUserQuestion and Plan-Approval boxes size their top/bottom borders to the content instead of a fixed 40-col rule; assistant markdown bubbles render at the indented width, expand tabs, and trim padding so a bubble never exceeds the terminal width. Guards added: streamed-transcript integrity and no duplicate tool card on ctrl+o after interrupt.
