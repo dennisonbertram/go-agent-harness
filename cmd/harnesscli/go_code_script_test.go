@@ -328,7 +328,12 @@ func TestGoCodeScriptStopsHarnessdOnInterrupt(t *testing.T) {
 			// Ignores SIGINT, so it survives the process-group signal a real
 			// Ctrl+C delivers. Only an explicit stop from the wrapper ends it —
 			// which is exactly the orphan this test is about.
-			writeExecutable(t, filepath.Join(binDir, "harnessd"), "#!/usr/bin/env bash\ntrap '' INT\necho $$ > \"$DAEMON_PID_FILE\"\nsleep 300\n")
+			// Ignores SIGINT so it survives the process-group signal a real
+			// Ctrl+C delivers — POSIX inherits an ignored disposition across
+			// exec, so the sleep ignores it too, and only an explicit stop from
+			// the wrapper ends this. On SIGTERM it takes its child with it
+			// rather than orphaning a stray sleep. Issue #1422.
+			writeExecutable(t, filepath.Join(binDir, "harnessd"), "#!/usr/bin/env bash\ntrap '' INT\ntrap 'kill \"$child\" 2>/dev/null; exit 0' TERM\necho $$ > \"$DAEMON_PID_FILE\"\nsleep 300 &\nchild=$!\nwait \"$child\"\n")
 			// harnesscli: keep the wrapper alive so it is still running when signalled.
 			writeExecutable(t, filepath.Join(binDir, "harnesscli"), "#!/usr/bin/env bash\nsleep 300\n")
 
@@ -346,10 +351,11 @@ func TestGoCodeScriptStopsHarnessdOnInterrupt(t *testing.T) {
 			if err := cmd.Start(); err != nil {
 				t.Fatalf("start go-code: %v", err)
 			}
-			defer func() {
-				_ = cmd.Process.Kill()
-				_, _ = cmd.Process.Wait()
-			}()
+			// Kill only. Wait has exactly one owner (the goroutine below);
+			// os.Process.Wait is not safe to call twice on the same process,
+			// and the two racing was a real defect regardless of whether it is
+			// what fails on Linux CI. Issue #1422.
+			defer func() { _ = cmd.Process.Kill() }()
 
 			var daemonPID int
 			if tc.startedByWrapper {
@@ -385,8 +391,11 @@ func TestGoCodeScriptStopsHarnessdOnInterrupt(t *testing.T) {
 			go func() { _, _ = cmd.Process.Wait(); close(waitDone) }()
 			select {
 			case <-waitDone:
-			case <-time.After(10 * time.Second):
-				t.Fatal("wrapper did not exit within 10s of SIGINT")
+			case <-time.After(30 * time.Second):
+				// Locally the wrapper exits in ~0.2s. The generous budget is
+				// headroom for a loaded CI runner under -race, not a claim
+				// about how long cleanup legitimately takes.
+				t.Fatal("wrapper did not exit within 30s of SIGINT")
 			}
 
 			deadline := time.Now().Add(8 * time.Second)

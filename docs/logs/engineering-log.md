@@ -1,5 +1,38 @@
 # Engineering Log
 
+## 2026-09-08 — Issue #1422 interrupt test flake, and a diagnosis that was wrong twice
+
+- Symptom: `TestGoCodeScriptStopsHarnessdOnInterrupt` failed on Linux CI with
+  "wrapper did not exit within 10s of SIGINT", red-flagging PR #1421 whose diff
+  touched only the spinner and docs. Passed on re-run.
+- First diagnosis, wrong: that the stub daemon's foreground `sleep` made bash
+  defer SIGTERM, forcing the wrapper down its 5-second graceful-shutdown wait on
+  every run and leaving no headroom in a 10-second budget. Measured directly,
+  the wrapper exits **0.21s** after a process-group SIGINT. A non-interactive
+  bash does not defer SIGTERM behind a foreground child; it terminates. The
+  5-second path is never reached.
+- Second diagnosis, also wrong: that the stub did not really survive SIGINT,
+  because `sleep` is a separate process that would die from the group signal.
+  Checked directly — it survives. POSIX inherits an *ignored* disposition across
+  exec, so `trap '' INT` in the stub makes the `sleep` ignore INT too. The
+  test's premise is sound and that trap should stay.
+- Confirmed defect, and the only one proven: the test called
+  `cmd.Process.Wait()` twice — once in the deferred cleanup, once in the
+  goroutine feeding the timeout `select`. `os.Process.Wait` is not safe to call
+  twice on the same process. Introduced in #1417.
+- Fix: one owner for `Wait` (the deferred cleanup now only kills); the stub
+  daemon traps TERM and takes its `sleep` child with it instead of orphaning it;
+  the exit budget widened to 30s as headroom for a loaded runner rather than as
+  a claim about how long cleanup takes.
+- **Root cause of the Linux failure remains unconfirmed.** Not reproduced on
+  macOS: 8/8 under `-race` with four CPU hogs running, 3/3 idle. The issue stays
+  open until CI shows a clean run without a re-run; a green that needed a re-run
+  proves nothing.
+- Durable lesson: when a test fails only on CI, measure the thing you are about
+  to blame before writing the fix. Two plausible mechanisms here were both
+  disproven in under a minute by timing the actual path, and either would have
+  produced a confident fix for a problem that does not exist.
+
 ## 2026-09-08 — Issue #1420 spinner breathes instead of ticking
 
 - Symptom: after #1415 stopped the *word* rotating, the owner reported the
