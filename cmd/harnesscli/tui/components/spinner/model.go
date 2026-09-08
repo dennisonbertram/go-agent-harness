@@ -1,11 +1,13 @@
-// Package spinner implements the TUI-024 thinking spinner with rotating verbs.
-// It provides an immutable BubbleTea-style Model that advances frame-by-frame
-// and rotates through a pool of whimsical verbs (e.g. "Thinking", "Reasoning").
+// Package spinner implements the TUI thinking spinner. It provides an immutable
+// BubbleTea-style Model that advances frame-by-frame while displaying a label
+// describing what the run is actually doing.
+//
+// The label is supplied by the caller through SetAction and changes only when
+// the run's state changes — never on a timer. See issue #1415.
 package spinner
 
 import (
 	"fmt"
-	"math/rand"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -14,9 +16,6 @@ import (
 // frames are the 6 animation frames for the thinking spinner.
 // These are star/asterisk glyphs, not the braille frames in theme.go.
 var frames = []string{"✶", "·", "✻", "✽", "✳", "✢"}
-
-// verbRotateEvery controls how many Tick() calls trigger a verb rotation.
-const verbRotateEvery = 8
 
 // durationThreshold is the elapsed time after which the spinner shows a duration.
 const durationThreshold = 2 * time.Second
@@ -50,47 +49,31 @@ func DefaultStyles() Styles {
 // All mutation methods return a new Model value — never modify in place.
 // This keeps it safe for use in BubbleTea's single-goroutine Update().
 type Model struct {
-	frame            int        // current frame index [0, len(frames))
-	verb             string     // current displayed verb
-	action           string     // current activity label (e.g. running tool name); overrides verb when set
-	startTime        time.Time  // when spinner started (for duration)
-	tokens           int        // token count stored on Stop()
-	active           bool       // true while spinner is running
-	done             bool       // true after Stop()
-	tickCount        int        // total ticks received (used for verb rotation)
-	completionFrames int        // ticks remaining to show completion line after Stop()
-	rng              *rand.Rand // seeded rng for deterministic testing
-
-	// Seed is the seed used to create rng. Exposed so tests can inspect it.
+	frame            int       // current frame index [0, len(frames))
+	action           string    // what the run is currently doing; empty falls back to fallbackLabel
+	startTime        time.Time // when spinner started (for duration)
+	tokens           int       // token count stored on Stop()
+	active           bool      // true while spinner is running
+	done             bool      // true after Stop()
+	tickCount        int       // total ticks received
+	completionFrames int       // ticks remaining to show completion line after Stop()
+	// Seed is retained only so the many existing New(seed) call sites keep
+	// compiling. Nothing reads it: the label comes from run state, not from a
+	// random source, so rendering is deterministic without a seed. Issue #1415.
 	Seed int64
-
-	// testVerbs overrides DefaultVerbs when non-nil. For testing only.
-	testVerbs []string
 
 	// styles overrides DefaultStyles when non-nil (theme injection point,
 	// epic #810).
 	styles *Styles
 }
 
-// New creates a new Model with the given seed. The seed makes verb selection
-// deterministic which is essential for snapshot and regression tests.
+// New creates a new Model. seed is ignored — it is kept only for call-site
+// compatibility, since rendering no longer depends on randomness. See Model.Seed.
 func New(seed int64) Model {
-	return Model{
-		Seed: seed,
-		rng:  rand.New(rand.NewSource(seed)), //nolint:gosec // not for crypto
-	}
+	return Model{Seed: seed}
 }
 
-// verbPool returns the verb pool in effect: testVerbs override if set,
-// otherwise DefaultVerbs.
-func (m Model) verbPool() []string {
-	if m.testVerbs != nil {
-		return m.testVerbs
-	}
-	return DefaultVerbs
-}
-
-// Start activates the spinner, records the start time, and picks an initial verb.
+// Start activates the spinner and records the start time.
 // Returns a new Model; the receiver is unchanged.
 func (m Model) Start() Model {
 	m.active = true
@@ -98,11 +81,11 @@ func (m Model) Start() Model {
 	m.startTime = time.Now()
 	m.frame = 0
 	m.tickCount = 0
-	m.verb = pickVerb(m.verbPool(), m.rng)
 	return m
 }
 
-// Tick advances the animation by one frame and potentially rotates the verb.
+// Tick advances the animation by one frame. The label is deliberately untouched:
+// it changes only when the caller reports a new action.
 // When the spinner is done and completionFrames > 0, decrements completionFrames
 // toward silence. Has no effect if neither active nor in completion mode.
 // Returns a new Model; the receiver is unchanged.
@@ -120,10 +103,6 @@ func (m Model) Tick() Model {
 	}
 	m.tickCount++
 	m.frame = (m.frame + 1) % len(frames)
-	// Rotate verb every verbRotateEvery ticks.
-	if m.tickCount%verbRotateEvery == 0 {
-		m.verb = pickVerb(m.verbPool(), m.rng)
-	}
 	return m
 }
 
@@ -139,10 +118,9 @@ func (m Model) Stop(tokens int) Model {
 	return m
 }
 
-// SetAction sets the current activity label (e.g. the name of a running tool
-// or a short step description). When non-empty, View() displays it in place
-// of the rotating verb so the user sees what is actually happening rather
-// than a generic placeholder. Pass "" to fall back to verb rotation.
+// SetAction sets what the run is currently doing (e.g. "Running bash",
+// "Writing response"). This is the label View() renders. Pass "" only when
+// nothing is known, which falls back to fallbackLabel.
 // Returns a new Model; the receiver is unchanged.
 func (m Model) SetAction(action string) Model {
 	m.action = action
@@ -187,8 +165,7 @@ func (m Model) ElapsedSeconds() float64 {
 // maximum character width; the view degrades gracefully at narrow widths.
 //
 // States:
-//   - Active: "✻ Thinking... (esc to interrupt)", or with a known action,
-//     "✻ Running bash (esc to interrupt)"; a duration is inserted once
+//   - Active: "✻ Running bash (esc to interrupt)"; a duration is inserted once
 //     durationThreshold passes.
 //   - ShowsCompletion() true: CompletionLine using ElapsedSeconds().
 //   - Done and silent (completionFrames == 0): returns "".
@@ -208,11 +185,11 @@ func (m Model) View(width int) string {
 
 	currentFrame := frames[m.frame]
 
-	// Build the base text. When a current action is known, show it instead of
-	// the rotating verb so the user sees what is actually happening.
-	label := m.verb + "..."
-	if m.action != "" {
-		label = m.action
+	// The label states what is actually happening. No ellipsis: "Running bash"
+	// is a fact, and trailing dots would only suggest vagueness it does not have.
+	label := m.action
+	if label == "" {
+		label = fallbackLabel
 	}
 	base := currentFrame + " " + label
 
@@ -229,15 +206,50 @@ func (m Model) View(width int) string {
 		base += " " + CancelHint
 	}
 
+	// At narrow widths the label yields before the cancel hint does. Truncating
+	// from the right would eat "(esc to interrupt)" first, leaving the user
+	// staring at "(esc to inter" with no way to know how to stop the run — the
+	// hint is the one part of this line that is actionable. Labels grew long
+	// enough to hit this when they became truthful ("Waiting for gpt-4.1-mini"
+	// rather than "Computing..."), so the trade-off is now worth making
+	// explicit. Issue #1415.
+	if lipgloss.Width(base) > width {
+		base = shortenLabel(currentFrame, label, base, width)
+	}
+
 	style := m.stylesOrDefault().Dim
 	rendered := style.Render(base)
 
-	// Clamp to width using MaxWidth.
-	if width < 80 {
+	// Final clamp: even a shortened line cannot exceed the terminal.
+	if lipgloss.Width(base) > width {
 		rendered = lipgloss.NewStyle().MaxWidth(width).Render(base)
 	}
 
 	return rendered
+}
+
+// shortenLabel rebuilds an over-long spinner line so the cancel hint survives.
+// It first drops the duration, then truncates the label itself, and gives up
+// only when even "<glyph> <hint>" will not fit — at which point the caller's
+// MaxWidth clamp takes over.
+func shortenLabel(glyph, label, full string, width int) string {
+	withoutDuration := glyph + " " + label + " " + CancelHint
+	if lipgloss.Width(withoutDuration) <= width {
+		return withoutDuration
+	}
+
+	// Budget for the label: width minus the glyph, the hint, and the two spaces
+	// separating them.
+	budget := width - lipgloss.Width(glyph) - lipgloss.Width(CancelHint) - 2
+	if budget < 4 {
+		// Not even a stub of a label fits; the hint alone is more useful.
+		return glyph + " " + CancelHint
+	}
+	runes := []rune(label)
+	if len(runes) > budget {
+		label = string(runes[:budget-1]) + "\u2026"
+	}
+	return glyph + " " + label + " " + CancelHint
 }
 
 // CompletionLine returns the one-line completion summary shown after the spinner stops.

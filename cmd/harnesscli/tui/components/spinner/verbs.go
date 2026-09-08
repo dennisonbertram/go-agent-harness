@@ -1,21 +1,12 @@
 package spinner
 
-// DefaultVerbs is the pool of whimsical verbs displayed by the spinner.
-// These are the same verbs Claude Code uses in its thinking indicator.
-var DefaultVerbs = []string{
-	"Thinking", "Reasoning", "Pondering", "Analyzing", "Processing",
-	"Computing", "Synthesizing", "Evaluating", "Reflecting", "Deliberating",
-	"Considering", "Examining", "Contemplating", "Strategizing", "Planning",
-}
-
-// fallbackVerb is used when the verb pool is empty.
-const fallbackVerb = "Thinking"
-
-// pickVerb selects a random verb from pool using the provided rng.
-// Returns fallbackVerb if pool is empty.
-func pickVerb(pool []string, rng interface{ Intn(int) int }) string {
-	if len(pool) == 0 {
-		return fallbackVerb
-	}
-	return pool[rng.Intn(len(pool))]
-}
+// fallbackLabel is shown only when the caller has not told the spinner what is
+// happening. It is deliberately the single most neutral true statement we can
+// make: a run is in progress.
+//
+// This replaced a pool of fifteen near-synonyms for "thinking" that rotated
+// roughly once a second (issue #1415). Rotating decorative words tells the user
+// nothing — the label changed but the meaning did not, which reads as a stuck
+// animation rather than a live one. Callers should set a real action via
+// SetAction; see currentSpinnerAction in the parent tui package.
+const fallbackLabel = "Working"

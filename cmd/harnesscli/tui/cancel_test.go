@@ -266,7 +266,6 @@ func TestTUI039_EscDismissesBanner(t *testing.T) {
 // banner visible (first ctrl+c state) and after the second ctrl+c (Interrupted).
 func TestTUI039_VisualSnapshot_80x24(t *testing.T) {
 	cfg := tui.DefaultTUIConfig()
-	cfg.SpinnerSeed = 1 // deterministic verb for a stable committed snapshot
 	m := tui.New(cfg)
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 
@@ -309,7 +308,6 @@ func TestTUI039_VisualSnapshot_80x24(t *testing.T) {
 // TestTUI039_VisualSnapshot_120x40 renders the TUI at 120x40.
 func TestTUI039_VisualSnapshot_120x40(t *testing.T) {
 	cfg := tui.DefaultTUIConfig()
-	cfg.SpinnerSeed = 1 // deterministic verb for a stable committed snapshot
 	m := tui.New(cfg)
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 
@@ -335,7 +333,6 @@ func TestTUI039_VisualSnapshot_120x40(t *testing.T) {
 // TestTUI039_VisualSnapshot_200x50 renders the TUI at 200x50.
 func TestTUI039_VisualSnapshot_200x50(t *testing.T) {
 	cfg := tui.DefaultTUIConfig()
-	cfg.SpinnerSeed = 1 // deterministic verb for a stable committed snapshot
 	m := tui.New(cfg)
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 50})
 
