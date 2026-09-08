@@ -7,8 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestGoCodeScriptRoutesDailyCommands(t *testing.T) {
@@ -284,4 +287,202 @@ func TestGoCodeScriptSurfacesHarnessdLogOnStartupFailure(t *testing.T) {
 	if !bytes.Contains(out, []byte("harnessd.")) || !bytes.Contains(out, []byte(".log")) {
 		t.Fatalf("startup failure did not report the harnessd log path:\n%s", out)
 	}
+}
+
+// TestGoCodeScriptStopsHarnessdOnInterrupt pins the cleanup contract of issue
+// #1416: a harnessd the wrapper started must not outlive the wrapper, however
+// the wrapper exits — including Ctrl+C, which is the way users actually abort.
+//
+// An orphan holds the workspace lock (internal/harness/tools/delayed_callback_store.go),
+// so the next go-code in that project dies with "callback workspace is already
+// owned" — a message that names neither the cause nor the remedy. This test
+// reproduces the orphan itself rather than that downstream symptom.
+func TestGoCodeScriptStopsHarnessdOnInterrupt(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "..", "scripts", "go-code.sh"))
+	if err != nil {
+		t.Fatalf("resolve go-code script path: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		// startedByWrapper false simulates a daemon the user already had
+		// running: the health check succeeds immediately, so the wrapper
+		// never starts one and must never kill it.
+		startedByWrapper bool
+	}{
+		{name: "wrapper-started daemon is stopped", startedByWrapper: true},
+		{name: "pre-existing daemon is left alone", startedByWrapper: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			binDir := t.TempDir()
+			pidFile := filepath.Join(tmp, "harnessd.pid")
+			countFile := filepath.Join(tmp, "curl.count")
+
+			failFirst := "0"
+			if tc.startedByWrapper {
+				failFirst = "1"
+			}
+			writeExecutable(t, filepath.Join(binDir, "curl"), "#!/usr/bin/env bash\nf=\"$CURL_COUNT_FILE\"\nn=0\nif [ -f \"$f\" ]; then n=$(cat \"$f\"); fi\nn=$((n+1))\necho \"$n\" > \"$f\"\nif [ \"${CURL_FAIL_FIRST:-0}\" = \"1\" ] && [ \"$n\" -eq 1 ]; then exit 1; fi\nexit 0\n")
+			// harnessd: record own PID, then outlive the wrapper unless stopped.
+			// Ignores SIGINT, so it survives the process-group signal a real
+			// Ctrl+C delivers. Only an explicit stop from the wrapper ends it —
+			// which is exactly the orphan this test is about.
+			writeExecutable(t, filepath.Join(binDir, "harnessd"), "#!/usr/bin/env bash\ntrap '' INT\necho $$ > \"$DAEMON_PID_FILE\"\nsleep 300\n")
+			// harnesscli: keep the wrapper alive so it is still running when signalled.
+			writeExecutable(t, filepath.Join(binDir, "harnesscli"), "#!/usr/bin/env bash\nsleep 300\n")
+
+			cmd := exec.Command("bash", scriptPath, "runs")
+			cmd.Env = append(os.Environ(),
+				"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"HARNESS_ADDR=:19620",
+				"DAEMON_PID_FILE="+pidFile,
+				"CURL_COUNT_FILE="+countFile,
+				"CURL_FAIL_FIRST="+failFirst,
+			)
+			// Own process group so the signal goes to the wrapper alone, not to
+			// the whole test process group.
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := cmd.Start(); err != nil {
+				t.Fatalf("start go-code: %v", err)
+			}
+			defer func() {
+				_ = cmd.Process.Kill()
+				_, _ = cmd.Process.Wait()
+			}()
+
+			var daemonPID int
+			if tc.startedByWrapper {
+				daemonPID = waitForPIDFile(t, pidFile)
+				// Control: the daemon must be alive before the signal, or a
+				// passing test would prove nothing.
+				if !processAlive(daemonPID) {
+					t.Fatalf("stub harnessd (pid %d) was not running before the interrupt", daemonPID)
+				}
+			} else {
+				// Give the wrapper time to reach harnesscli; it must not have
+				// started a daemon at all.
+				time.Sleep(2 * time.Second)
+				if _, err := os.Stat(pidFile); err == nil {
+					t.Fatal("wrapper started a daemon even though one was already healthy")
+				}
+				// Stand up an unrelated daemon-like process to prove it survives.
+				sleeper := exec.Command("sleep", "300")
+				if err := sleeper.Start(); err != nil {
+					t.Fatalf("start stand-in daemon: %v", err)
+				}
+				defer func() { _ = sleeper.Process.Kill(); _, _ = sleeper.Process.Wait() }()
+				daemonPID = sleeper.Process.Pid
+			}
+
+			// A real Ctrl+C goes to the foreground process group, not to bash
+			// alone. Signalling only the wrapper would deadlock: bash defers a
+			// trap until the foreground child exits, and that child sleeps.
+			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGINT); err != nil {
+				t.Fatalf("signal wrapper process group: %v", err)
+			}
+			waitDone := make(chan struct{})
+			go func() { _, _ = cmd.Process.Wait(); close(waitDone) }()
+			select {
+			case <-waitDone:
+			case <-time.After(10 * time.Second):
+				t.Fatal("wrapper did not exit within 10s of SIGINT")
+			}
+
+			deadline := time.Now().Add(8 * time.Second)
+			for time.Now().Before(deadline) {
+				if tc.startedByWrapper && !processAlive(daemonPID) {
+					return // cleaned up as required
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+
+			if tc.startedByWrapper {
+				t.Fatalf("harnessd (pid %d) still running after the wrapper was interrupted; "+
+					"it will hold the workspace lock and break the next go-code", daemonPID)
+			}
+			if !processAlive(daemonPID) {
+				t.Fatal("wrapper killed a daemon it did not start")
+			}
+		})
+	}
+}
+
+// waitForPIDFile blocks until the stub daemon has recorded its PID.
+func waitForPIDFile(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(path)
+		if err == nil {
+			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(raw))); convErr == nil && pid > 0 {
+				return pid
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("stub harnessd never recorded a pid at %s", path)
+	return 0
+}
+
+// processAlive reports whether pid is still running. Signal 0 performs the
+// permission and existence check without delivering anything.
+func processAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
+}
+
+// TestGoCodeScriptStopsHarnessdWhenOutputPipeCloses pins the other half of the
+// cleanup contract in issue #1416, and the half that actually orphans daemons
+// in practice: `go-code runs | head -5`, or piping into a pager the user quits.
+//
+// When the reader closes early the wrapper dies of SIGPIPE, and bash does not
+// run an EXIT trap for a shell killed by a signal it has no handler for. The
+// daemon is left holding the workspace lock, so the next go-code in that
+// project fails with "callback workspace is already owned".
+//
+// Ctrl+C, by contrast, is already handled correctly — see
+// TestGoCodeScriptStopsHarnessdOnInterrupt.
+func TestGoCodeScriptStopsHarnessdWhenOutputPipeCloses(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "..", "scripts", "go-code.sh"))
+	if err != nil {
+		t.Fatalf("resolve go-code script path: %v", err)
+	}
+
+	tmp := t.TempDir()
+	binDir := t.TempDir()
+	pidFile := filepath.Join(tmp, "harnessd.pid")
+	countFile := filepath.Join(tmp, "curl.count")
+
+	writeExecutable(t, filepath.Join(binDir, "curl"), "#!/usr/bin/env bash\nf=\"$CURL_COUNT_FILE\"\nn=0\nif [ -f \"$f\" ]; then n=$(cat \"$f\"); fi\nn=$((n+1))\necho \"$n\" > \"$f\"\nif [ \"$n\" -eq 1 ]; then exit 1; fi\nexit 0\n")
+	writeExecutable(t, filepath.Join(binDir, "harnessd"), "#!/usr/bin/env bash\necho $$ > \"$DAEMON_PID_FILE\"\nsleep 300\n")
+	// Emit far more than the reader will consume, so the write lands on a
+	// closed pipe — exactly what a real `runs` listing into `head` does.
+	writeExecutable(t, filepath.Join(binDir, "harnesscli"), "#!/usr/bin/env bash\nfor i in $(seq 1 500); do echo \"run_$i completed\"; done\n")
+
+	cmd := exec.Command("bash", "-c", scriptPath+" runs 2>&1 | head -5 >/dev/null")
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"HARNESS_ADDR=:19640",
+		"DAEMON_PID_FILE="+pidFile,
+		"CURL_COUNT_FILE="+countFile,
+	)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("pipeline failed: %v", err)
+	}
+
+	daemonPID := waitForPIDFile(t, pidFile)
+
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processAlive(daemonPID) {
+			return // cleaned up as required
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("harnessd (pid %d) still running after the wrapper's output pipe closed; "+
+		"it will hold the workspace lock and break the next go-code in this project", daemonPID)
 }

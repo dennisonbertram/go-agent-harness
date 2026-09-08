@@ -191,6 +191,12 @@ If `harnessd` fails to become healthy, `go-code` prints the last 20 lines of tha
 
 The wrapper colors its own `[go-code]` prefix and the `WARN:`/`ERROR:` markers (cyan, yellow, red) when writing to a terminal. Color is never the only signal — the words `WARN:` and `ERROR:` always stay in the text. Color is disabled, and output is plain text, whenever `NO_COLOR` is set, `TERM=dumb`, or the given output stream (stdout or stderr) isn't a terminal — for example when you pipe `go-code` into another command. stdout and stderr are checked independently, since one can be redirected without the other.
 
+Piping `go-code` into a command that exits early — `go-code runs | head -5`, or any pager you quit before it reaches the end of the output — still stops a daemon the wrapper started. Closing the read end of the pipe makes the wrapper's own status writes fail (`SIGPIPE`/`EPIPE`), but that failure can no longer stop the shutdown itself: `stop_server` ignores `PIPE` before doing anything else, and every status line is written with `|| true`, so a write failure never skips the `kill` that stops `harnessd`.
+
+### Troubleshooting: a stale `harnessd` left behind
+
+If a `harnessd` the wrapper started is ever left running after `go-code` exits — for example after a crash rather than a normal exit — the symptom on your next `go-code` invocation in that project is a failure like `callback workspace is already owned: resource temporarily unavailable`, because the leftover daemon still holds the workspace's callback-recovery lock. Changing `HARNESS_ADDR` or the port does not help: the lock is scoped to the workspace, not the port. The remedy is to stop the stray process directly, for example `pkill -f harnessd`, then run `go-code` again.
+
 ### Project root detection
 
 `go-code` automatically resolves the workspace root before launching TUI or prompt mode. It walks parent directories from `$PWD`, looking for:

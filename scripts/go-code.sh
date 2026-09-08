@@ -91,9 +91,14 @@ style() {
   fi
 }
 
-info()  { printf '%s %s\n' "$(style 1 '36' '[go-code]')" "$*"; }
-warn()  { printf '%s %s %s\n' "$(style 2 '33' '[go-code]')" "$(style 2 '1;33' 'WARN:')" "$*" >&2; }
-die()   { printf '%s %s %s\n' "$(style 2 '31' '[go-code]')" "$(style 2 '1;31' 'ERROR:')" "$*" >&2; show_harnessd_log; exit 1; }
+# The `|| true` on each printf is load-bearing, not defensive noise: this script
+# runs under `set -e`, and a write to a closed stdout (`go-code runs | head`)
+# fails with EPIPE. Without the guard, a status line aborts its caller — which
+# orphaned the daemon, because stop_server's first statement is an info line and
+# the kill never ran. Issue #1416.
+info()  { printf '%s %s\n' "$(style 1 '36' '[go-code]')" "$*" || true; }
+warn()  { printf '%s %s %s\n' "$(style 2 '33' '[go-code]')" "$(style 2 '1;33' 'WARN:')" "$*" >&2 || true; }
+die()   { printf '%s %s %s\n' "$(style 2 '31' '[go-code]')" "$(style 2 '1;31' 'ERROR:')" "$*" >&2 || true; show_harnessd_log; exit 1; }
 
 # show_harnessd_log prints the captured daemon log when a wrapper-started
 # harnessd failed. The daemon's stdout is redirected to a file so a healthy
@@ -103,17 +108,17 @@ die()   { printf '%s %s %s\n' "$(style 2 '31' '[go-code]')" "$(style 2 '1;31' 'E
 # a long fatal message stays emphasized across the terminal's soft wrap.
 show_harnessd_log() {
   [[ -n "${HARNESSD_LOG:-}" && -s "${HARNESSD_LOG:-}" ]] || return 0
-  printf '\n  %s\n' "$(style 2 '1' 'harnessd said:')" >&2
+  printf '\n  %s\n' "$(style 2 '1' 'harnessd said:')" >&2 || true
   local line
   while IFS= read -r line; do
     case "$line" in
       *fatal:*|*panic:*|*"refusing to start"*)
-        printf '    %s\n' "$(style 2 '1;31' "$line")" >&2 ;;
+        printf '    %s\n' "$(style 2 '1;31' "$line")" >&2 || true ;;
       *)
-        printf '    %s\n' "$(style 2 '2' "$line")" >&2 ;;
+        printf '    %s\n' "$(style 2 '2' "$line")" >&2 || true ;;
     esac
   done < <(tail -n 20 "$HARNESSD_LOG")
-  printf '\n  %s %s\n\n' "$(style 2 '2' 'full log:')" "$HARNESSD_LOG" >&2
+  printf '\n  %s %s\n\n' "$(style 2 '2' 'full log:')" "$HARNESSD_LOG" >&2 || true
 }
 
 require_command() {
@@ -164,6 +169,14 @@ PID_FILE=""
 STARTED_BY_US=0
 
 stop_server() {
+  # Cleanup must not depend on being able to write. This runs from the EXIT
+  # trap, often with stdout already closed (`go-code runs | head`), and a
+  # SIGPIPE taken here kills the shell mid-trap — the daemon then survives and
+  # holds the workspace lock, breaking the next go-code in the project.
+  # Ignoring PIPE turns that fatal signal into an EPIPE the `|| true` in info()
+  # absorbs, so the kill below always runs. Issue #1416.
+  trap '' PIPE
+
   if [[ "$STARTED_BY_US" -ne 1 ]]; then
     return 0
   fi
@@ -260,6 +273,12 @@ start_server() {
   PID_FILE="${TMPDIR:-/tmp}/harnessd.${$}.pid"
   echo "$pid" > "$PID_FILE"
   STARTED_BY_US=1
+
+  # Arm cleanup the moment the daemon exists, rather than at mode dispatch
+  # further below: anything that exits in between would orphan it. stop_server
+  # checks STARTED_BY_US itself, so this can never touch a daemon we did not
+  # start. Issue #1416.
+  trap stop_server EXIT
 
   # Wait up to 10 s for /healthz to return 200.
   info "waiting for server to become healthy (pid ${pid})..."
@@ -439,10 +458,6 @@ main() {
       echo "${base_url}"
       ;;
     tui)
-      # Only stop what we started.
-      if [[ "$STARTED_BY_US" -eq 1 ]]; then
-        trap stop_server EXIT
-      fi
       if [[ -n "$resume_id" ]]; then
         harnesscli -base-url "$base_url" -workspace "$project_root" --tui -resume "$resume_id"
       else
@@ -450,15 +465,9 @@ main() {
       fi
       ;;
     prompt)
-      if [[ "$STARTED_BY_US" -eq 1 ]]; then
-        trap stop_server EXIT
-      fi
       harnesscli -base-url "$base_url" -workspace "$project_root" -prompt "$prompt"
       ;;
     cli)
-      if [[ "$STARTED_BY_US" -eq 1 ]]; then
-        trap stop_server EXIT
-      fi
       harnesscli "$cli_command" -base-url "$base_url" ${cli_args[@]+"${cli_args[@]}"}
       ;;
   esac
