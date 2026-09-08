@@ -67,7 +67,8 @@ EOF
 # and colorblind readers. Only the 8 standard ANSI colors are used, so each
 # terminal applies its own theme and nothing turns invisible on a light
 # background. Issue #1413.
-# Detected once, at startup. This must not be tested lazily inside style():
+#
+# Support is detected once, here, and must not be tested lazily inside style():
 # style() is called from command substitution, where stdout is a pipe rather
 # than the terminal, so an `-t 1` check there is always false and stdout would
 # never be colored. stdout and stderr are tracked separately because either can
@@ -434,7 +435,6 @@ main() {
       if [[ "$STARTED_BY_US" -eq 1 ]]; then
         trap - EXIT  # Do NOT stop the server on exit.
         info "server running at ${base_url} (pid $(cat "$PID_FILE"))"
-        [[ -n "${HARNESSD_LOG:-}" ]] && info "log: ${HARNESSD_LOG}"
       fi
       echo "${base_url}"
       ;;

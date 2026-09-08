@@ -1,5 +1,42 @@
 # Engineering Log
 
+## 2026-09-08 — Issue #1413 readable go-code startup output
+
+- Symptom: `go-code` printed 13 lines of undifferentiated output on a normal
+  startup, mixing three different voices with no visual separation — the
+  wrapper's own `[go-code] ...` status lines, harnessd's own boot log (since
+  the daemon inherited the wrapper's stdout), and (on failure) a fatal error —
+  so the one actionable line was buried in the noise. Because the daemon
+  inherited the terminal, a stray daemon log line could also render into the
+  TUI after handoff, not just during startup.
+- Cause: `scripts/go-code.sh`'s three one-line output helpers (`info`, `warn`,
+  `die`) gave every line the same undifferentiated `[go-code] ...` prefix with
+  no severity distinction, and `start_server()` let harnessd inherit the
+  wrapper's stdout/stderr instead of capturing them.
+- Fix: color detection now runs once at startup into `COLOR_STDOUT` /
+  `COLOR_STDERR` (disabled under `NO_COLOR`, `TERM=dumb`, or when the relevant
+  stream isn't a terminal), feeding a `style` helper; `info` is cyan-prefixed,
+  `warn` yellow, `die` red, with the literal words `WARN:`/`ERROR:` always kept
+  in the text so severity never depends on color alone. A wrapper-started
+  harnessd now writes to `${TMPDIR:-/tmp}/harnessd.<pid>.log` (created with
+  `umask 077`) instead of the terminal. On success the wrapper prints
+  `server ready at <url>` plus a `log: <path>` line, and the daemon boot log no
+  longer appears at all. On failure, `die` calls `show_harnessd_log`, which
+  prints a `harnessd said:` block with the last 20 log lines indented four
+  spaces (lines matching `fatal:`, `panic:`, or `refusing to start` in bold
+  red, everything else dimmed) followed by `full log: <path>`.
+- Gotcha (the durable lesson here): the first implementation tested `[[ -t 1 ]]`
+  lazily, inside the `style` helper itself. But `style` is invoked from
+  command substitution (`$(style ...)`), where `$( )` only redirects stdout —
+  so inside that substitution, fd 1 is a pipe, not the terminal, and stdout
+  was never colored even on a real tty, while stderr colored correctly. Color
+  detection has to happen once at startup, before any command substitution
+  runs. This was caught by looking at real rendered pty output, not by the
+  test suite — the tests (`TestGoCodeScriptEmitsNoAnsiWhenNotATty`,
+  `TestGoCodeScriptSurfacesHarnessdLogOnStartupFailure`, both in
+  `cmd/harnesscli/go_code_script_test.go`) check the no-color and log-surfacing
+  paths but don't exercise a real tty, so they would have passed either way.
+
 ## 2026-09-08 — Issue #1411 go-code wrapper bound harnessd beyond loopback
 
 - Symptom: plain `go-code` (no flags) died on a clean machine with no API key
