@@ -1,5 +1,45 @@
 # Engineering Log
 
+## 2026-09-08 — Issue #1424 remember the last used model
+
+- Symptom: the TUI forgot the model you picked. `/model`, quit, restart, and you
+  were back on the daemon default. `newTUIConfig` (`cmd/harnesscli/main.go:562`)
+  never set `Model`, so `selectedModel` started empty every session.
+- Fix: `harnessconfig.Config` gains `Model`, `Provider` and `ReasoningEffort`
+  (all `omitempty`, so old files load unchanged and older binaries ignore them).
+  `ModelSelectedMsg` persists all three through the existing
+  `persistConfigField` idiom; the constructor applies them where starred models,
+  gateway, keys and history are already applied. The three are stored together
+  because they are chosen together — a provider or reasoning effort without its
+  model describes nothing.
+- Precedence: applying is guarded on `cfg.Model == ""`, so an explicitly
+  requested model always wins. Remembering a preference must never override an
+  instruction. Empty still means "let the daemon choose", so a first run and a
+  corrupt config both degrade to today's behavior.
+- Reused rather than invented: `~/.config/harnesscli/config.json` already
+  persisted starred models, gateway, API keys, history and theme. The model was
+  the conspicuous omission, and it is the one users change most.
+- **Test-isolation defect this exposed, worth more than the feature.** Making
+  model selection persistent meant the TUI test suite began writing to the
+  developer's real `~/.config/harnesscli/config.json` — a run left
+  `"model": "gpt-4.1-mini"` there that no human had chosen, and three tests then
+  failed against it. Fixed with a package `TestMain` that redirects HOME once
+  before any test runs, plus a per-test reset of the scratch config in
+  `initModel`.
+  - `t.Setenv` in a shared helper does not work here: it panics for any test
+    that calls `t.Parallel`, and several in this package do. Redirecting once in
+    `TestMain`, before any test starts, is both parallel-safe and race-free.
+  - The reset is needed as well as the redirect: one scratch HOME is shared by
+    the whole package, so without it a test that selects a model leaks into
+    every test after it.
+- Durable lesson: adding persistence to a UI component silently converts its
+  test suite into something that mutates the developer's machine. When making
+  anything persistent, check what the tests write before checking what the
+  feature reads.
+- Noted, not fixed: `runTUI` never receives the `-model` flag, so
+  `harnesscli --tui -model X` ignores it today. Separate defect; the precedence
+  guard above is written so wiring it needs no further change here.
+
 ## 2026-09-08 — Issue #1422 interrupt test flake, and a diagnosis that was wrong twice
 
 - Symptom: `TestGoCodeScriptStopsHarnessdOnInterrupt` failed on Linux CI with

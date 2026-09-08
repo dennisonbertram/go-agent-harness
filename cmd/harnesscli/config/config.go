@@ -13,6 +13,15 @@ type Config struct {
 	APIKeys        map[string]string `json:"api_keys,omitempty"`
 	HistoryEntries []string          `json:"history_entries,omitempty"` // newest-first command history
 	Theme          string            `json:"theme,omitempty"`           // selected color theme name (epic #810)
+
+	// Model, Provider and ReasoningEffort remember the last model chosen in the
+	// TUI so a restart resumes on it (issue #1424). They are stored together
+	// because they are chosen together: a provider or reasoning effort without
+	// its model describes nothing. All are omitempty, so an older config file
+	// loads unchanged and an older binary ignores them.
+	Model           string `json:"model,omitempty"`
+	Provider        string `json:"provider,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 func configPath() (string, error) {
