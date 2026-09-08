@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -200,5 +201,87 @@ func TestGoCodeScriptStartsHarnessdOnLoopback(t *testing.T) {
 		t.Fatalf("harnessd bind address = %q, want %q\n"+
 			"a wildcard bind is refused by cmd/harnessd/bind_guard.go when no auth is configured\nscript output:\n%s",
 			got, want, out)
+	}
+}
+
+// TestGoCodeScriptEmitsNoAnsiWhenNotATty guards the color contract of issue
+// #1413: styling is an enhancement for interactive terminals only.
+//
+// exec.Command gives the script no controlling terminal, so this is the same
+// condition as `go-code runs | cat`. It cannot be red before the feature exists
+// — it is a regression guard against a later change that colors unconditionally
+// and corrupts piped or captured output.
+func TestGoCodeScriptEmitsNoAnsiWhenNotATty(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "..", "scripts", "go-code.sh"))
+	if err != nil {
+		t.Fatalf("resolve go-code script path: %v", err)
+	}
+
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "curl"), "#!/usr/bin/env bash\nexit 0\n")
+	writeExecutable(t, filepath.Join(binDir, "harnessd"), "#!/usr/bin/env bash\nexit 0\n")
+	writeExecutable(t, filepath.Join(binDir, "harnesscli"), "#!/usr/bin/env bash\nexit 0\n")
+
+	for _, tc := range []struct {
+		name string
+		env  []string
+	}{
+		{name: "no tty", env: nil},
+		{name: "NO_COLOR set", env: []string{"NO_COLOR=1"}},
+		{name: "dumb terminal", env: []string{"TERM=dumb"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("bash", scriptPath, "runs")
+			cmd.Env = append(os.Environ(),
+				"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"HARNESS_ADDR=:19383",
+			)
+			cmd.Env = append(cmd.Env, tc.env...)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("go-code runs failed: %v\n%s", err, out)
+			}
+			if bytes.Contains(out, []byte("\x1b[")) {
+				t.Fatalf("output contains ANSI escape sequences with no terminal attached:\n%q", out)
+			}
+		})
+	}
+}
+
+// TestGoCodeScriptSurfacesHarnessdLogOnStartupFailure pins the other half of
+// issue #1413: the wrapper captures harnessd's output to a log file so a clean
+// start is not buried in boot noise (and so no daemon line can scribble into the
+// TUI after handoff) — but a failed start must still show the operator why the
+// daemon died. Capturing without surfacing would trade noise for silence.
+func TestGoCodeScriptSurfacesHarnessdLogOnStartupFailure(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "..", "scripts", "go-code.sh"))
+	if err != nil {
+		t.Fatalf("resolve go-code script path: %v", err)
+	}
+
+	binDir := t.TempDir()
+	// curl: the health check never succeeds, so the wrapper must give up.
+	writeExecutable(t, filepath.Join(binDir, "curl"), "#!/usr/bin/env bash\nexit 1\n")
+	// harnessd: emit a boot line and a fatal line, then die — the shape of the
+	// real bind-guard and workspace-lock failures.
+	writeExecutable(t, filepath.Join(binDir, "harnessd"), "#!/usr/bin/env bash\necho 'loaded model catalog with 15 providers'\necho 'fatal: refusing to start: sentinel failure reason'\nexit 1\n")
+	writeExecutable(t, filepath.Join(binDir, "harnesscli"), "#!/usr/bin/env bash\nexit 0\n")
+
+	cmd := exec.Command("bash", scriptPath, "runs")
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"HARNESS_ADDR=:19384",
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected go-code to fail when harnessd never becomes healthy\n%s", out)
+	}
+
+	if !bytes.Contains(out, []byte("fatal: refusing to start: sentinel failure reason")) {
+		t.Fatalf("startup failure did not surface harnessd's own reason for dying;\n"+
+			"the daemon log was captured but never shown, which hides the cause:\n%s", out)
+	}
+	if !bytes.Contains(out, []byte("harnessd.")) || !bytes.Contains(out, []byte(".log")) {
+		t.Fatalf("startup failure did not report the harnessd log path:\n%s", out)
 	}
 }

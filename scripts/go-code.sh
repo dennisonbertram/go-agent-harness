@@ -62,9 +62,58 @@ Description:
 EOF
 }
 
-info()  { printf '[go-code] %s\n' "$*"; }
-warn()  { printf '[go-code] WARN: %s\n' "$*" >&2; }
-die()   { printf '[go-code] ERROR: %s\n' "$*" >&2; exit 1; }
+# Color is an enhancement, never the only signal: the WARN:/ERROR: words stay in
+# the text, so severity survives a monochrome terminal, a pipe, a captured log,
+# and colorblind readers. Only the 8 standard ANSI colors are used, so each
+# terminal applies its own theme and nothing turns invisible on a light
+# background. Issue #1413.
+# Detected once, at startup. This must not be tested lazily inside style():
+# style() is called from command substitution, where stdout is a pipe rather
+# than the terminal, so an `-t 1` check there is always false and stdout would
+# never be colored. stdout and stderr are tracked separately because either can
+# be redirected on its own.
+COLOR_STDOUT=0
+COLOR_STDERR=0
+if [[ -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
+  [[ -t 1 ]] && COLOR_STDOUT=1
+  [[ -t 2 ]] && COLOR_STDERR=1
+fi
+
+# style <stream-fd> <sgr> <text> — style text only when that stream is a terminal.
+style() {
+  local enabled="$COLOR_STDOUT"
+  [[ "$1" == "2" ]] && enabled="$COLOR_STDERR"
+  if [[ "$enabled" == "1" ]]; then
+    printf '\033[%sm%s\033[0m' "$2" "$3"
+  else
+    printf '%s' "$3"
+  fi
+}
+
+info()  { printf '%s %s\n' "$(style 1 '36' '[go-code]')" "$*"; }
+warn()  { printf '%s %s %s\n' "$(style 2 '33' '[go-code]')" "$(style 2 '1;33' 'WARN:')" "$*" >&2; }
+die()   { printf '%s %s %s\n' "$(style 2 '31' '[go-code]')" "$(style 2 '1;31' 'ERROR:')" "$*" >&2; show_harnessd_log; exit 1; }
+
+# show_harnessd_log prints the captured daemon log when a wrapper-started
+# harnessd failed. The daemon's stdout is redirected to a file so a healthy
+# start is not buried in boot noise and no log line can scribble into the TUI
+# after handoff — which means a failure has to bring that output back, or the
+# operator is left with no reason at all. Lines are colored per logical line, so
+# a long fatal message stays emphasized across the terminal's soft wrap.
+show_harnessd_log() {
+  [[ -n "${HARNESSD_LOG:-}" && -s "${HARNESSD_LOG:-}" ]] || return 0
+  printf '\n  %s\n' "$(style 2 '1' 'harnessd said:')" >&2
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      *fatal:*|*panic:*|*"refusing to start"*)
+        printf '    %s\n' "$(style 2 '1;31' "$line")" >&2 ;;
+      *)
+        printf '    %s\n' "$(style 2 '2' "$line")" >&2 ;;
+    esac
+  done < <(tail -n 20 "$HARNESSD_LOG")
+  printf '\n  %s %s\n\n' "$(style 2 '2' 'full log:')" "$HARNESSD_LOG" >&2
+}
 
 require_command() {
   local cmd="$1"
@@ -184,7 +233,7 @@ start_server() {
   local port="${1}"
   local base_url="${2}"
 
-  info "no server at ${base_url}, starting harnessd on port ${port}"
+  info "starting harnessd on port ${port}"
 
   local harnessd_bin
   harnessd_bin="$(command -v harnessd)"
@@ -202,7 +251,10 @@ start_server() {
   # harnessd's bind guard (cmd/harnessd/bind_guard.go, issue #1328) refuses to
   # start there without auth. HARNESS_ADDR supplies the port; the host is ours.
   # Issue #1411.
-  HARNESS_ADDR="127.0.0.1:${port}" "$harnessd_bin" &
+  local tmpdir="${TMPDIR:-/tmp}"
+  HARNESSD_LOG="${tmpdir%/}/harnessd.${$}.log"
+  ( umask 077; : > "$HARNESSD_LOG" )
+  HARNESS_ADDR="127.0.0.1:${port}" "$harnessd_bin" >"$HARNESSD_LOG" 2>&1 &
   local pid=$!
   PID_FILE="${TMPDIR:-/tmp}/harnessd.${$}.pid"
   echo "$pid" > "$PID_FILE"
@@ -218,10 +270,11 @@ start_server() {
       die "server did not become healthy within 10 s"
     fi
     if ! kill -0 "$pid" 2>/dev/null; then
-      die "harnessd (pid ${pid}) exited before becoming healthy on port ${port}. See the harnessd log above for the reason it stopped. If it reports the port is already in use, free it or run on another port with HARNESS_ADDR=:PORT (e.g. HARNESS_ADDR=:9090 go-code)."
+      die "harnessd (pid ${pid}) exited before becoming healthy on port ${port}. If it reports the port is already in use, free it or run on another port with HARNESS_ADDR=:PORT (e.g. HARNESS_ADDR=:9090 go-code)."
     fi
   done
-  info "server is ready"
+  info "$(style 1 '32' 'server ready') at ${base_url}"
+  info "log: ${HARNESSD_LOG}"
 }
 
 # --- project-root detection --------------------------------------------------
@@ -381,6 +434,7 @@ main() {
       if [[ "$STARTED_BY_US" -eq 1 ]]; then
         trap - EXIT  # Do NOT stop the server on exit.
         info "server running at ${base_url} (pid $(cat "$PID_FILE"))"
+        [[ -n "${HARNESSD_LOG:-}" ]] && info "log: ${HARNESSD_LOG}"
       fi
       echo "${base_url}"
       ;;
