@@ -512,6 +512,18 @@ func New(cfg TUIConfig) Model {
 	if persistCfg, err := harnessconfig.Load(); err == nil {
 		m.modelSwitcher = m.modelSwitcher.WithStarred(persistCfg.StarredModels)
 		m.selectedGateway = persistCfg.Gateway
+		// Resume on the model chosen last session (issue #1424). Guarded on an
+		// empty cfg.Model so an explicitly requested model always wins:
+		// remembering a preference must never override an instruction. Provider
+		// and reasoning effort come along because they were chosen in the same
+		// moment and describe nothing on their own.
+		if cfg.Model == "" && persistCfg.Model != "" {
+			m.selectedModel = persistCfg.Model
+			m.selectedProvider = persistCfg.Provider
+			m.selectedReasoningEffort = persistCfg.ReasoningEffort
+			m.modelSwitcher = modelswitcher.New(persistCfg.Model)
+			m.modelSwitcher = m.modelSwitcher.WithCurrentReasoning(persistCfg.ReasoningEffort)
+		}
 		m.pendingAPIKeys = persistCfg.APIKeys
 		if len(persistCfg.HistoryEntries) > 0 {
 			m.historyStore = inputarea.NewHistoryWithEntries(100, persistCfg.HistoryEntries)
@@ -5189,6 +5201,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectedModel = msg.ModelID
 		m.selectedProvider = msg.Provider
 		m.selectedReasoningEffort = msg.ReasoningEffort
+		// Remember it for the next session (issue #1424). Best-effort, like the
+		// other persisted preferences: losing this is never worth interrupting
+		// a run the user is in the middle of.
+		_ = persistConfigField(func(c *harnessconfig.Config) {
+			c.Model = msg.ModelID
+			c.Provider = msg.Provider
+			c.ReasoningEffort = msg.ReasoningEffort
+		})
 		m.modelSwitcher = modelswitcher.New(msg.ModelID)
 		m.modelSwitcher = m.modelSwitcher.WithCurrentReasoning(msg.ReasoningEffort)
 		m.modelSwitcher = m.modelSwitcher.WithStarred(currentStarred)

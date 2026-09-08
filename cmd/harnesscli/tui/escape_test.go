@@ -2,6 +2,7 @@ package tui_test
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -11,9 +12,22 @@ import (
 	tui "go-agent-harness/cmd/harnesscli/tui"
 )
 
+// resetPersistedConfig clears the scratch config between tests.
+//
+// TestMain gives the package one scratch HOME, so persisted state written by
+// one test is visible to the next. Since issue #1424 that includes the selected
+// model, which made tests asserting "no model chosen" fail against a model a
+// previous test had picked. Starting each test from an empty store restores the
+// old property that construction sees nothing persisted unless the test says so.
+func resetPersistedConfig(t *testing.T) {
+	t.Helper()
+	_ = os.Remove(filepath.Join(os.Getenv("HOME"), ".config", "harnesscli", "config.json"))
+}
+
 // initModel creates a Model with a given terminal size.
 func initModel(t *testing.T, w, h int) tui.Model {
 	t.Helper()
+	resetPersistedConfig(t)
 	m := tui.New(tui.DefaultTUIConfig())
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	return m2.(tui.Model)
