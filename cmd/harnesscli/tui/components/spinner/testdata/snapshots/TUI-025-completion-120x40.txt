@@ -2,11 +2,11 @@
 ------------------------------------------------------------------------------------------------------------------------
 ## Immediately after Stop() — ShowsCompletion=true
 ShowsCompletion: true
-✽ Worked for 5.0s
+✢ Worked for 5.0s
 
 ## After 5 ticks (mid-completion)
 ShowsCompletion: true
-✽ Worked for 5.0s
+✢ Worked for 5.0s
 
 ## After 10 ticks (silent)
 ShowsCompletion: false

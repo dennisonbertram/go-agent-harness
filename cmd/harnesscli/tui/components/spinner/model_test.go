@@ -10,23 +10,28 @@ import (
 	"time"
 )
 
-// TestTUI024_SpinnerCyclesFrames verifies that Tick() advances frame index
-// through all 6 frames in order and wraps back to 0.
-func TestTUI024_SpinnerCyclesFrames(t *testing.T) {
+// TestTUI024_SpinnerAdvancesThroughThePulse verifies that Start resets the
+// animation and that ticking walks the pulse. The exact cadence is eased rather
+// than one-frame-per-tick (issue #1420) and is pinned in breathing_test.go.
+func TestTUI024_SpinnerAdvancesThroughThePulse(t *testing.T) {
 	m := New(42)
 	m = m.Start()
 
-	// Frame starts at 0 after Start.
-	if m.frame != 0 {
-		t.Fatalf("expected frame=0 after Start, got %d", m.frame)
+	if m.step != 0 || m.stepTicks != 0 {
+		t.Fatalf("expected pulse reset after Start, got step=%d stepTicks=%d", m.step, m.stepTicks)
 	}
 
-	for i := 1; i <= 6; i++ {
+	start := m.Glyph()
+	advanced := false
+	for i := 0; i < len(holds); i++ {
 		m = m.Tick()
-		expected := i % len(frames)
-		if m.frame != expected {
-			t.Errorf("after Tick %d: expected frame=%d, got %d", i, expected, m.frame)
+		if m.Glyph() != start {
+			advanced = true
+			break
 		}
+	}
+	if !advanced {
+		t.Errorf("glyph never changed while ticking; the spinner would look frozen")
 	}
 }
 
@@ -94,7 +99,7 @@ func TestTUI024_CompletionLineFormat(t *testing.T) {
 
 	// Frame glyph must appear.
 	foundGlyph := false
-	for _, f := range frames {
+	for _, f := range pulse {
 		if strings.Contains(line, f) {
 			foundGlyph = true
 			break
@@ -304,9 +309,9 @@ func TestTUI024_Regression_MultipleInstances(t *testing.T) {
 		a = a.Tick()
 	}
 
-	// b should still be at frame 0.
-	if b.frame != 0 {
-		t.Errorf("regression: b.frame should be 0, got %d (a.frame=%d)", b.frame, a.frame)
+	// b should still be at the start of the pulse.
+	if b.step != 0 || b.stepTicks != 0 {
+		t.Errorf("regression: b should be unadvanced, got step=%d stepTicks=%d (a.step=%d)", b.step, b.stepTicks, a.step)
 	}
 }
 

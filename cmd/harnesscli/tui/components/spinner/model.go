@@ -13,9 +13,25 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// frames are the 6 animation frames for the thinking spinner.
-// These are star/asterisk glyphs, not the braille frames in theme.go.
-var frames = []string{"✶", "·", "✻", "✽", "✳", "✢"}
+// pulse is the glyph sequence, ordered by visual weight and ping-ponged so the
+// cycle grows and shrinks — a breath rather than a tick. It uses the same six
+// star/asterisk glyphs as before (not the braille frames in theme.go); only
+// their order changed. The previous order, ✶ · ✻ ✽ ✳ ✢, jumped from the
+// heaviest glyph straight to the lightest, which reads as a stutter at any
+// speed. The extremes are not repeated back-to-back at the turn. Issue #1420.
+var pulse = []string{"·", "✢", "✳", "✻", "✽", "✶", "✽", "✻", "✳", "✢"}
+
+// holds is how many ticks each step of the pulse is displayed for. The
+// animation lingers at the top and bottom of the breath (3 ticks = 360ms) and
+// passes quickly through the middle (1 tick = 120ms). That unevenness is the
+// easing: a flat cadence is what made the old spinner read as mechanical.
+//
+// The tick rate itself deliberately stays at 120ms (tui.SpinnerInterval),
+// because the same tick redraws the elapsed-time counter. Slowing the timer
+// would slow the clock; gating advance slows only the glyph.
+//
+// Sum: 18 ticks, about 2.16s per cycle, against 720ms before.
+var holds = []int{3, 2, 1, 1, 2, 3, 2, 1, 1, 2}
 
 // durationThreshold is the elapsed time after which the spinner shows a duration.
 const durationThreshold = 2 * time.Second
@@ -49,7 +65,8 @@ func DefaultStyles() Styles {
 // All mutation methods return a new Model value — never modify in place.
 // This keeps it safe for use in BubbleTea's single-goroutine Update().
 type Model struct {
-	frame            int       // current frame index [0, len(frames))
+	step             int       // index into pulse
+	stepTicks        int       // ticks already spent on the current step
 	action           string    // what the run is currently doing; empty falls back to fallbackLabel
 	startTime        time.Time // when spinner started (for duration)
 	tokens           int       // token count stored on Stop()
@@ -79,7 +96,8 @@ func (m Model) Start() Model {
 	m.active = true
 	m.done = false
 	m.startTime = time.Now()
-	m.frame = 0
+	m.step = 0
+	m.stepTicks = 0
 	m.tickCount = 0
 	return m
 }
@@ -102,7 +120,13 @@ func (m Model) Tick() Model {
 		return m
 	}
 	m.tickCount++
-	m.frame = (m.frame + 1) % len(frames)
+
+	// Advance only once the current step has been held for its full duration.
+	m.stepTicks++
+	if m.stepTicks >= holds[m.step] {
+		m.stepTicks = 0
+		m.step = (m.step + 1) % len(pulse)
+	}
 	return m
 }
 
@@ -139,6 +163,14 @@ func (m Model) stylesOrDefault() Styles {
 		return DefaultStyles()
 	}
 	return *m.styles
+}
+
+// Glyph returns the animation character for the current step of the pulse.
+func (m Model) Glyph() string {
+	if len(pulse) == 0 {
+		return ""
+	}
+	return pulse[m.step%len(pulse)]
 }
 
 // IsActive returns true while the spinner is running (between Start and Stop).
@@ -183,7 +215,7 @@ func (m Model) View(width int) string {
 		return ""
 	}
 
-	currentFrame := frames[m.frame]
+	currentFrame := m.Glyph()
 
 	// The label states what is actually happening. No ellipsis: "Running bash"
 	// is a fact, and trailing dots would only suggest vagueness it does not have.
@@ -256,7 +288,7 @@ func shortenLabel(glyph, label, full string, width int) string {
 //
 // Format: "✻ Worked for 5s" or "✻ Worked for 1m 30s"
 func (m Model) CompletionLine(seconds float64) string {
-	glyph := frames[m.frame%len(frames)]
+	glyph := m.Glyph()
 	duration := formatSeconds(seconds)
 	line := glyph + " Worked for " + duration
 	return m.stylesOrDefault().Dim.Render(line)

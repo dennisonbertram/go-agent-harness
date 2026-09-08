@@ -32,13 +32,16 @@ func TestSpinnerLabelDoesNotRotateOnTicks(t *testing.T) {
 func TestSpinnerGlyphStillAnimates(t *testing.T) {
 	m := New(42).Start().SetAction("Running bash")
 
+	// The bound is the longest hold in the eased cadence (issue #1420), not one
+	// tick per frame: the extremes of the breath are held for several ticks.
 	seen := map[string]bool{}
-	for i := 0; i < len(frames); i++ {
+	ticks := len(holds) * 3
+	for i := 0; i < ticks; i++ {
 		seen[strings.Fields(m.View(80))[0]] = true
 		m = m.Tick()
 	}
 	if len(seen) < 2 {
-		t.Fatalf("glyph never advanced across %d ticks; the spinner would look frozen", len(frames))
+		t.Fatalf("glyph never advanced across %d ticks; the spinner would look frozen", ticks)
 	}
 }
 
