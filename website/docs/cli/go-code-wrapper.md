@@ -94,9 +94,10 @@ Starts `harnessd` in the background, prints the server URL, and exits immediatel
 Example output:
 
 ```
-[go-code] no server at http://127.0.0.1:8080, starting harnessd on port 8080
+[go-code] starting harnessd on port 8080
 [go-code] waiting for server to become healthy (pid 12345)...
-[go-code] server is ready
+[go-code] server ready at http://127.0.0.1:8080
+[go-code] log: /tmp/harnessd.12345.log
 [go-code] project root: /your/project/root
 [go-code] server running at http://127.0.0.1:8080 (pid 12345)
 http://127.0.0.1:8080
@@ -181,6 +182,14 @@ HARNESS_ADDR=:9090 go-code "List the Go source files"
 The address can also be set in your project or user config file (`~/.harness/config.toml` or `.harness/config.toml`). `HARNESS_ADDR` takes precedence over the TOML layers.
 
 If you need a daemon reachable from another machine, don't go through `go-code` — run `harnessd` directly with an explicit `HARNESS_ADDR` (a real host, not just a port) and either a configured API key store or `HARNESS_AUTH_DISABLED=true`. An unauthenticated daemon that listens beyond loopback refuses to start otherwise.
+
+### Startup output and the daemon log
+
+When the wrapper starts `harnessd` itself, the daemon's stdout and stderr no longer print to your terminal. They are redirected to a log file at `${TMPDIR:-/tmp}/harnessd.<pid>.log` (created with `umask 077`, so only you can read it), and the wrapper prints that path on a `log:` line after a successful start. This matters most in `--server` mode, where the daemon outlives the wrapper process. This keeps a healthy startup to a handful of lines instead of interleaving the daemon's own boot log into the terminal, and it stops a stray daemon log line from landing in the TUI after handoff.
+
+If `harnessd` fails to become healthy, `go-code` prints the last 20 lines of that log under a `harnessd said:` heading before exiting, so the failure reason isn't just a path you have to go open yourself. Lines matching `fatal:`, `panic:`, or `refusing to start` are highlighted; the rest are dimmed.
+
+The wrapper colors its own `[go-code]` prefix and the `WARN:`/`ERROR:` markers (cyan, yellow, red) when writing to a terminal. Color is never the only signal — the words `WARN:` and `ERROR:` always stay in the text. Color is disabled, and output is plain text, whenever `NO_COLOR` is set, `TERM=dumb`, or the given output stream (stdout or stderr) isn't a terminal — for example when you pipe `go-code` into another command. stdout and stderr are checked independently, since one can be redirected without the other.
 
 ### Project root detection
 
