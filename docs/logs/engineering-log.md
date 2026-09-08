@@ -1,5 +1,41 @@
 # Engineering Log
 
+## 2026-09-08 — Issue #1420 spinner breathes instead of ticking
+
+- Symptom: after #1415 stopped the *word* rotating, the owner reported the
+  spinner still "spins too fast" and asked to "slow it down so that it
+  breaths." The complaint was the glyph, not the label: six frames advancing
+  one per 120ms tick is a full rotation every 720ms, with every frame weighted
+  identically — a mechanical tick rather than a living indicator.
+- Second, subtler problem: the frame order `✶ · ✻ ✽ ✳ ✢` was not monotonic in
+  visual weight. It jumped from the heaviest glyph straight to the lightest and
+  back, which reads as a stutter at any speed.
+- Fix: the same six glyphs, reordered by weight and ping-ponged into a pulse
+  (`· ✢ ✳ ✻ ✽ ✶ ✽ ✻ ✳ ✢`), with a per-step hold table
+  (`3 2 1 1 2 3 2 1 1 2` ticks) so advance is gated rather than one-per-tick.
+  The extremes hold 360ms, the mid-pulse frames pass in 120ms, and a cycle runs
+  18 ticks — about 2.16s, against 720ms before. The uneven hold is the easing:
+  a flat cadence is precisely what made it feel mechanical.
+- Deliberately unchanged: `tui.SpinnerInterval` stays at 120ms. The same tick
+  redraws the elapsed-time counter, so slowing the timer would slow the clock.
+  Gating the glyph's advance slows only the glyph. The glyph set itself is also
+  unchanged — it matches the six independently reported for Claude Code, and
+  was never the problem.
+- Provenance note, since it informed the design: the claim that Claude Code
+  eases its frames (first and last held longer) comes from third parties
+  hand-timing screen recordings, not from reading its source. That is a
+  description, not a measurement, and the hold table here is our own choice
+  rather than a reproduction of theirs.
+- Tests: `TestSpinnerCycleTakesAboutTwoSeconds` (18 ticks, not 6),
+  `TestSpinnerEasesAtTheExtremes` (extremes strictly outlast mid-pulse frames),
+  `TestSpinnerPulseGrowsThenShrinks` (monotonic up then down, no heaviest-to-
+  lightest jump), and `TestSpinnerStillAnimatesUnderEasing` as the control
+  against a hold table that would freeze the animation. All in
+  `cmd/harnesscli/tui/components/spinner/breathing_test.go`.
+  `TestTUI024_SpinnerCyclesFrames` pinned one-frame-per-tick and was replaced by
+  `TestTUI024_SpinnerAdvancesThroughThePulse`; the `#1415` glyph-animation guard
+  widened its bound to the longest hold. Snapshot goldens regenerated.
+
 ## 2026-09-08 — Issue #1415 truthful spinner label
 
 - Symptom/motivation: `cmd/harnesscli/tui/components/spinner/verbs.go` held
